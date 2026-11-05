@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { hash2 } from './noise';
-import { terrainHeight, valleyCenter, canyonAmount, gateZ, nearestGateIndex, type Obstacle } from './world';
+import { terrainHeight, nearestBranch, gateZ, nearestGateIndex, type Obstacle } from './world';
+import { route, type LiveBranch } from './route';
 
 export type GateType = 'ring' | 'tunnel' | 'needle' | 'arch';
 
@@ -25,19 +26,22 @@ export interface Gate {
 export interface GateEvent { type: GateType; hit: boolean; index: number; total: number; k: number }
 
 const UP = new THREE.Vector3(0, 1, 0);
-function pathFrame(z: number) {
-  const x = valleyCenter(z);
-  const n = new THREE.Vector3(valleyCenter(z - 1) - x, 0, -1).normalize();
+/** Centre and direction of the valley nearest nearX at depth z. */
+function pathFrame(z: number, nearX: number) {
+  const x = nearestBranch(nearX, z).c;
+  const x2 = nearestBranch(x, z - 1).c;
+  const n = new THREE.Vector3(x2 - x, 0, -1).normalize();
   const right = new THREE.Vector3().crossVectors(n, UP).normalize();
   return { x, n, right };
 }
 
-export function gateType(k: number): GateType {
-  const z = gateZ(k);
-  const h = hash2(k, 0, 51);
+function gateType(k: number, b: LiveBranch, salt: number): GateType {
+  const h = hash2(k, salt, 51);
   if (k < 1) return 'ring';
+  if (b.canyon > 0.5) return h < 0.35 ? 'tunnel' : h < 0.75 ? 'ring' : 'arch';
+  if (b.biome === 'desert' && b.t > 0.5) return h < 0.45 ? 'needle' : h < 0.75 ? 'arch' : 'ring';
+  if (b.biome === 'misty' && b.t > 0.5) return h < 0.45 ? 'tunnel' : 'ring';
   if (h < 0.3) return 'tunnel';
-  if (canyonAmount(z) > 0.5) return h < 0.65 ? 'ring' : 'arch';
   if (h < 0.55) return 'ring';
   if (h < 0.78) return 'needle';
   return 'arch';
@@ -52,14 +56,16 @@ const capMat = new THREE.MeshLambertMaterial({ color: 0xffc94a, flatShading: tru
 const pillarGeo = new THREE.CylinderGeometry(0.6, 1, 1, 6, 2).translate(0, 0.5, 0);
 const lumpGeo = new THREE.IcosahedronGeometry(1, 0);
 
-function makeGate(k: number): Gate {
-  const type = gateType(k);
+function makeGate(k: number, b: LiveBranch): Gate {
   const z0 = gateZ(k);
+  const salt = (route.forkAt(z0)?.index ?? 0) * 7 + b.index;
+  const type = gateType(k, b, salt);
   const group = new THREE.Group();
   const points: GatePoint[] = [];
   const obstacles: Obstacle[] = [];
   const rings: THREE.Mesh[] = [];
-  const lift = 10 + hash2(k, 1, 52) * 14;
+  const lift = 10 + hash2(k, salt + 1, 52) * 14;
+  let followX = b.c;
 
   if (type === 'ring' || type === 'tunnel') {
     const count = type === 'tunnel' ? 7 : 1;
@@ -68,8 +74,9 @@ function makeGate(k: number): Gate {
     let prev: THREE.Vector3 | null = null;
     for (let i = 0; i < count; i++) {
       const z = z0 - i * spacing;
-      const { x, n, right } = pathFrame(z);
-      const offset = type === 'ring' ? (hash2(k, 2, 53) - 0.5) * 16 : Math.sin(i * 0.9 + k) * 5;
+      const { x, n, right } = pathFrame(z, followX);
+      followX = x;
+      const offset = type === 'ring' ? (hash2(k, salt + 2, 53) - 0.5) * 16 : Math.sin(i * 0.9 + k) * 5;
       const px = x + right.x * offset, pz = z + right.z * offset;
       const pos = new THREE.Vector3(px, terrainHeight(px, pz) + lift + (type === 'tunnel' ? Math.sin(i * 0.7) * 3 : 0), pz);
       points.push({ pos, n, right, r: R, yMin: -1e9, yMax: 1e9, done: false });
@@ -89,7 +96,7 @@ function makeGate(k: number): Gate {
       prev = pos;
     }
   } else {
-    const { x, n, right } = pathFrame(z0);
+    const { x, n, right } = pathFrame(z0, b.c);
     const ground = terrainHeight(x, z0);
     const gapHalf = type === 'needle' ? 4.5 + hash2(k, 3, 54) * 2 : 7 + hash2(k, 3, 54) * 3;
     const clearTop = type === 'arch' ? ground + 9 + hash2(k, 4, 55) * 8 : ground + 34;
@@ -137,7 +144,7 @@ function makeGate(k: number): Gate {
 }
 
 export class Gates {
-  active = new Map<number, Gate>();
+  active = new Map<string, Gate>();
   constructor(private scene: THREE.Scene) {}
 
   reset() {
@@ -148,10 +155,14 @@ export class Gates {
   update(z: number, t: number) {
     const k0 = Math.max(0, nearestGateIndex(z) - 1);
     const k1 = Math.max(0, nearestGateIndex(z - 700));
-    for (let k = k0; k <= k1; k++) if (!this.active.has(k)) {
-      const g = makeGate(k); this.active.set(k, g); this.scene.add(g.group);
+    for (let k = k0; k <= k1; k++) {
+      for (const b of route.live(gateZ(k))) {
+        const key = `${k}:${route.forkAt(gateZ(k))?.index ?? -1}:${b.index}`;
+        if (b.open < 0.95 || this.active.has(key)) continue;
+        const g = makeGate(k, b); this.active.set(key, g); this.scene.add(g.group);
+      }
     }
-    for (const [k, g] of this.active) if (k < k0 - 1 || k > k1 + 1) { this.scene.remove(g.group); this.active.delete(k); }
+    for (const [key, g] of this.active) if (g.k < k0 - 1 || g.k > k1 + 1) { this.scene.remove(g.group); this.active.delete(key); }
     for (const g of this.active.values()) for (const r of g.rings) if (g.type !== 'arch') r.rotateZ(0.02);
     void t;
   }

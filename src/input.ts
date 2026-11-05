@@ -4,7 +4,7 @@ export interface InputState {
   roll: number;    // -1 left .. +1 right
   brake: number;   // 0..1
   anyPress: boolean; // edge-triggered "start / restart"
-  trick: 'rollL' | 'rollR' | 'loop' | null; // edge-triggered trick request
+  trick: 'rollL' | 'rollR' | null; // edge-triggered barrel-roll request
   source: 'keyboard' | 'touch' | 'gamepad';
 }
 
@@ -34,7 +34,6 @@ export class Input {
         this.pressed = true;
         if (e.code === 'KeyQ') this.trick = 'rollL';
         if (e.code === 'KeyE') this.trick = 'rollR';
-        if (e.code === 'KeyF' || e.code === 'KeyL') this.trick = 'loop';
       }
       this.keys.add(e.code);
       this.state.source = 'keyboard';
@@ -78,13 +77,13 @@ export class Input {
       for (const t of (Array.from((e as TouchEvent).changedTouches) as Touch[])) {
         if (t.identifier === this.stickId) { this.stickId = null; this.stickVec = { x: 0, y: 0 }; this.showStick(false); }
         this.brakeIds.delete(t.identifier);
-        // quick swipe on the right side = trick (left/right = barrel roll, up = loop)
+        // quick sideways swipe on the right side = barrel roll
         const sw = this.swipes.get(t.identifier);
         this.swipes.delete(t.identifier);
         if (sw && performance.now() - sw.t < 450) {
           const dx = t.clientX - sw.x, dy = t.clientY - sw.y;
           if (Math.max(Math.abs(dx), Math.abs(dy)) > 45) {
-            this.trick = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'rollL' : 'rollR') : (dy < 0 ? 'loop' : null);
+            this.trick = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'rollL' : 'rollR') : null;
           }
         }
       }
@@ -130,7 +129,6 @@ export class Input {
           this.pressed = true; this.state.source = 'gamepad';
           if (i === 4) this.trick = 'rollL';
           if (i === 5) this.trick = 'rollR';
-          if (i === 3) this.trick = 'loop';
         }
         this.padButtonsPrev[i] = b.pressed;
       });

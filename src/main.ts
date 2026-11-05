@@ -1,5 +1,7 @@
 import * as THREE from 'three';
-import { World, terrainHeight, valleyCenter, obstaclesNear, obstacleGap, canyonAmount, basePlane, CANYON_RIM, type Obstacle } from './world';
+import { World, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, type Obstacle } from './world';
+import { route, BIOME_NAME } from './route';
+import { CloudPuffs } from './puffs';
 import { Gates, type GateEvent } from './gates';
 import { BirdMesh, Glider } from './bird';
 import { Input } from './input';
@@ -41,6 +43,9 @@ scene.add(sky);
 // ---------- World + bird ----------
 const world = new World(scene, 4);
 const gates = new Gates(scene);
+const puffs = new CloudPuffs(scene);
+const skyNow = SKY.clone();
+const skyMat = () => (sky.material as THREE.ShaderMaterial).uniforms.bottom.value as THREE.Color;
 const glider = new Glider();
 const bird = new BirdMesh();
 scene.add(bird);
@@ -76,8 +81,8 @@ const hud = { score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('s
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
 $('controls').innerHTML = isTouch
-  ? 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side: <b>←/→</b> barrel roll, <b>↑</b> loop'
-  : '<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> bank &nbsp; <b>Space</b> air-brake<br><b>Q/E</b> barrel roll &nbsp; <b>F</b> loop<br>Controller: left stick, triggers brake, <b>LB/RB</b> roll, <b>Y</b> loop';
+  ? 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side <b>←/→</b> to barrel roll<br>Keep pulling down to loop'
+  : '<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> bank &nbsp; <b>Space</b> air-brake<br><b>Q/E</b> barrel roll &nbsp; hold <b>S</b> to loop<br>Controller: left stick, triggers brake, <b>LB/RB</b> roll, pull back to loop';
 $('go').textContent = isTouch ? 'Tap to glide' : 'Press any key or button to glide';
 
 let best = 0;
@@ -103,20 +108,24 @@ let score = 0, combo = 0, comboTimer = 0, slowmo = 0, crashTimer = 0, shake = 0;
 let startZ = 0;
 const near = new Map<string, { gap: number; type: string }>(); // obstacle id -> closest gap while passing
 const prevPos = new THREE.Vector3();
-let trickMinClear = 99, tunnelChain = 0, canyonWarned = -1, inCanyonRun = false;
+let trickMinClear = 99, loopMinClear = 99, tunnelChain = 0, inCanyonRun = false, wasInCloud = false;
 let loopBack: THREE.Vector3 | null = null;
 const cloudsHit = new Set<string>();
 const nearby: Obstacle[] = [];
 
-function spawn() {
-  const z = 0, x = valleyCenter(z);
+function spawn(fresh = true) {
+  if (fresh) { route.reset(); world.reset(); }
+  const z = 0, x = route.mainCenter(z);
   glider.reset(x, terrainHeight(x, z) + 45, z, 0);
   startZ = z;
   score = 0; combo = 0; comboTimer = 0; slowmo = 0; shake = 0;
   near.clear(); cloudsHit.clear();
   gates.reset(); gates.update(glider.pos.z, 0);
   prevPos.copy(glider.pos);
-  trickMinClear = 99; tunnelChain = 0; canyonWarned = -1; loopBack = null;
+  trickMinClear = 99; tunnelChain = 0; loopBack = null; wasInCloud = false;
+  puffs.clear();
+  // build the opening stretch straight away
+  for (let i = 0; i < 10 && world.update(glider.pos.x, glider.pos.z - 150, 8) > 0; i++);
   placeCamera(true);
 }
 
@@ -204,9 +213,7 @@ function placeCamera(snap = false, dt = 0.016, lift = 0) {
 // ---------- Main loop ----------
 let last = performance.now();
 let t = 0;
-spawn();
-// pre-build the starting area so the title screen has scenery
-for (let i = 0; i < 80 && world.update(glider.pos.x, glider.pos.z - 150, 8) > 0; i++);
+spawn(false);
 
 function frame(now: number) {
   requestAnimationFrame(frame);
@@ -226,9 +233,6 @@ function frame(now: number) {
     prevPos.copy(glider.pos);
     if (inp.trick && glider.startTrick(inp.trick)) {
       trickMinClear = 99;
-      if (glider.trick?.type === 'loop') {
-        loopBack = new THREE.Vector3(-Math.sin(glider.heading), 0, -Math.cos(glider.heading));
-      }
     }
     // wind tunnels push you along and pull you toward the middle
     const wind = gates.windAt(glider.pos);
@@ -238,7 +242,10 @@ function frame(now: number) {
       glider.pitch += (Math.asin(THREE.MathUtils.clamp(wind.dir.y, -1, 1)) - glider.pitch) * Math.min(1, 1.5 * dt);
     }
     const finished = glider.step(dt, inp);
-    if (!glider.trick) loopBack = null;
+    // hold the camera steady behind the loop instead of chasing the nose round
+    if (glider.pitch > 0.9 || glider.looping) {
+      if (!loopBack) { loopBack = new THREE.Vector3(-Math.sin(glider.heading), 0, -Math.cos(glider.heading)); loopMinClear = 99; }
+    } else if (glider.pitch < 0.7) loopBack = null;
     const p = glider.pos;
     const ground = terrainHeight(p.x, p.z);
     clearance = p.y - ground;
@@ -266,8 +273,9 @@ function frame(now: number) {
 
     // tricks: score when they land, worth triple if pulled off low
     trickMinClear = Math.min(trickMinClear, clearance);
+    loopMinClear = Math.min(loopMinClear, clearance);
     if (finished && mode === 'flying') {
-      const low = trickMinClear < 10;
+      const low = (finished === 'loop' ? loopMinClear : trickMinClear) < 10;
       const base = finished === 'loop' ? 400 : 150;
       const pts = Math.round(base * (low ? 3 : 1) * multiplier());
       combo++; comboTimer = 4; score += pts;
@@ -279,11 +287,17 @@ function frame(now: number) {
     gates.check(prevPos, p, (e: GateEvent) => onGate(e));
 
     // canyon run: stay below the rim for a steady bonus
-    const c = canyonAmount(p.z);
+    const c = canyonAt(p.x, p.z);
     inCanyonRun = c > 0.6 && p.y < basePlane(p.z) + CANYON_RIM * c - 8;
     if (inCanyonRun) { score += dt * 25 * multiplier(); comboTimer = Math.max(comboTimer, 1.5); }
-    const aheadK = Math.floor((-p.z - 250) / 600);
-    if (canyonAmount(p.z - 250) > 0.6 && c < 0.2 && canyonWarned !== aheadK) { canyonWarned = aheadK; popup('Canyon ahead', 'dive in and stay below the rim'); }
+
+    // forks: announce the choices, then lock in whichever valley you're in
+    const ev = route.update(p.x, p.z);
+    if (ev.announce) {
+      const arrows = ev.announce.branches.length === 3 ? ['←', '↑', '→'] : ['←', '→'];
+      popup('Fork ahead', ev.announce.branches.map((b, i) => `${arrows[i]} ${BIOME_NAME[b.biome]}${b.canyon ? ' canyon' : ''}`).join(' · '));
+    }
+    if (ev.committed) { score += Math.round(100 * multiplier()); popup(BIOME_NAME[ev.committed.biome], ev.committed.canyon ? 'canyon run ahead: stay below the rim' : 'new territory +100'); }
 
     // ground skim
     if (clearance < 5 && mode === 'flying') {
@@ -294,6 +308,21 @@ function frame(now: number) {
     // clouds
     const cd = world.cloudDepth(p.x, p.y, p.z);
     mist = cd.depth;
+    const inCloud = cd.depth > 0.02;
+    if (inCloud && !wasInCloud) {
+      // punch in: a burst blown back around you
+      puffs.ring(p, glider.dir, glider.vel.clone().multiplyScalar(0.1), 12, 30, 1.4);
+      shake = Math.max(shake, 0.35); camera.fov += 6;
+    } else if (inCloud) {
+      // tunnel through: cloud spews out behind you
+      const n = Math.ceil(90 * dt);
+      for (let i = 0; i < n; i++) puffs.burst(p.clone().addScaledVector(glider.dir, -1.5), glider.vel.clone().multiplyScalar(0.25), 7, 1, 1.0);
+    } else if (wasInCloud) {
+      // punch out: cloud explodes out after you
+      puffs.ring(p, glider.dir, glider.vel.clone().multiplyScalar(0.3), 16, 44, 1.5);
+      shake = Math.max(shake, 0.25); camera.fov += 8; audio.whoosh(0.8);
+    }
+    wasInCloud = inCloud;
     if (cd.id && cd.depth > 0.15 && !cloudsHit.has(cd.id)) {
       cloudsHit.add(cd.id);
       const pts = Math.round(40 * multiplier());
@@ -314,6 +343,20 @@ function frame(now: number) {
     glider.roll = Math.sin(t * 0.6) * 0.25;
   }
   shake = Math.max(0, shake - dt * 2);
+  puffs.update(dt, camera.position);
+
+  // sky and fog shift with the environment you're flying through
+  {
+    const nb = nearestBranch(glider.pos.x, glider.pos.z);
+    const target = SKY_COLOR[nb.parent].clone().lerp(SKY_COLOR[nb.biome], nb.t);
+    skyNow.lerp(target, Math.min(1, dt * 0.8));
+    (scene.fog as THREE.Fog).color.copy(skyNow);
+    skyMat().copy(skyNow);
+    const far = FOG_FAR[nb.parent] + (FOG_FAR[nb.biome] - FOG_FAR[nb.parent]) * nb.t;
+    const fog = scene.fog as THREE.Fog;
+    fog.far += (far - fog.far) * Math.min(1, dt * 0.8);
+    fog.near = fog.far * 0.22;
+  }
 
   glider.applyTo(bird);
   bird.animate(t, glider.brake, glider.speed);
@@ -370,4 +413,4 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
-(window as any).__glide = { glider, world, gates, get mode() { return mode; }, get score() { return score; }, canyonAmount, terrainHeight, valleyCenter };
+(window as any).__glide = { glider, world, gates, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route };

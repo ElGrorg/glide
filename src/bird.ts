@@ -77,35 +77,37 @@ export class BirdMesh extends THREE.Group {
   }
 }
 
-/** Arcade glider: speed and height trade through pitch. */
+const TAU = Math.PI * 2;
+/** Wrap an angle to (-PI, PI]. */
+function wrap(a: number) { return a - TAU * Math.floor((a + Math.PI) / TAU); }
+
+/** Arcade glider: speed and height trade through pitch. Hold pull-up long enough and you loop. */
 export class Glider {
   pos = new THREE.Vector3();
   vel = new THREE.Vector3();
   dir = new THREE.Vector3(0, 0, -1);
   speed = 32;
-  pitch = NEUTRAL_PITCH; // radians, + nose up
+  pitch = NEUTRAL_PITCH; // radians, + nose up, wraps through +-PI when looping
   heading = 0;           // radians, 0 = -Z
   roll = 0;              // radians, + right wing down
   brake = 0;
-  trick: { type: 'roll' | 'loop'; t: number; dur: number; dir: number; p0: number } | null = null;
-  spin = 0; // visual barrel-roll angle
+  trick: { type: 'roll'; t: number; dur: number; dir: number } | null = null;
+  spin = 0;              // visual barrel-roll angle
+  overTop = false;       // passed inverted at the top of a loop
 
-  /** Start a trick if possible. Loops need speed. */
-  startTrick(req: 'rollL' | 'rollR' | 'loop'): boolean {
-    if (this.trick) return false;
-    if (req === 'loop') {
-      if (this.speed < 24) return false;
-      this.trick = { type: 'loop', t: 0, dur: 2.5, dir: 1, p0: this.pitch };
-    } else {
-      this.trick = { type: 'roll', t: 0, dur: 0.7, dir: req === 'rollL' ? -1 : 1, p0: 0 };
-    }
+  /** Nose pointing past vertical (upside down part of a loop). */
+  get looping() { return this.overTop || Math.abs(this.pitch) > Math.PI / 2; }
+
+  startTrick(req: 'rollL' | 'rollR'): boolean {
+    if (this.trick || this.looping) return false;
+    this.trick = { type: 'roll', t: 0, dur: 0.7, dir: req === 'rollL' ? -1 : 1 };
     return true;
   }
 
   reset(x: number, y: number, z: number, heading = 0) {
     this.pos.set(x, y, z);
     this.speed = 32; this.pitch = NEUTRAL_PITCH; this.heading = heading; this.roll = 0; this.brake = 0;
-    this.trick = null; this.spin = 0;
+    this.trick = null; this.spin = 0; this.overTop = false;
     this.updateDir();
   }
 
@@ -114,35 +116,47 @@ export class Glider {
     this.dir.set(-Math.sin(this.heading) * cp, Math.sin(this.pitch), -Math.cos(this.heading) * cp);
   }
 
-  /** Advance the flight model. Returns the trick that just finished, if any. */
+  /** Advance the flight model. Returns a trick that just finished, if any. */
   step(dt: number, inp: InputState): 'roll' | 'loop' | null {
     let finished: 'roll' | 'loop' | null = null;
     const tr = this.trick;
     if (tr) {
       tr.t += dt;
       const f = Math.min(1, tr.t / tr.dur);
-      if (tr.type === 'roll') {
-        const e = f * f * (3 - 2 * f);
-        this.spin = tr.dir * e * Math.PI * 2;
-        // a barrel roll also jinks you sideways a little
-        const side = Math.sin(f * Math.PI) * tr.dir * 6 * dt;
-        this.pos.x += Math.cos(this.heading) * side;
-        this.pos.z -= Math.sin(this.heading) * side;
-      }
-      if (f >= 1) { finished = tr.type; this.trick = null; this.spin = 0; if (tr.type === 'loop') this.pitch = tr.p0; }
+      const e = f * f * (3 - 2 * f);
+      this.spin = tr.dir * e * TAU;
+      // a barrel roll also jinks you sideways a little
+      const side = Math.sin(f * Math.PI) * tr.dir * 6 * dt;
+      this.pos.x += Math.cos(this.heading) * side;
+      this.pos.z -= Math.sin(this.heading) * side;
+      if (f >= 1) { finished = 'roll'; this.trick = null; this.spin = 0; }
     }
-    if (this.trick?.type === 'loop') return this.stepLoop(dt) ?? finished;
-    // roll eases toward the stick
-    const targetRoll = inp.roll * 1.05;
+
+    const upright = Math.abs(this.pitch) <= Math.PI / 2 && !this.overTop;
+    // roll eases toward the stick (wings level themselves while upside down)
+    const targetRoll = upright ? inp.roll * 1.05 : inp.roll * 0.3;
     this.roll += (targetRoll - this.roll) * Math.min(1, 5 * dt);
-    // pitch is rate-controlled, and drifts back to a gentle glide when you let go
-    this.pitch += inp.pitch * 1.5 * dt;
-    if (Math.abs(inp.pitch) < 0.05) this.pitch += (NEUTRAL_PITCH - this.pitch) * 0.9 * dt;
-    // banking costs a little lift
-    this.pitch -= Math.abs(Math.sin(this.roll)) * 0.12 * dt;
-    // stall: too slow and the nose drops
-    if (this.speed < STALL_SPEED) this.pitch -= (STALL_SPEED - this.speed) * 0.14 * dt;
-    this.pitch = THREE.MathUtils.clamp(this.pitch, -1.3, 0.85);
+
+    // pitch is rate-controlled; faster birds pull round tighter
+    const rate = 1.5 + Math.max(0, this.speed - 30) * 0.02;
+    this.pitch += inp.pitch * rate * dt;
+    if (Math.abs(inp.pitch) < 0.05) {
+      if (upright) this.pitch += (NEUTRAL_PITCH - this.pitch) * 0.9 * dt; // settle into a glide
+      else this.pitch += 1.1 * dt; // let go mid-loop and the bird finishes it
+    }
+    if (upright) this.pitch -= Math.abs(Math.sin(this.roll)) * 0.12 * dt; // banking costs lift
+    // stall: too slow and the nose falls toward the ground along the shortest way round
+    if (this.speed < STALL_SPEED) {
+      const toDown = wrap(-Math.PI / 2 - this.pitch);
+      this.pitch += Math.sign(toDown) * Math.min(Math.abs(toDown), (STALL_SPEED - this.speed) * 0.14 * dt);
+    }
+    // no bunting over forwards: the steepest dive is close to vertical
+    if (upright && this.pitch < -1.35) this.pitch = -1.35;
+
+    // track loops: going over the top flips the wrapped pitch from +PI to -PI
+    if (this.pitch > Math.PI) { this.pitch -= TAU; this.overTop = true; }
+    if (this.pitch < -Math.PI) { this.pitch += TAU; this.overTop = false; }
+    if (this.overTop && this.pitch > -1.0 && this.pitch < 0.6) { this.overTop = false; finished = 'loop'; }
 
     this.brake += (inp.brake - this.brake) * Math.min(1, 8 * dt);
 
@@ -157,19 +171,6 @@ export class Glider {
     this.vel.copy(this.dir).multiplyScalar(this.speed);
     this.pos.addScaledVector(this.vel, dt);
     return finished;
-  }
-
-  /** Scripted loop: pitch sweeps a full circle, gravity and drag still act on speed. */
-  private stepLoop(dt: number): null {
-    const tr = this.trick!;
-    this.roll += (0 - this.roll) * Math.min(1, 8 * dt);
-    this.pitch = tr.p0 + Math.PI * 2 * Math.min(1, tr.t / tr.dur);
-    const acc = -G * Math.sin(this.pitch) - DRAG * this.speed * this.speed;
-    this.speed = Math.max(12, this.speed + acc * dt);
-    this.updateDir();
-    this.vel.copy(this.dir).multiplyScalar(this.speed);
-    this.pos.addScaledVector(this.vel, dt);
-    return null;
   }
 
   applyTo(obj: THREE.Object3D) {
