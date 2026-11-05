@@ -25,8 +25,17 @@ export class Input {
   private stickEl: HTMLElement;
   private knobEl: HTMLElement;
   invertPitch = false;
+  /** Controller layout: 'wings' (one stick per wing) or 'classic' (left stick only). */
+  padScheme: 'wings' | 'classic' = 'wings';
+  onSchemeChange: ((s: 'wings' | 'classic') => void) | null = null;
+  toggleScheme() {
+    this.padScheme = this.padScheme === 'wings' ? 'classic' : 'wings';
+    try { localStorage.setItem('glide.padScheme', this.padScheme); } catch { /* storage unavailable */ }
+    this.onSchemeChange?.(this.padScheme);
+  }
 
   constructor(target: HTMLElement | Document = document) {
+    try { if (localStorage.getItem('glide.padScheme') === 'classic') this.padScheme = 'classic'; } catch { /* ignore */ }
     this.stickEl = document.getElementById('stick')!;
     this.knobEl = document.getElementById('knob')!;
     addEventListener('keydown', (e) => {
@@ -119,8 +128,17 @@ export class Input {
     for (const gp of pads) {
       if (!gp) continue;
       const ax = dz(gp.axes[0] ?? 0), ay = dz(gp.axes[1] ?? 0);
-      if (ax || ay) this.state.source = 'gamepad';
-      roll += ax; pitch += ay;
+      const ry = dz(gp.axes[3] ?? 0);
+      if (ax || ay || ry) this.state.source = 'gamepad';
+      if (this.padScheme === 'wings') {
+        // wing sticks: left stick Y is the left wing, right stick Y is the right wing.
+        // Stick up lifts that wing. Both up = dive, both down = climb,
+        // opposite = hard bank (right up + left down = sharp left).
+        roll += (ry - ay) * 0.75;
+        pitch += (ay + ry) * 0.6;
+      } else {
+        roll += ax; pitch += ay;
+      }
       const rt = gp.buttons[7]?.value ?? 0, lt = gp.buttons[6]?.value ?? 0;
       const a = gp.buttons[0]?.pressed ? 1 : 0;
       brake = Math.max(brake, rt, lt, a);
@@ -129,6 +147,7 @@ export class Input {
           this.pressed = true; this.state.source = 'gamepad';
           if (i === 4) this.trick = 'rollL';
           if (i === 5) this.trick = 'rollR';
+          if (i === 8) this.toggleScheme();
         }
         this.padButtonsPrev[i] = b.pressed;
       });

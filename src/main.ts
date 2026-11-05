@@ -75,14 +75,22 @@ camera.add(streaks);
 
 // ---------- Input, audio, HUD ----------
 const input = new Input(document);
+input.onSchemeChange = (sc) => { showControls(); popup(sc === 'wings' ? 'Wing sticks' : 'Classic sticks', sc === 'wings' ? 'one stick per wing' : 'left stick steers'); };
 const audio = new WindAudio();
 const $ = (id: string) => document.getElementById(id)!;
 const hud = { score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('stats'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
-$('controls').innerHTML = isTouch
-  ? 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side <b>←/→</b> to barrel roll<br>Keep pulling down to loop'
-  : '<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> bank &nbsp; <b>Space</b> air-brake<br><b>Q/E</b> barrel roll &nbsp; hold <b>S</b> to loop<br>Controller: left stick, triggers brake, <b>LB/RB</b> roll, pull back to loop';
+const PAD_HELP = {
+  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>LB/RB</b> barrel roll (roll while turning = dodge) · triggers brake · <b>Back</b> = classic sticks',
+  classic: 'Controller (<b>classic</b>): left stick steers, triggers brake, <b>LB/RB</b> roll (roll while turning = dodge) · <b>Back</b> = wing sticks',
+};
+const KEYS_HELP = '<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> bank &nbsp; <b>Space</b> air-brake<br><b>Q/E</b> barrel roll (while banking = dodge) &nbsp; hold <b>S</b> to loop';
+const showControls = () => {
+  $('controls').innerHTML = isTouch ? 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side <b>←/→</b> to barrel roll<br>Keep pulling down to loop' : `${KEYS_HELP}<br>${PAD_HELP[input.padScheme]}`;
+};
+showControls();
+addEventListener('gamepadconnected', showControls);
 $('go').textContent = isTouch ? 'Tap to glide' : 'Press any key or button to glide';
 
 let best = 0;
@@ -231,7 +239,8 @@ function frame(now: number) {
   let mist = 0, clearance = 99;
   if (mode === 'flying') {
     prevPos.copy(glider.pos);
-    if (inp.trick && glider.startTrick(inp.trick)) {
+    if (inp.trick && glider.startTrick(inp.trick, inp.roll)) {
+      if (inp.roll * (inp.trick === 'rollL' ? -1 : 1) > 0.4) popup(inp.trick === 'rollL' ? '◀ Dodge' : 'Dodge ▶');
       trickMinClear = 99;
     }
     // wind tunnels push you along and pull you toward the middle

@@ -91,16 +91,19 @@ export class Glider {
   heading = 0;           // radians, 0 = -Z
   roll = 0;              // radians, + right wing down
   brake = 0;
-  trick: { type: 'roll'; t: number; dur: number; dir: number } | null = null;
+  trick: { type: 'roll'; t: number; dur: number; dir: number; dodge: number } | null = null;
   spin = 0;              // visual barrel-roll angle
   overTop = false;       // passed inverted at the top of a loop
 
   /** Nose pointing past vertical (upside down part of a loop). */
   get looping() { return this.overTop || Math.abs(this.pitch) > Math.PI / 2; }
 
-  startTrick(req: 'rollL' | 'rollR'): boolean {
+  /** Barrel roll. Rolling while already banking the same way turns it into a big sideways dodge. */
+  startTrick(req: 'rollL' | 'rollR', rollInput = 0): boolean {
     if (this.trick || this.looping) return false;
-    this.trick = { type: 'roll', t: 0, dur: 0.7, dir: req === 'rollL' ? -1 : 1 };
+    const dir = req === 'rollL' ? -1 : 1;
+    const dodge = 6 + 22 * Math.max(0, rollInput * dir);
+    this.trick = { type: 'roll', t: 0, dur: 0.7, dir, dodge };
     return true;
   }
 
@@ -126,7 +129,7 @@ export class Glider {
       const e = f * f * (3 - 2 * f);
       this.spin = tr.dir * e * TAU;
       // a barrel roll also jinks you sideways a little
-      const side = Math.sin(f * Math.PI) * tr.dir * 6 * dt;
+      const side = Math.sin(f * Math.PI) * tr.dir * tr.dodge * dt;
       this.pos.x += Math.cos(this.heading) * side;
       this.pos.z -= Math.sin(this.heading) * side;
       if (f >= 1) { finished = 'roll'; this.trick = null; this.spin = 0; }
@@ -134,7 +137,7 @@ export class Glider {
 
     const upright = Math.abs(this.pitch) <= Math.PI / 2 && !this.overTop;
     // roll eases toward the stick (wings level themselves while upside down)
-    const targetRoll = upright ? inp.roll * 1.05 : inp.roll * 0.3;
+    const targetRoll = upright ? inp.roll * 1.2 : inp.roll * 0.3;
     this.roll += (targetRoll - this.roll) * Math.min(1, 5 * dt);
 
     // pitch is rate-controlled; faster birds pull round tighter
