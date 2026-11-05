@@ -64,16 +64,17 @@ export class BirdMesh extends THREE.Group {
     this.add(this.tail);
   }
 
-  animate(t: number, brake: number, speed: number) {
-    // gentle flutter that grows with speed, wings cup up when braking
-    const flutter = Math.sin(t * 9) * 0.015 * (speed / 30);
-    const dihedral = 0.08 + brake * 0.35 + flutter;
+  animate(t: number, brake: number, speed: number, tuck = 0) {
+    // gentle flutter that grows with speed, wings cup up when braking, fold back when tucked
+    const flutter = Math.sin(t * 9) * 0.015 * (speed / 30) * (1 - tuck);
+    const dihedral = 0.08 + brake * 0.35 + flutter - tuck * 0.12;
     const tip = 0.06 + brake * 0.4 - flutter;
     this.lInner.rotation.z = -dihedral; this.rInner.rotation.z = dihedral;
     this.lOuter.rotation.z = -tip; this.rOuter.rotation.z = tip;
-    // braking also sweeps wings forward a touch
-    this.lInner.rotation.y = brake * 0.25; this.rInner.rotation.y = -brake * 0.25;
-    this.tail.rotation.x = brake * 0.5;
+    const sweep = brake * 0.25 - tuck * 1.1;
+    this.lInner.rotation.y = sweep; this.rInner.rotation.y = -sweep;
+    this.lOuter.rotation.y = -tuck * 1.6; this.rOuter.rotation.y = tuck * 1.6;
+    this.tail.rotation.x = brake * 0.5 - tuck * 0.2;
   }
 }
 
@@ -91,6 +92,7 @@ export class Glider {
   heading = 0;           // radians, 0 = -Z
   roll = 0;              // radians, + right wing down
   brake = 0;
+  tuck = 0;
   trick: { type: 'roll'; t: number; dur: number; dir: number; dodge: number } | null = null;
   spin = 0;              // visual barrel-roll angle
   overTop = false;       // passed inverted at the top of a loop
@@ -144,7 +146,7 @@ export class Glider {
     const rate = 1.5 + Math.max(0, this.speed - 30) * 0.02;
     this.pitch += inp.pitch * rate * dt;
     if (Math.abs(inp.pitch) < 0.05) {
-      if (upright) this.pitch += (NEUTRAL_PITCH - this.pitch) * 0.9 * dt; // settle into a glide
+      if (upright) this.pitch += (NEUTRAL_PITCH - this.pitch) * 0.9 * (1 - this.tuck) * dt; // settle into a glide (not while tucked)
       else this.pitch += 1.1 * dt; // let go mid-loop and the bird finishes it
     }
     if (upright) this.pitch -= Math.abs(Math.sin(this.roll)) * 0.12 * dt; // banking costs lift
@@ -162,13 +164,16 @@ export class Glider {
     if (this.overTop && this.pitch > -1.0 && this.pitch < 0.6) { this.overTop = false; finished = 'loop'; }
 
     this.brake += (inp.brake - this.brake) * Math.min(1, 8 * dt);
+    this.tuck += (inp.tuck - this.tuck) * Math.min(1, 7 * dt);
+    // tucked: the nose drops into a steep dive unless you hold it up
+    if (this.tuck > 0.05 && upright && inp.pitch < 0.3) this.pitch += (-0.85 - this.pitch) * 2.4 * this.tuck * dt;
 
     // energy: gravity along the flight path minus drag
-    const acc = -G * Math.sin(this.pitch) - (DRAG + BRAKE_DRAG * this.brake) * this.speed * this.speed;
+    const acc = -G * Math.sin(this.pitch) - (DRAG * (1 - 0.7 * this.tuck) + BRAKE_DRAG * this.brake) * this.speed * this.speed;
     this.speed = Math.max(4, this.speed + acc * dt);
 
     // coordinated turn
-    this.heading -= (G * Math.tan(this.roll) / Math.max(this.speed, 12)) * 1.35 * dt;
+    this.heading -= (G * Math.tan(this.roll) / Math.max(this.speed, 12)) * 1.35 * (1 - 0.5 * this.tuck) * dt;
 
     this.updateDir();
     this.vel.copy(this.dir).multiplyScalar(this.speed);

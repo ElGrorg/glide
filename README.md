@@ -7,9 +7,10 @@ A third-person low-poly gliding game: an endless, procedurally generated downhil
 - `npm run build` makes a single self-contained `dist/index.html`
 
 Controls:
-- Keyboard: W/S or arrows dive/pull up, A/D bank, Space air-brake, Q/E barrel roll, hold S (pull up) to loop
+- Keyboard: W/S or arrows dive/pull up, A/D bank, Space air-brake, Q/E barrel roll, hold Q+E to tuck-dive, hold S (pull up) to loop
 - Touch: drag the left side to steer, hold the right side to brake, swipe the right side left/right to barrel roll, keep pulling down to loop
-- Controller, wing sticks (default): left stick up/down = left wing, right stick up/down = right wing. Both up = dive, both down = climb, one up + one down = sharp turn. LB/RB barrel roll, triggers brake, Back switches to classic (left stick steers)
+- Controller, classic (default): left stick steers, triggers/A brake, LB/RB barrel roll (roll the way you're banking for a big dodge), hold LB+RB to tuck-dive (wings fold, fast steep dive, wider turns, close calls score x2)
+- Controller, wing sticks (press Back to switch): left stick up/down = left wing, right stick up/down = right wing. Both up = dive, both down = climb, one up + one down = sharp turn
 - Barrel roll while banking the same way = a big sideways dodge
 
 The route forks every ~1.5 km into 2-3 valleys separated by ridges. Each valley is its own environment (green meadows, autumn forest, red desert with mesas and pillar fields, snowy peaks with ice spires, misty valley full of low clouds); the one you're in when you pass the decision point becomes the run and sets what comes next. Every new run gets a new route.

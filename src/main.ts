@@ -82,10 +82,10 @@ const hud = { score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('s
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
 const PAD_HELP = {
-  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>LB/RB</b> barrel roll (roll while turning = dodge) · triggers brake · <b>Back</b> = classic sticks',
-  classic: 'Controller (<b>classic</b>): left stick steers, triggers brake, <b>LB/RB</b> roll (roll while turning = dodge) · <b>Back</b> = wing sticks',
+  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>LB/RB</b> barrel roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · triggers brake · <b>Back</b> = classic sticks',
+  classic: 'Controller (<b>classic</b>): left stick steers, triggers brake, <b>LB/RB</b> roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = wing sticks',
 };
-const KEYS_HELP = '<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> bank &nbsp; <b>Space</b> air-brake<br><b>Q/E</b> barrel roll (while banking = dodge) &nbsp; hold <b>S</b> to loop';
+const KEYS_HELP = '<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> bank &nbsp; <b>Space</b> air-brake<br><b>Q/E</b> barrel roll (while banking = dodge) &nbsp; hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop';
 const showControls = () => {
   $('controls').innerHTML = isTouch ? 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side <b>←/→</b> to barrel roll<br>Keep pulling down to loop' : `${KEYS_HELP}<br>${PAD_HELP[input.padScheme]}`;
 };
@@ -141,10 +141,11 @@ function multiplier() { return 1 + Math.min(combo, 8) * 0.5; }
 
 function addCloseCall(gap: number, label: string) {
   combo++; comboTimer = 4;
-  const pts = Math.round((60 + (3.5 - gap) * 80) * multiplier());
+  const tucked = glider.tuck > 0.6; // threading a gap mid tuck-dive pays double
+  const pts = Math.round((60 + (3.5 - gap) * 80) * multiplier() * (tucked ? 2 : 1));
   score += pts;
   const veryClose = gap < 1.2;
-  popup(veryClose ? `INSANE! +${pts}` : `Close call +${pts}`, `${label} · ${gap.toFixed(1)} m`);
+  popup(veryClose ? `INSANE! +${pts}` : `Close call +${pts}`, `${label} · ${gap.toFixed(1)} m${tucked ? ' · tucked x2' : ''}`);
   audio.whoosh(veryClose ? 1 : 0.6);
   rumble(veryClose ? 0.8 : 0.4, 120);
   if (veryClose) slowmo = 0.5;
@@ -377,7 +378,7 @@ function frame(now: number) {
   }
 
   glider.applyTo(bird);
-  bird.animate(t, glider.brake, glider.speed);
+  bird.animate(t, glider.brake, glider.speed, glider.tuck);
 
   // shadow
   const gp = glider.pos;

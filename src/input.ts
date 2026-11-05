@@ -3,6 +3,7 @@ export interface InputState {
   pitch: number;   // -1 dive .. +1 pull up
   roll: number;    // -1 left .. +1 right
   brake: number;   // 0..1
+  tuck: number;    // 0..1: hold both bumpers (or Q+E) to fold the wings and dive
   anyPress: boolean; // edge-triggered "start / restart"
   trick: 'rollL' | 'rollR' | null; // edge-triggered barrel-roll request
   source: 'keyboard' | 'touch' | 'gamepad';
@@ -12,7 +13,7 @@ const DEAD = 0.15;
 const dz = (v: number) => (Math.abs(v) < DEAD ? 0 : (v - Math.sign(v) * DEAD) / (1 - DEAD));
 
 export class Input {
-  state: InputState = { pitch: 0, roll: 0, brake: 0, anyPress: false, trick: null, source: 'keyboard' };
+  state: InputState = { pitch: 0, roll: 0, brake: 0, tuck: 0, anyPress: false, trick: null, source: 'keyboard' };
   private trick: InputState['trick'] = null;
   private swipes = new Map<number, { x: number; y: number; t: number }>();
   private keys = new Set<string>();
@@ -25,8 +26,12 @@ export class Input {
   private stickEl: HTMLElement;
   private knobEl: HTMLElement;
   invertPitch = false;
+  // A bumper (or Q/E) waits a moment before rolling, in case the other one follows: both = tuck.
+  private pendingRoll: 'rollL' | 'rollR' | null = null;
+  private pendingAt = 0;
+  private queueRoll(r: 'rollL' | 'rollR') { this.pendingRoll = r; this.pendingAt = performance.now(); }
   /** Controller layout: 'wings' (one stick per wing) or 'classic' (left stick only). */
-  padScheme: 'wings' | 'classic' = 'wings';
+  padScheme: 'wings' | 'classic' = 'classic';
   onSchemeChange: ((s: 'wings' | 'classic') => void) | null = null;
   toggleScheme() {
     this.padScheme = this.padScheme === 'wings' ? 'classic' : 'wings';
@@ -35,14 +40,14 @@ export class Input {
   }
 
   constructor(target: HTMLElement | Document = document) {
-    try { if (localStorage.getItem('glide.padScheme') === 'classic') this.padScheme = 'classic'; } catch { /* ignore */ }
+    try { if (localStorage.getItem('glide.padScheme') === 'wings') this.padScheme = 'wings'; } catch { /* ignore */ }
     this.stickEl = document.getElementById('stick')!;
     this.knobEl = document.getElementById('knob')!;
     addEventListener('keydown', (e) => {
       if (!e.repeat) {
         this.pressed = true;
-        if (e.code === 'KeyQ') this.trick = 'rollL';
-        if (e.code === 'KeyE') this.trick = 'rollR';
+        if (e.code === 'KeyQ') this.queueRoll('rollL');
+        if (e.code === 'KeyE') this.queueRoll('rollR');
       }
       this.keys.add(e.code);
       this.state.source = 'keyboard';
@@ -145,14 +150,21 @@ export class Input {
       gp.buttons.forEach((b, i) => {
         if (b.pressed && !this.padButtonsPrev[i]) {
           this.pressed = true; this.state.source = 'gamepad';
-          if (i === 4) this.trick = 'rollL';
-          if (i === 5) this.trick = 'rollR';
+          if (i === 4) this.queueRoll('rollL');
+          if (i === 5) this.queueRoll('rollR');
           if (i === 8) this.toggleScheme();
         }
         this.padButtonsPrev[i] = b.pressed;
       });
       break; // first connected pad only
     }
+
+    // both bumpers (or Q+E) held = tuck; a lone bumper becomes a barrel roll after a short wait
+    let both = k.has('KeyQ') && k.has('KeyE');
+    for (const gp of pads) { if (gp) { both ||= !!(gp.buttons[4]?.pressed && gp.buttons[5]?.pressed); break; } }
+    if (both) this.pendingRoll = null;
+    else if (this.pendingRoll && performance.now() - this.pendingAt > 90) { this.trick = this.pendingRoll; this.pendingRoll = null; }
+    this.state.tuck = both ? 1 : 0;
 
     const clamp = (v: number) => Math.max(-1, Math.min(1, v));
     this.state.pitch = clamp(this.invertPitch ? -pitch : pitch);
