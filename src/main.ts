@@ -78,7 +78,7 @@ camera.add(streaks);
 
 // ---------- Input, audio, HUD ----------
 const input = new Input(document);
-const LAYOUT_NAMES = { flight: ['Flight sticks', 'left stick pitch + roll, right stick rudder + flare'], classic: ['Classic', 'one stick steers'], wings: ['Wing sticks', 'one stick per wing'] } as const;
+const LAYOUT_NAMES = { flight: ['Flight sticks', 'left stick pitches, right stick rolls'], classic: ['Classic', 'one stick steers'], wings: ['Wing sticks', 'one stick per wing'] } as const;
 input.onSchemeChange = (sc) => { showControls(); popup(LAYOUT_NAMES[sc][0], LAYOUT_NAMES[sc][1]); };
 const audio = new WindAudio();
 const $ = (id: string) => document.getElementById(id)!;
@@ -86,13 +86,13 @@ const hud = { hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo')
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
 const PAD_HELP = {
-  flight: 'Controller (<b>flight sticks</b>): left stick = pitch + roll (the bank holds when you let go) · right stick ←→ = rudder · right stick back = flare/brake, forward = tuck<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · <b>LB/RB</b> barrel roll (dodge) · <b>Back</b> = next layout',
+  flight: 'Controller (<b>flight sticks</b>): left stick ↑↓ = dive / pull up · right stick ←→ = roll (the bank holds when you let go)<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · <b>LB/RB</b> barrel roll (dodge) · <b>Back</b> = next layout',
   classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>LT</b>/<b>A</b> brake, <b>LB/RB</b> roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
   wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · <b>LB/RB</b> barrel roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
 };
 const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.padScheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot<br><b>Q/E</b> barrel roll (while banking = dodge) &nbsp; hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop (Q/E at the top = half roll) &nbsp; <b>V</b> = change layout`;
 const TOUCH_HELP = () => input.padScheme === 'flight'
-  ? 'Left thumb: drag to pitch and roll (the bank holds when you let go)<br>Right thumb: drag ←→ for rudder, pull back to brake, push up to tuck<br>Flick the right side <b>←/→</b> to barrel roll · hold <b>FIRE</b> to shoot<br>Keep pulling down to loop (flick at the top to half-roll back uphill)'
+  ? 'Left thumb: drag up to dive, down to pull up<br>Right thumb: drag ←→ to roll (the bank holds when you let go)<br>Flick the right side <b>←/→</b> to barrel roll · hold <b>FIRE</b> to shoot<br>Keep pulling down to loop (flick at the top to half-roll back uphill)'
   : 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side <b>←/→</b> to barrel roll<br>Hold <b>FIRE</b> to shoot<br>Keep pulling down to loop (swipe at the top to half-roll back uphill)';
 const showControls = () => {
   $('controls').innerHTML = isTouch ? TOUCH_HELP() : `${KEYS_HELP()}<br>${PAD_HELP[input.padScheme]}`;

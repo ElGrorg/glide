@@ -122,10 +122,10 @@ export class Input {
         // quick sideways swipe on the right side = barrel roll
         const sw = this.swipes.get(t.identifier);
         this.swipes.delete(t.identifier);
-        const flick = this.padScheme === 'flight' ? 280 : 450; // the right stick drags slower than a flick
+        const flick = this.padScheme === 'flight' ? 200 : 450; // the right stick drags slower than a flick
         if (sw && performance.now() - sw.t < flick) {
           const dx = t.clientX - sw.x, dy = t.clientY - sw.y;
-          if (Math.max(Math.abs(dx), Math.abs(dy)) > (this.padScheme === 'flight' ? 60 : 45)) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) > (this.padScheme === 'flight' ? 80 : 45)) {
             this.trick = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'rollL' : 'rollR') : null;
           }
         }
@@ -158,14 +158,13 @@ export class Input {
     if (k.has('Space') || k.has('ShiftLeft') || k.has('ShiftRight')) brake = 1;
 
     // touch: stick up = dive, down = pull up
-    if (this.stickId !== null) { pitch += expo(this.stickVec.y); roll += expo(this.stickVec.x); }
-    if (this.brakeIds.size) brake = 1;
-    // flight layout, right touch stick: sideways = rudder, pull back = flare (brake), push up = tuck
-    if (this.rStickId !== null) {
-      yaw += expo(dz(this.rStickVec.x));
-      const ry = dz(this.rStickVec.y);
-      if (ry > 0) brake = Math.max(brake, ry); else tuck = Math.max(tuck, -ry);
+    if (this.stickId !== null) {
+      pitch += expo(this.stickVec.y);
+      if (this.padScheme !== 'flight') roll += expo(this.stickVec.x);
     }
+    if (this.brakeIds.size) brake = 1;
+    // flight layout: left thumb pitches (up = dive, down = pull up), right thumb rolls
+    if (this.rStickId !== null) roll += expo(dz(this.rStickVec.x));
 
     // gamepad
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -175,11 +174,8 @@ export class Input {
       const rx = dz(gp.axes[2] ?? 0), ry = dz(gp.axes[3] ?? 0);
       if (ax || ay || rx || ry) this.state.source = 'gamepad';
       if (this.padScheme === 'flight') {
-        // flight sim: left stick = pitch + roll rate, right stick X = rudder,
-        // right stick back = flare (air-brake), forward = tuck (fold the wings)
-        roll += expo(ax); pitch += expo(ay);
-        yaw += expo(rx);
-        if (ry > 0) brake = Math.max(brake, ry); else tuck = Math.max(tuck, -ry);
+        // flight sticks: left stick ↑↓ pitches, right stick ←→ rolls (the bank holds)
+        pitch += expo(ay); roll += expo(rx);
       } else if (this.padScheme === 'wings') {
         // wing sticks: left stick Y is the left wing, right stick Y is the right wing.
         // Stick up lifts that wing. Both up = dive, both down = climb,
