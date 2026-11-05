@@ -241,7 +241,7 @@ function onDogfight(ev: DogfightEvent) {
     case 'noLock': if (dartHint <= 0) { popup('No lock', 'hold your nose on a bird for a second first'); dartHint = 1.5; } break;
     case 'myDartMiss': popup('Dart missed', 'it lost the target'); break;
     case 'dartLocking': audio.beep(950, 0.08, 0.06); break;
-    case 'dartLaunch': popup('DART!', 'brake hard as it closes, break hard, or hide in a cloud'); audio.whoosh(1); rumble(0.4, 120); break;
+    case 'dartLaunch': popup('DART! One hit and you\'re down', 'break hard as it closes, brake hard, or hide in a cloud'); audio.whoosh(1); rumble(0.4, 120); break;
     case 'dartShaken': {
       const pts = Math.round((ev.how === 'ground' ? 300 : 200) * multiplier());
       score += pts; combo++; comboTimer = 4;
@@ -250,11 +250,11 @@ function onDogfight(ev: DogfightEvent) {
       break;
     }
     case 'dartHit':
-      hp--; hpRegen = 0; hitFlash = 1; shake = Math.max(shake, 0.9);
+      // a dart is a one-hit kill, whatever feathers you have left
+      hp = 0; hpRegen = 0; hitFlash = 1; shake = Math.max(shake, 0.9);
       rumble(1, 260); audio.thud();
       puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.3), 4, 16, 0.7);
-      if (hp <= 0) crash('Darted!');
-      else popup('Dart hit!', `${hp} feather${hp > 1 ? 's' : ''} left`);
+      crash('Darted!');
       break;
   }
 }
