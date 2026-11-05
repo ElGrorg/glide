@@ -105,7 +105,11 @@ $('go').textContent = isTouch ? 'Tap to glide' : 'Press any key or button to gli
 let best = 0;
 try { best = Number(localStorage.getItem('glide.best') || 0); } catch { /* storage unavailable */ }
 
+// Pop-up announcements (forks ahead, new enemy, close call +pts, ...) are switched off: the screen stays
+// clean. Lock-on reticles, the dart / stall warning bar, the score and the dart counter still show.
+const SHOW_POPUPS = false;
 function popup(text: string, sub = '') {
+  if (!SHOW_POPUPS) return;
   const el = document.createElement('div');
   el.className = 'pop';
   el.innerHTML = `${text}${sub ? `<small>${sub}</small>` : ''}`;
