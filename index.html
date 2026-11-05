@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#9fd3f0" />
+<title>Glide! Prototype</title>
+<style>
+  :root { --ink: #ffffff; --shadow: rgba(20, 40, 60, 0.45); --accent: #ffcf5a; --sky: #9fd3f0; }
+  /* the game keeps its daytime palette in both colour schemes */
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --ink: #ffffff; --sky: #9fd3f0; } }
+  :root[data-theme="dark"] { --ink: #ffffff; --sky: #9fd3f0; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--sky); color: var(--ink);
+    font-family: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: none; }
+  canvas { display: block; }
+  #game { position: fixed; inset: 0; }
+  .hud { position: fixed; pointer-events: none; text-shadow: 0 2px 6px var(--shadow); }
+  #score { top: calc(12px + env(safe-area-inset-top)); left: 0; right: 0; text-align: center; font-size: 34px; font-weight: 800; letter-spacing: 1px; }
+  #combo { top: calc(52px + env(safe-area-inset-top)); left: 0; right: 0; text-align: center; font-size: 16px; font-weight: 700; color: var(--accent); opacity: 0; transition: opacity .2s; }
+  #stats { bottom: calc(12px + env(safe-area-inset-bottom)); left: 16px; font-size: 14px; font-weight: 600; opacity: .9; line-height: 1.4; }
+  #skim { top: 38%; left: 0; right: 0; text-align: center; font-size: 22px; font-weight: 900; color: var(--accent); opacity: 0; letter-spacing: 3px; }
+  #mist { position: fixed; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, rgba(255,255,255,.75), rgba(255,255,255,.98)); opacity: 0; }
+  #edge { position: fixed; inset: 0; pointer-events: none; box-shadow: inset 0 0 120px 30px rgba(255, 120, 60, .8); opacity: 0; }
+  .pop { position: fixed; left: 50%; top: 30%; transform: translate(-50%, 0); font-weight: 900; font-size: 24px; color: var(--accent);
+    text-shadow: 0 2px 8px var(--shadow); pointer-events: none; animation: pop 1.1s ease-out forwards; white-space: nowrap; }
+  .pop small { display: block; font-size: 14px; color: #fff; text-align: center; }
+  @keyframes pop { 0% { opacity: 0; transform: translate(-50%, 10px) scale(.7); } 15% { opacity: 1; transform: translate(-50%, 0) scale(1.1); }
+    100% { opacity: 0; transform: translate(-50%, -60px) scale(1); } }
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 16px;
+    background: linear-gradient(180deg, rgba(40,80,120,.25), rgba(40,80,120,.55)); }
+  #overlay.hidden { display: none; }
+  #overlay h1 { font-size: clamp(48px, 12vw, 96px); margin: 0 0 4px; letter-spacing: 2px; text-shadow: 0 4px 16px var(--shadow); }
+  #overlay p { margin: 6px 0; font-size: 16px; text-shadow: 0 2px 6px var(--shadow); }
+  #overlay .go { margin-top: 18px; font-size: 20px; font-weight: 800; color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  #overlay .controls { margin-top: 14px; font-size: 14px; opacity: .95; line-height: 1.6; }
+  @keyframes pulse { 50% { opacity: .45; } }
+  #stick { position: fixed; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%; border: 2px solid rgba(255,255,255,.6);
+    background: rgba(255,255,255,.12); display: none; pointer-events: none; }
+  #knob { position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.7); }
+</style>
+</head>
+<body>
+  <div id="game"></div>
+  <div id="edge"></div>
+  <div id="mist"></div>
+  <div id="score" class="hud">0</div>
+  <div id="combo" class="hud">x1</div>
+  <div id="skim" class="hud">SKIM</div>
+  <div id="stats" class="hud"></div>
+  <div id="stick"><div id="knob"></div></div>
+  <div id="overlay">
+    <div>
+      <h1>Glide!</h1>
+      <p>An endless mountainside. Skim the ground, thread the trees, punch through the clouds.</p>
+      <div class="controls" id="controls"></div>
+      <div class="go" id="go">Tap or press any key</div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
