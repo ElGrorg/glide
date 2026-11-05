@@ -9,9 +9,9 @@ import type { CloudPuffs } from './puffs';
 export type Role = 'hunter' | 'prey';
 const G = 9.8;
 const UP = new THREE.Vector3(0, 1, 0);
-// Enemy birds fly on the same energy rules as you: gravity along the path, drag, air-brake, tuck,
+// Enemy birds fly on the same energy rules as you: gravity along the path, drag, air-brake,
 // a turn limited by how much lift their speed gives them, and a stall when they get too slow.
-const DRAG = 0.0016, BRAKE_DRAG = 0.0065, TUCK_THRUST = 8, MAX_SPEED = 115;
+const DRAG = 0.0016, BRAKE_DRAG = 0.0065, MAX_SPEED = 115;
 const STALL_SPEED = 15;
 const MAX_LIFT_G = 1.65;   // same as your hardest banked pull
 const PEA_SPEED = 150;      // player pea muzzle speed (m/s, on top of your own speed)
@@ -24,7 +24,7 @@ const DART_LOCK_TIME = 1.6;  // seconds it must keep you in its cone
 const DART_CONE = 0.45;      // ~25° either side of its nose
 const DART_RANGE_MIN = 45, DART_RANGE_MAX = 210;
 const DART_RELOAD = 11;
-const DART_SPEED = 78;       // faster than a glide, slower than a tucked dive
+const DART_SPEED = 78;       // faster than a glide, slower than a steep dive
 const DART_TURN = 1.25;      // rad/s: a hard break turns tighter than this up close
 const DART_LIFE = 7;
 const DART_HIT_R = 1.3;
@@ -123,12 +123,11 @@ export class Enemy {
     const bank = THREE.MathUtils.clamp(Math.atan(-yawRate * this.speed / G), -1.35, 1.35);
     this.roll += (bank - this.roll) * Math.min(1, 6 * dt);
 
-    // speed: no engine. Gravity along the path and drag, like you; it can tuck to go faster
-    // (only helps going downhill) or flare its wings to slow down
-    const tuck = wantSpeed > this.speed + 4 && this.dir.y < 0.1 ? 1 : 0;
+    // speed: no engine. Gravity along the path and drag, like you: it gains speed only by diving,
+    // and can flare its wings to slow down
     const brake = wantSpeed < this.speed - 6 ? Math.min(1, (this.speed - wantSpeed) / 15) : 0;
-    const drag = (DRAG * (1 - 0.8 * tuck) + BRAKE_DRAG * brake) * this.speed * this.speed;
-    this.speed += (-G * this.dir.y - drag + TUCK_THRUST * tuck) * dt;
+    const drag = (DRAG + BRAKE_DRAG * brake) * this.speed * this.speed;
+    this.speed += (-G * this.dir.y - drag) * dt;
     this.speed = THREE.MathUtils.clamp(this.speed, 4, MAX_SPEED);
 
     // barrel roll: a quick sideways juke

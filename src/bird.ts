@@ -6,7 +6,7 @@ const DRAG = 0.0016;        // equilibrium glide ~36 m/s at -12°
 const BRAKE_DRAG = 0.0065;
 const NEUTRAL_PITCH = -0.26; // nose settles slightly down when you let go
 const STALL_SPEED = 15;
-const TUCK_THRUST = 8;      // m/s² extra while tucked: folded wings slice through the air, faster than any plain dive
+const TUCK_THRUST = 0;      // tuck removed: no free speed, you only gain it by diving
 const MAX_SPEED = 115;
 const X_AXIS = new THREE.Vector3(1, 0, 0), Y_AXIS = new THREE.Vector3(0, 1, 0), Z_AXIS = new THREE.Vector3(0, 0, 1);
 const _q = new THREE.Quaternion(), _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();

@@ -86,11 +86,11 @@ const hud = { hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo')
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
 const PAD_HELP = {
-  flight: 'Controller (<b>flight sticks</b>): left stick ↑↓ = dive / pull up · right stick ←→ = roll, both all the way round (bank holds when you let go)<br><b>RT</b>/<b>X</b> shoot · <b>Y</b> homing dart · <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
-  classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>Y</b> homing dart, <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
-  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>Y</b> homing dart · <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
+  flight: 'Controller (<b>flight sticks</b>): left stick ↑↓ = dive / pull up · right stick ←→ = roll, both all the way round (bank holds when you let go)<br><b>RT</b>/<b>X</b> shoot · <b>Y</b> homing dart · <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
+  classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>Y</b> homing dart, <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
+  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>Y</b> homing dart · <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
 };
-const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.padScheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot &nbsp; <b>R</b> or right-click = homing dart (hold your nose on a bird for 1 s to lock)<br>hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop &nbsp; <b>V</b> = change layout`;
+const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.padScheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot &nbsp; <b>R</b> or right-click = homing dart (hold your nose on a bird for 1 s to lock)<br>hold <b>S</b> to loop &nbsp; <b>V</b> = change layout`;
 const TOUCH_HELP = () => input.padScheme === 'flight'
   ? 'Left thumb: drag up to dive, down to pull up<br>Right thumb: drag ←→ to roll, all the way round if you like (the bank holds when you let go)<br>Hold <b>FIRE</b> to shoot<br>Hold your nose on a bird to lock, then tap <b>DART</b><br>Keep pulling down to loop'
   : 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Hold <b>FIRE</b> to shoot<br>Hold your nose on a bird to lock, then tap <b>DART</b><br>Keep pulling down to loop';

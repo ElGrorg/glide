@@ -228,7 +228,7 @@ export class Input {
     for (const gp of pads) { if (gp) { both ||= !!(gp.buttons[4]?.pressed && gp.buttons[5]?.pressed); break; } }
     if (both) this.pendingRoll = null;
     else if (this.pendingRoll && performance.now() - this.pendingAt > 90) { this.trick = this.pendingRoll; this.pendingRoll = null; }
-    this.state.tuck = Math.max(both ? 1 : 0, tuck);
+    this.state.tuck = 0; // tuck removed: speed only comes from diving (both / tuck kept as no-ops)
 
     const clamp = (v: number) => Math.max(-1, Math.min(1, v));
     this.state.pitch = clamp(this.invertPitch ? -pitch : pitch);
