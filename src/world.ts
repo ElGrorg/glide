@@ -20,6 +20,20 @@ export function basePlane(z: number): number {
   return SLOPE * z; // z is negative ahead, so this drops forever
 }
 
+/** 0 on the open slope, 1 deep inside a canyon section. Canyons come and go along the run. */
+export function canyonAmount(z: number): number {
+  if (z > -900) return 0; // open slope for the first stretch of every run
+  const n = n1(z / 1100, 77.7);
+  return THREE.MathUtils.smoothstep(n, 0.05, 0.35) * THREE.MathUtils.smoothstep(-z, 900, 1400);
+}
+
+/** Half-width of the canyon slot at depth z (metres). */
+export function canyonHalfWidth(z: number): number {
+  return 15 + (n2(z / 260, 5.5) * 0.5 + 0.5) * 14;
+}
+export const CANYON_FLOOR = -40;  // relative to the downhill plane
+export const CANYON_RIM = 60;
+
 export function terrainHeight(x: number, z: number): number {
   const dx = x - valleyCenter(z);
   const valley = Math.min(dx * dx * 0.0016, 260);
@@ -28,7 +42,26 @@ export function terrainHeight(x: number, z: number): number {
   const small = n3(x / 28, z / 28) * 2.5;
   // occasional ridges/mounds across the run to dodge over
   const ridge = Math.max(0, n2(x / 260 + 40, z / 90)) ** 2 * 40;
-  return basePlane(z) + valley + big + mid + small + ridge;
+  const open = valley + big + mid + ridge;
+  const c = canyonAmount(z);
+  if (c <= 0) return basePlane(z) + open + small;
+  // canyon: a narrow slot with near-vertical walls, cut into a raised plateau
+  const w = canyonHalfWidth(z) + n3(x / 60, z / 60) * 4;
+  const wall = THREE.MathUtils.smoothstep(Math.abs(dx), w, w + 16);
+  const profile = CANYON_FLOOR + (CANYON_RIM - CANYON_FLOOR) * wall + mid * 0.5 + big * 0.3 * wall;
+  return basePlane(z) + open * (1 - c) + profile * c + small;
+}
+
+// ---------- Gates: rings, wind tunnels, needles, arches along the run ----------
+export const GATE_SPACING = 210;
+export const GATE_START = 380;
+export function gateZ(k: number) { return -GATE_START - k * GATE_SPACING; }
+export function nearestGateIndex(z: number) { return Math.round((-z - GATE_START) / GATE_SPACING); }
+/** Keep trees and rocks off the flight line around each gate. */
+function nearGateLine(x: number, z: number): boolean {
+  const k = nearestGateIndex(z);
+  if (k < 0) return false;
+  return Math.abs(z - gateZ(k)) < 45 + 120 * (hash2(k, 0, 51) < 0.3 ? 1 : 0) && Math.abs(x - valleyCenter(z)) < 22;
 }
 
 // ---------- Obstacles (deterministic per grid cell) ----------
@@ -49,6 +82,7 @@ export function treeAt(ix: number, iz: number): Obstacle | null {
   const x = (ix + 0.15 + hash2(ix, iz, 1) * 0.7) * TREE_CELL;
   const z = (iz + 0.15 + hash2(ix, iz, 2) * 0.7) * TREE_CELL;
   if (hash2(ix, iz, 3) > forestDensity(x, z)) return null;
+  if (nearGateLine(x, z)) return null;
   // avoid steep faces
   const y0 = terrainHeight(x, z);
   const gx = terrainHeight(x + 2, z) - terrainHeight(x - 2, z);
@@ -63,6 +97,7 @@ export function rockAt(ix: number, iz: number): Obstacle | null {
   const roll = hash2(ix, iz, 11);
   const x = (ix + 0.2 + hash2(ix, iz, 12) * 0.6) * ROCK_CELL;
   const z = (iz + 0.2 + hash2(ix, iz, 13) * 0.6) * ROCK_CELL;
+  if (roll < 0.22 && nearGateLine(x, z)) return null;
   const y0 = terrainHeight(x, z);
   if (roll < 0.07) {
     // tall spire: something to thread between
