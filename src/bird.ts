@@ -1,5 +1,11 @@
 import * as THREE from 'three';
+import type { InputState } from './input';
 
+const G = 9.8;
+const DRAG = 0.0016;        // equilibrium glide ~36 m/s at -12°
+const BRAKE_DRAG = 0.0065;
+const NEUTRAL_PITCH = -0.26; // nose settles slightly down when you let go
+const STALL_SPEED = 15;
 
 function tri(pts: number[][], color: number) {
   const g = new THREE.BufferGeometry();
@@ -58,195 +64,117 @@ export class BirdMesh extends THREE.Group {
     this.add(this.tail);
   }
 
-  /** Wing pose: brake cups the wings, tuck folds them back, flap beats them once. */
-  animate(t: number, brake: number, speed: number, tuck = 0, flap = 0) {
-    const flutter = Math.sin(t * 9) * 0.015 * (speed / 30) * (1 - tuck);
-    const beat = flap > 0 ? Math.sin((1 - flap) * Math.PI * 2) * 0.9 : 0;
-    const dihedral = 0.08 + brake * 0.35 + flutter + beat - tuck * 0.15;
-    const tip = 0.06 + brake * 0.4 - flutter + beat * 0.6;
+  animate(t: number, brake: number, speed: number) {
+    // gentle flutter that grows with speed, wings cup up when braking
+    const flutter = Math.sin(t * 9) * 0.015 * (speed / 30);
+    const dihedral = 0.08 + brake * 0.35 + flutter;
+    const tip = 0.06 + brake * 0.4 - flutter;
     this.lInner.rotation.z = -dihedral; this.rInner.rotation.z = dihedral;
     this.lOuter.rotation.z = -tip; this.rOuter.rotation.z = tip;
-    // braking sweeps wings forward, tucking folds them back along the body
-    const sweep = brake * 0.25 - tuck * 1.1;
-    this.lInner.rotation.y = sweep; this.rInner.rotation.y = -sweep;
-    this.lOuter.rotation.y = -tuck * 1.6; this.rOuter.rotation.y = tuck * 1.6;
-    this.tail.rotation.x = brake * 0.5 - tuck * 0.2;
+    // braking also sweeps wings forward a touch
+    this.lInner.rotation.y = brake * 0.25; this.rInner.rotation.y = -brake * 0.25;
+    this.tail.rotation.x = brake * 0.5;
   }
 }
 
 const TAU = Math.PI * 2;
-const X = new THREE.Vector3(1, 0, 0), Y = new THREE.Vector3(0, 1, 0), Z = new THREE.Vector3(0, 0, 1);
-const WORLD_UP = new THREE.Vector3(0, 1, 0);
-const _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _a = new THREE.Vector3();
+/** Wrap an angle to (-PI, PI]. */
+function wrap(a: number) { return a - TAU * Math.floor((a + Math.PI) / TAU); }
 
-export interface FlightInput {
-  pitch: number; roll: number; yaw: number; tuck: number; brake: number;
-  flap: boolean; trick: 'rollL' | 'rollR' | null;
-}
-export interface FlightEvents { loop?: 1 | -1; roll?: boolean; snap?: boolean; flap?: boolean }
-
-/**
- * Free 3D glider. The stick rotates the bird (pitch, roll, yaw) and the air does the rest:
- * velocity is pulled toward where the nose points (lift), gravity trades height for speed,
- * every turn bleeds a little speed, and the nose weathervanes into the airflow.
- * Roll over and pull to carve a hard turn; tuck to drop like a stone; flare to brake.
- */
+/** Arcade glider: speed and height trade through pitch. Hold pull-up long enough and you loop. */
 export class Glider {
   pos = new THREE.Vector3();
   vel = new THREE.Vector3();
-  q = new THREE.Quaternion();
-  dir = new THREE.Vector3(0, 0, -1); // nose
-  up = new THREE.Vector3(0, 1, 0);
-  right = new THREE.Vector3(1, 0, 0);
+  dir = new THREE.Vector3(0, 0, -1);
+  speed = 32;
+  pitch = NEUTRAL_PITCH; // radians, + nose up, wraps through +-PI when looping
+  heading = 0;           // radians, 0 = -Z
+  roll = 0;              // radians, + right wing down
   brake = 0;
-  tuck = 0;
-  flapCharge = 3;
-  flapAnim = 0;
-  private snap: { t: number; dir: number } | null = null;
-  private snapCool = 0;
-  private pitchAcc = 0; private rollAcc = 0; private idle = 0;
+  trick: { type: 'roll'; t: number; dur: number; dir: number } | null = null;
+  spin = 0;              // visual barrel-roll angle
+  overTop = false;       // passed inverted at the top of a loop
 
-  get speed() { return this.vel.length(); }
-  set speed(s: number) { this.vel.setLength(Math.max(1, s)); }
-  get heading() { return Math.atan2(-this.dir.x, -this.dir.z); }
-  get pitch() { return Math.asin(THREE.MathUtils.clamp(this.dir.y, -1, 1)); }
-  /** Bank angle, + right wing down. */
-  get roll() { return Math.asin(THREE.MathUtils.clamp(-this.right.y, -1, 1)); }
-  get inverted() { return this.up.y < 0; }
-  get snapping() { return this.snap !== null; }
-  /** Half wingspan right now (tucked wings are narrow). */
-  get halfSpan() { return THREE.MathUtils.lerp(2.4, 0.8, this.tuck); }
+  /** Nose pointing past vertical (upside down part of a loop). */
+  get looping() { return this.overTop || Math.abs(this.pitch) > Math.PI / 2; }
+
+  startTrick(req: 'rollL' | 'rollR'): boolean {
+    if (this.trick || this.looping) return false;
+    this.trick = { type: 'roll', t: 0, dur: 0.7, dir: req === 'rollL' ? -1 : 1 };
+    return true;
+  }
 
   reset(x: number, y: number, z: number, heading = 0) {
     this.pos.set(x, y, z);
-    this.q.setFromEuler(new THREE.Euler(-0.15, heading, 0, 'YXZ'));
-    this.updateAxes();
-    this.vel.copy(this.dir).multiplyScalar(32);
-    this.brake = 0; this.tuck = 0; this.flapCharge = 3; this.flapAnim = 0;
-    this.snap = null; this.snapCool = 0; this.pitchAcc = 0; this.rollAcc = 0; this.idle = 0;
+    this.speed = 32; this.pitch = NEUTRAL_PITCH; this.heading = heading; this.roll = 0; this.brake = 0;
+    this.trick = null; this.spin = 0; this.overTop = false;
+    this.updateDir();
   }
 
-  private updateAxes() {
-    this.dir.copy(Z).applyQuaternion(this.q).negate();
-    this.up.copy(Y).applyQuaternion(this.q);
-    this.right.copy(X).applyQuaternion(this.q);
+  private updateDir() {
+    const cp = Math.cos(this.pitch);
+    this.dir.set(-Math.sin(this.heading) * cp, Math.sin(this.pitch), -Math.cos(this.heading) * cp);
   }
 
-  private rotLocal(axis: THREE.Vector3, angle: number) {
-    if (angle) this.q.multiply(_q.setFromAxisAngle(axis, angle));
-  }
+  /** Advance the flight model. Returns a trick that just finished, if any. */
+  step(dt: number, inp: InputState): 'roll' | 'loop' | null {
+    let finished: 'roll' | 'loop' | null = null;
+    const tr = this.trick;
+    if (tr) {
+      tr.t += dt;
+      const f = Math.min(1, tr.t / tr.dur);
+      const e = f * f * (3 - 2 * f);
+      this.spin = tr.dir * e * TAU;
+      // a barrel roll also jinks you sideways a little
+      const side = Math.sin(f * Math.PI) * tr.dir * 6 * dt;
+      this.pos.x += Math.cos(this.heading) * side;
+      this.pos.z -= Math.sin(this.heading) * side;
+      if (f >= 1) { finished = 'roll'; this.trick = null; this.spin = 0; }
+    }
 
-  step(dt: number, inp: FlightInput): FlightEvents {
-    const ev: FlightEvents = {};
-    let speed = this.vel.length();
-    const ctrl = THREE.MathUtils.clamp(speed / 18, 0.35, 1.25); // less authority when slow
+    const upright = Math.abs(this.pitch) <= Math.PI / 2 && !this.overTop;
+    // roll eases toward the stick (wings level themselves while upside down)
+    const targetRoll = upright ? inp.roll * 1.05 : inp.roll * 0.3;
+    this.roll += (targetRoll - this.roll) * Math.min(1, 5 * dt);
+
+    // pitch is rate-controlled; faster birds pull round tighter
+    const rate = 1.5 + Math.max(0, this.speed - 30) * 0.02;
+    this.pitch += inp.pitch * rate * dt;
+    if (Math.abs(inp.pitch) < 0.05) {
+      if (upright) this.pitch += (NEUTRAL_PITCH - this.pitch) * 0.9 * dt; // settle into a glide
+      else this.pitch += 1.1 * dt; // let go mid-loop and the bird finishes it
+    }
+    if (upright) this.pitch -= Math.abs(Math.sin(this.roll)) * 0.12 * dt; // banking costs lift
+    // stall: too slow and the nose falls toward the ground along the shortest way round
+    if (this.speed < STALL_SPEED) {
+      const toDown = wrap(-Math.PI / 2 - this.pitch);
+      this.pitch += Math.sign(toDown) * Math.min(Math.abs(toDown), (STALL_SPEED - this.speed) * 0.14 * dt);
+    }
+    // no bunting over forwards: the steepest dive is close to vertical
+    if (upright && this.pitch < -1.35) this.pitch = -1.35;
+
+    // track loops: going over the top flips the wrapped pitch from +PI to -PI
+    if (this.pitch > Math.PI) { this.pitch -= TAU; this.overTop = true; }
+    if (this.pitch < -Math.PI) { this.pitch += TAU; this.overTop = false; }
+    if (this.overTop && this.pitch > -1.0 && this.pitch < 0.6) { this.overTop = false; finished = 'loop'; }
+
     this.brake += (inp.brake - this.brake) * Math.min(1, 8 * dt);
-    this.tuck += (inp.tuck - this.tuck) * Math.min(1, 7 * dt);
-    this.snapCool -= dt;
-    this.flapCharge = Math.min(3, this.flapCharge + dt * 0.22);
-    this.flapAnim = Math.max(0, this.flapAnim - dt / 0.4);
 
-    // ---- attitude: the stick rotates the bird ----
-    const pitchRate = inp.pitch * (1.7 + 0.8 * this.brake) * ctrl;
-    // roll: partial stick banks to a held angle (up to ~80 deg); full stick rolls freely
-    const bank0 = this.roll;
-    let rollRate: number;
-    if (this.inverted || Math.abs(inp.roll) > 0.95) rollRate = inp.roll * 3.2 * ctrl;
-    else rollRate = THREE.MathUtils.clamp((inp.roll * 1.45 - bank0) * 4, -3.2, 3.2) * ctrl;
-    const yawRate = inp.yaw * 1.1 * ctrl;
-    const active = Math.abs(inp.pitch) + Math.abs(inp.roll) + Math.abs(inp.yaw) > 0.08;
-    this.idle = active ? 0 : this.idle + dt;
-    const bank = bank0;
-    // hands off while upside down for a moment: roll back upright
-    if (!this.snap && Math.abs(inp.roll) < 0.05 && this.inverted && this.idle > 0.7) rollRate += (bank >= 0 ? 1 : -1) * 2.2;
-    if (inp.trick && !this.snap && this.snapCool <= 0) {
-      // snap roll: a fast 360 that throws you sideways, for dodging
-      const d = inp.trick === 'rollL' ? -1 : 1;
-      this.snap = { t: 0, dir: d };
-      _v.set(this.right.x, 0, this.right.z).normalize();
-      this.vel.addScaledVector(_v, d * 11);
-    }
-    let snapRate = 0;
-    if (this.snap) {
-      this.snap.t += dt;
-      const f = this.snap.t / 0.5;
-      snapRate = this.snap.dir * (TAU / 0.5) * (f < 1 ? 1 : 0);
-      if (f >= 1) { this.snap = null; this.snapCool = 0.35; ev.snap = true; }
-    }
-    // hands off the pitch: trim gently back to a steady glide down the slope
-    let trim = 0;
-    if (Math.abs(inp.pitch) < 0.05 && !this.inverted && Math.abs(this.pitch) < 1.2 && !this.snap) trim = (-0.27 - this.pitch) * 0.9 * Math.cos(bank0);
-    this.rotLocal(X, (pitchRate + trim) * dt);
-    this.rotLocal(Z, -(rollRate + snapRate) * dt);
-    this.rotLocal(Y, -yawRate * dt);
-    // banking turns you on its own (gentle, so steering is easy), pulling tightens it
-    if (!this.inverted && !this.snap) {
-      const b = THREE.MathUtils.clamp(bank, -1.2, 1.2);
-      const turn = -(9.8 * Math.tan(b) / Math.max(speed, 12)) * 0.9 * (1 - this.tuck * 0.7);
-      this.q.premultiply(_q.setFromAxisAngle(WORLD_UP, turn * dt));
-    }
-    this.q.normalize();
-    this.updateAxes();
+    // energy: gravity along the flight path minus drag
+    const acc = -G * Math.sin(this.pitch) - (DRAG + BRAKE_DRAG * this.brake) * this.speed * this.speed;
+    this.speed = Math.max(4, this.speed + acc * dt);
 
-    // trick tracking: a full turn of the stick-driven pitch or roll is a loop or roll
-    this.pitchAcc += pitchRate * dt;
-    this.rollAcc += (Math.abs(inp.roll) > 0.95 || this.inverted ? rollRate : 0) * dt;
-    if (Math.abs(inp.pitch) < 0.1) this.pitchAcc *= Math.exp(-1.2 * dt);
-    if (Math.abs(inp.roll) < 0.1) this.rollAcc *= Math.exp(-1.2 * dt);
-    if (Math.abs(this.pitchAcc) > TAU * 0.92) { ev.loop = this.pitchAcc > 0 ? 1 : -1; this.pitchAcc = 0; }
-    if (Math.abs(this.rollAcc) > TAU * 0.92) { ev.roll = true; this.rollAcc = 0; }
+    // coordinated turn
+    this.heading -= (G * Math.tan(this.roll) / Math.max(this.speed, 12)) * 1.35 * dt;
 
-    // ---- flap: a limited burst of thrust ----
-    if (inp.flap && this.flapCharge >= 1) {
-      this.flapCharge -= 1; this.flapAnim = 1; ev.flap = true;
-      this.vel.addScaledVector(this.dir, 6).addScaledVector(this.up, 5);
-    }
-
-    // ---- air ----
-    this.vel.y -= 9.8 * dt;
-    speed = this.vel.length();
-    const vd = _v.copy(this.vel).divideScalar(speed);
-    const aoa = vd.angleTo(this.dir);
-    const spread = 1 - this.tuck;
-    const lift = Math.max(0.12, spread) * (1 + 0.7 * this.brake);
-    const stall = aoa < 0.5 ? 1 : Math.max(0, 1 - (aoa - 0.5) * 2.2);
-    const align = THREE.MathUtils.clamp(speed / 22, 0.25, 1.4) * 2.3 * lift * stall;
-    const turn = Math.min(aoa, align * dt);
-    if (turn > 1e-6) {
-      _a.crossVectors(vd, this.dir);
-      if (_a.lengthSq() > 1e-10) vd.applyAxisAngle(_a.normalize(), turn);
-    }
-    speed -= turn * speed * 0.1 * (1 + this.brake); // turning costs speed
-    const cd = 0.0018 * spread + 0.00035 + 0.0055 * this.brake;
-    speed -= cd * speed * speed * dt;
-    speed = THREE.MathUtils.clamp(speed, 3, 115);
-    this.vel.copy(vd).multiplyScalar(speed);
-
-    // nose weathervanes into the airflow: strongly when tucked or stalled
-    const vane = (1.0 + this.tuck * 3 + (1 - stall) * 3) * dt;
-    if (aoa > 1e-4) {
-      _a.crossVectors(this.dir, vd);
-      if (_a.lengthSq() > 1e-10) {
-        _a.normalize();
-        this.q.premultiply(_q.setFromAxisAngle(_a, Math.min(aoa, aoa * vane)));
-        this.q.normalize(); this.updateAxes();
-      }
-    }
-
+    this.updateDir();
+    this.vel.copy(this.dir).multiplyScalar(this.speed);
     this.pos.addScaledVector(this.vel, dt);
-    return ev;
-  }
-
-  /** Wingtip positions (for collisions). */
-  tips(out: [THREE.Vector3, THREE.Vector3]) {
-    const h = this.halfSpan;
-    out[0].copy(this.pos).addScaledVector(this.right, -h);
-    out[1].copy(this.pos).addScaledVector(this.right, h);
-    return out;
+    return finished;
   }
 
   applyTo(obj: THREE.Object3D) {
     obj.position.copy(this.pos);
-    obj.quaternion.copy(this.q);
+    obj.rotation.set(this.pitch, this.heading, -(this.roll + this.spin), 'YXZ');
   }
 }

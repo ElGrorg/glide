@@ -1,85 +1,91 @@
-import type { FlightInput } from './bird';
-
 // One input layer: keyboard, touch and gamepad all feed the same values.
-export interface InputState extends FlightInput {
+export interface InputState {
+  pitch: number;   // -1 dive .. +1 pull up
+  roll: number;    // -1 left .. +1 right
+  brake: number;   // 0..1
   anyPress: boolean; // edge-triggered "start / restart"
+  trick: 'rollL' | 'rollR' | null; // edge-triggered barrel-roll request
   source: 'keyboard' | 'touch' | 'gamepad';
 }
 
 const DEAD = 0.15;
 const dz = (v: number) => (Math.abs(v) < DEAD ? 0 : (v - Math.sign(v) * DEAD) / (1 - DEAD));
-const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
-
-interface VStick { id: number | null; ox: number; oy: number; x: number; y: number; t0: number; el: HTMLElement; knob: HTMLElement }
 
 export class Input {
-  state: InputState = { pitch: 0, roll: 0, yaw: 0, tuck: 0, brake: 0, flap: false, trick: null, anyPress: false, source: 'keyboard' };
+  state: InputState = { pitch: 0, roll: 0, brake: 0, anyPress: false, trick: null, source: 'keyboard' };
+  private trick: InputState['trick'] = null;
+  private swipes = new Map<number, { x: number; y: number; t: number }>();
   private keys = new Set<string>();
   private pressed = false;
-  private flap = false;
-  private trick: FlightInput['trick'] = null;
-  private padPrev: boolean[] = [];
-  private left: VStick;
-  private right: VStick;
+  private stickId: number | null = null;
+  private stickOrigin = { x: 0, y: 0 };
+  private stickVec = { x: 0, y: 0 };
+  private brakeIds = new Set<number>();
+  private padButtonsPrev: boolean[] = [];
+  private stickEl: HTMLElement;
+  private knobEl: HTMLElement;
   invertPitch = false;
 
   constructor(target: HTMLElement | Document = document) {
-    const mk = (s: string, k: string): VStick => ({ id: null, ox: 0, oy: 0, x: 0, y: 0, t0: 0, el: document.getElementById(s)!, knob: document.getElementById(k)! });
-    this.left = mk('stick', 'knob');
-    this.right = mk('stick2', 'knob2');
-
+    this.stickEl = document.getElementById('stick')!;
+    this.knobEl = document.getElementById('knob')!;
     addEventListener('keydown', (e) => {
-      this.keys.add(e.code);
-      this.state.source = 'keyboard';
       if (!e.repeat) {
         this.pressed = true;
-        if (e.code === 'Space') this.flap = true;
         if (e.code === 'KeyQ') this.trick = 'rollL';
         if (e.code === 'KeyE') this.trick = 'rollR';
       }
+      this.keys.add(e.code);
+      this.state.source = 'keyboard';
       if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
     });
     addEventListener('keyup', (e) => this.keys.delete(e.code));
     addEventListener('blur', () => this.keys.clear());
 
     const opts = { passive: false } as AddEventListenerOptions;
-    const touches = (e: Event) => Array.from((e as TouchEvent).changedTouches) as Touch[];
-    target.addEventListener('touchstart', (e) => {
+    target.addEventListener('touchstart', (e: any) => {
       e.preventDefault();
       this.state.source = 'touch';
       this.pressed = true;
-      for (const t of touches(e)) {
-        const s = t.clientX < innerWidth * 0.5 ? this.left : this.right;
-        if (s.id !== null) continue;
-        Object.assign(s, { id: t.identifier, ox: t.clientX, oy: t.clientY, x: 0, y: 0, t0: performance.now() });
-        this.show(s, true);
-      }
-    }, opts);
-    target.addEventListener('touchmove', (e) => {
-      e.preventDefault();
-      for (const t of touches(e)) for (const s of [this.left, this.right]) {
-        if (s.id !== t.identifier) continue;
-        const R = 60;
-        let x = (t.clientX - s.ox) / R, y = (t.clientY - s.oy) / R;
-        const len = Math.hypot(x, y);
-        if (len > 1) { x /= len; y /= len; }
-        s.x = x; s.y = y;
-        s.knob.style.transform = `translate(${x * R}px, ${y * R}px)`;
-      }
-    }, opts);
-    const end = (e: Event) => {
-      e.preventDefault();
-      for (const t of touches(e)) for (const s of [this.left, this.right]) {
-        if (s.id !== t.identifier) continue;
-        if (s === this.right) {
-          // right side gestures: quick tap = flap, quick sideways swipe = snap roll
-          const dt = performance.now() - s.t0;
-          const dx = t.clientX - s.ox, dy = t.clientY - s.oy;
-          if (dt < 230 && Math.hypot(dx, dy) < 18) this.flap = true;
-          else if (dt < 320 && Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy)) this.trick = dx < 0 ? 'rollL' : 'rollR';
+      for (const t of (Array.from((e as TouchEvent).changedTouches) as Touch[])) {
+        if (t.clientX < innerWidth * 0.5 && this.stickId === null) {
+          this.stickId = t.identifier;
+          this.stickOrigin = { x: t.clientX, y: t.clientY };
+          this.stickVec = { x: 0, y: 0 };
+          this.showStick(true);
+        } else {
+          this.brakeIds.add(t.identifier);
+          this.swipes.set(t.identifier, { x: t.clientX, y: t.clientY, t: performance.now() });
         }
-        s.id = null; s.x = 0; s.y = 0;
-        this.show(s, false);
+      }
+    }, opts);
+    target.addEventListener('touchmove', (e: any) => {
+      e.preventDefault();
+      for (const t of (Array.from((e as TouchEvent).changedTouches) as Touch[])) {
+        if (t.identifier === this.stickId) {
+          const R = 60;
+          let x = (t.clientX - this.stickOrigin.x) / R, y = (t.clientY - this.stickOrigin.y) / R;
+          const len = Math.hypot(x, y);
+          if (len > 1) { x /= len; y /= len; }
+          this.stickVec = { x, y };
+          this.knobEl.style.transform = `translate(${x * R}px, ${y * R}px)`;
+        }
+      }
+    }, opts);
+    const end = (e: any) => {
+      e.preventDefault();
+      for (const t of (Array.from((e as TouchEvent).changedTouches) as Touch[])) {
+        if (t.identifier === this.stickId) { this.stickId = null; this.stickVec = { x: 0, y: 0 }; this.showStick(false); }
+        this.brakeIds.delete(t.identifier);
+        // quick sideways swipe on the right side = barrel roll
+        const sw = this.swipes.get(t.identifier);
+        this.swipes.delete(t.identifier);
+        if (sw && performance.now() - sw.t < 450) {
+          const dx = t.clientX - sw.x, dy = t.clientY - sw.y;
+          if (Math.max(Math.abs(dx), Math.abs(dy)) > 45) {
+            this.trick = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'rollL' : 'rollR') : null;
+          }
+        }
       }
     };
     target.addEventListener('touchend', end, opts);
@@ -87,61 +93,56 @@ export class Input {
     target.addEventListener('mousedown', () => { this.pressed = true; });
   }
 
-  private show(s: VStick, on: boolean) {
-    s.el.style.display = on ? 'block' : 'none';
-    s.el.style.left = `${s.ox}px`;
-    s.el.style.top = `${s.oy}px`;
-    s.knob.style.transform = 'translate(0px, 0px)';
+  private showStick(on: boolean) {
+    this.stickEl.style.display = on ? 'block' : 'none';
+    this.stickEl.style.left = `${this.stickOrigin.x}px`;
+    this.stickEl.style.top = `${this.stickOrigin.y}px`;
+    this.knobEl.style.transform = 'translate(0px, 0px)';
   }
 
   poll(): InputState {
     const k = this.keys;
-    let pitch = 0, roll = 0, yaw = 0, tuck = 0, brake = 0;
-    // keyboard: W = nose down (dive), S = pull up (flight-sim style)
-    if (k.has('KeyW')) pitch -= 1;
-    if (k.has('KeyS')) pitch += 1;
-    if (k.has('KeyA')) roll -= 0.9; // keys bank and hold; Q/E (or full stick) roll all the way round
-    if (k.has('KeyD')) roll += 0.9;
-    if (k.has('ArrowLeft')) yaw -= 1;
-    if (k.has('ArrowRight')) yaw += 1;
-    if (k.has('ArrowUp') || k.has('ShiftLeft') || k.has('ShiftRight')) tuck = 1;
-    if (k.has('ArrowDown') || k.has('KeyC')) brake = 1;
+    let pitch = 0, roll = 0, brake = 0;
+    // keyboard: W / Up = nose down (dive), S / Down = pull up (flight-sim style)
+    if (k.has('KeyW') || k.has('ArrowUp')) pitch -= 1;
+    if (k.has('KeyS') || k.has('ArrowDown')) pitch += 1;
+    if (k.has('KeyA') || k.has('ArrowLeft')) roll -= 1;
+    if (k.has('KeyD') || k.has('ArrowRight')) roll += 1;
+    if (k.has('Space') || k.has('ShiftLeft') || k.has('ShiftRight')) brake = 1;
 
-    // touch: left stick pitch/roll, right stick yaw + tuck (down) / flare (up)
-    if (this.left.id !== null) { pitch += this.left.y; roll += this.left.x; }
-    if (this.right.id !== null && performance.now() - this.right.t0 > 120) {
-      yaw += this.right.x;
-      tuck = Math.max(tuck, this.right.y); brake = Math.max(brake, -this.right.y);
-    }
+    // touch: stick up = dive, down = pull up
+    if (this.stickId !== null) { pitch += this.stickVec.y; roll += this.stickVec.x; }
+    if (this.brakeIds.size) brake = 1;
 
-    // gamepad: left stick flies, right stick yaws (x) and tucks/flares (y)
+    // gamepad
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     for (const gp of pads) {
       if (!gp) continue;
-      const lx = dz(gp.axes[0] ?? 0), ly = dz(gp.axes[1] ?? 0);
-      const rx = dz(gp.axes[2] ?? 0), ry = dz(gp.axes[3] ?? 0);
-      if (lx || ly || rx || ry) this.state.source = 'gamepad';
-      roll += lx; pitch += ly; yaw += rx;
-      tuck = Math.max(tuck, ry, gp.buttons[7]?.value ?? 0);
-      brake = Math.max(brake, -ry, gp.buttons[6]?.value ?? 0);
+      const ax = dz(gp.axes[0] ?? 0), ay = dz(gp.axes[1] ?? 0);
+      if (ax || ay) this.state.source = 'gamepad';
+      roll += ax; pitch += ay;
+      const rt = gp.buttons[7]?.value ?? 0, lt = gp.buttons[6]?.value ?? 0;
+      const a = gp.buttons[0]?.pressed ? 1 : 0;
+      brake = Math.max(brake, rt, lt, a);
       gp.buttons.forEach((b, i) => {
-        if (b.pressed && !this.padPrev[i]) {
+        if (b.pressed && !this.padButtonsPrev[i]) {
           this.pressed = true; this.state.source = 'gamepad';
-          if (i === 0) this.flap = true;
           if (i === 4) this.trick = 'rollL';
           if (i === 5) this.trick = 'rollR';
         }
-        this.padPrev[i] = b.pressed;
+        this.padButtonsPrev[i] = b.pressed;
       });
       break; // first connected pad only
     }
 
-    const st = this.state;
-    st.pitch = clamp1(this.invertPitch ? -pitch : pitch);
-    st.roll = clamp1(roll); st.yaw = clamp1(yaw);
-    st.tuck = Math.min(1, tuck); st.brake = Math.min(1, brake);
-    st.flap = this.flap; st.trick = this.trick; st.anyPress = this.pressed;
-    this.flap = false; this.trick = null; this.pressed = false;
-    return st;
+    const clamp = (v: number) => Math.max(-1, Math.min(1, v));
+    this.state.pitch = clamp(this.invertPitch ? -pitch : pitch);
+    this.state.roll = clamp(roll);
+    this.state.brake = Math.min(1, brake);
+    this.state.anyPress = this.pressed;
+    this.pressed = false;
+    this.state.trick = this.trick;
+    this.trick = null;
+    return this.state;
   }
 }
