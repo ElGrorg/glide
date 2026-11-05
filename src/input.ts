@@ -4,6 +4,7 @@ export interface InputState {
   roll: number;    // -1 left .. +1 right
   brake: number;   // 0..1
   tuck: number;    // 0..1: hold both bumpers (or Q+E) to fold the wings and dive
+  fire: boolean;   // held: pea shooter
   anyPress: boolean; // edge-triggered "start / restart"
   trick: 'rollL' | 'rollR' | null; // edge-triggered barrel-roll request
   source: 'keyboard' | 'touch' | 'gamepad';
@@ -13,7 +14,7 @@ const DEAD = 0.15;
 const dz = (v: number) => (Math.abs(v) < DEAD ? 0 : (v - Math.sign(v) * DEAD) / (1 - DEAD));
 
 export class Input {
-  state: InputState = { pitch: 0, roll: 0, brake: 0, tuck: 0, anyPress: false, trick: null, source: 'keyboard' };
+  state: InputState = { pitch: 0, roll: 0, brake: 0, tuck: 0, fire: false, anyPress: false, trick: null, source: 'keyboard' };
   private trick: InputState['trick'] = null;
   private swipes = new Map<number, { x: number; y: number; t: number }>();
   private keys = new Set<string>();
@@ -22,6 +23,8 @@ export class Input {
   private stickOrigin = { x: 0, y: 0 };
   private stickVec = { x: 0, y: 0 };
   private brakeIds = new Set<number>();
+  private fireIds = new Set<number>();
+  private mouseFire = false;
   private padButtonsPrev: boolean[] = [];
   private stickEl: HTMLElement;
   private knobEl: HTMLElement;
@@ -62,7 +65,10 @@ export class Input {
       this.state.source = 'touch';
       this.pressed = true;
       for (const t of (Array.from((e as TouchEvent).changedTouches) as Touch[])) {
-        if (t.clientX < innerWidth * 0.5 && this.stickId === null) {
+        const fb = document.getElementById('fire')?.getBoundingClientRect();
+        if (fb && fb.width && t.clientX >= fb.left - 12 && t.clientX <= fb.right + 12 && t.clientY >= fb.top - 12 && t.clientY <= fb.bottom + 12) {
+          this.fireIds.add(t.identifier);
+        } else if (t.clientX < innerWidth * 0.5 && this.stickId === null) {
           this.stickId = t.identifier;
           this.stickOrigin = { x: t.clientX, y: t.clientY };
           this.stickVec = { x: 0, y: 0 };
@@ -91,6 +97,7 @@ export class Input {
       for (const t of (Array.from((e as TouchEvent).changedTouches) as Touch[])) {
         if (t.identifier === this.stickId) { this.stickId = null; this.stickVec = { x: 0, y: 0 }; this.showStick(false); }
         this.brakeIds.delete(t.identifier);
+        if (this.fireIds.delete(t.identifier)) continue;
         // quick sideways swipe on the right side = barrel roll
         const sw = this.swipes.get(t.identifier);
         this.swipes.delete(t.identifier);
@@ -104,7 +111,8 @@ export class Input {
     };
     target.addEventListener('touchend', end, opts);
     target.addEventListener('touchcancel', end, opts);
-    target.addEventListener('mousedown', () => { this.pressed = true; });
+    target.addEventListener('mousedown', (e: any) => { this.pressed = true; if ((e as MouseEvent).button === 0) this.mouseFire = true; });
+    addEventListener('mouseup', () => { this.mouseFire = false; });
   }
 
   private showStick(on: boolean) {
@@ -117,6 +125,7 @@ export class Input {
   poll(): InputState {
     const k = this.keys;
     let pitch = 0, roll = 0, brake = 0;
+    let fire = this.mouseFire || this.fireIds.size > 0 || k.has('KeyF') || k.has('KeyJ') || k.has('Enter');
     // keyboard: W / Up = nose down (dive), S / Down = pull up (flight-sim style)
     if (k.has('KeyW') || k.has('ArrowUp')) pitch -= 1;
     if (k.has('KeyS') || k.has('ArrowDown')) pitch += 1;
@@ -144,9 +153,11 @@ export class Input {
       } else {
         roll += ax; pitch += ay;
       }
+      // RT or X fires the pea shooter; LT or A is the air-brake
       const rt = gp.buttons[7]?.value ?? 0, lt = gp.buttons[6]?.value ?? 0;
       const a = gp.buttons[0]?.pressed ? 1 : 0;
-      brake = Math.max(brake, rt, lt, a);
+      brake = Math.max(brake, lt, a);
+      fire ||= rt > 0.3 || !!gp.buttons[2]?.pressed;
       gp.buttons.forEach((b, i) => {
         if (b.pressed && !this.padButtonsPrev[i]) {
           this.pressed = true; this.state.source = 'gamepad';
@@ -170,6 +181,7 @@ export class Input {
     this.state.pitch = clamp(this.invertPitch ? -pitch : pitch);
     this.state.roll = clamp(roll);
     this.state.brake = Math.min(1, brake);
+    this.state.fire = fire;
     this.state.anyPress = this.pressed;
     this.pressed = false;
     this.state.trick = this.trick;

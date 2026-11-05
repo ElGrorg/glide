@@ -14,15 +14,18 @@ function tri(pts: number[][], color: number) {
   return new THREE.Mesh(g, new THREE.MeshLambertMaterial({ color, flatShading: true, side: THREE.DoubleSide }));
 }
 
+export interface BirdPalette { body: number; belly: number; wing: number; tip: number }
+export const PLAYER_COLORS: BirdPalette = { body: 0xd9733a, belly: 0xf2d7b0, wing: 0xb85a2b, tip: 0x5b3a26 };
+
 /** Low-poly bird mesh. Faces -Z. Roughly 1.8 m long, 5 m wingspan. */
 export class BirdMesh extends THREE.Group {
   lInner = new THREE.Group(); lOuter = new THREE.Group();
   rInner = new THREE.Group(); rOuter = new THREE.Group();
   tail: THREE.Mesh;
-  constructor() {
+  constructor(pal: BirdPalette = PLAYER_COLORS) {
     super();
-    const bodyMat = new THREE.MeshLambertMaterial({ color: 0xd9733a, flatShading: true });
-    const bellyMat = new THREE.MeshLambertMaterial({ color: 0xf2d7b0, flatShading: true });
+    const bodyMat = new THREE.MeshLambertMaterial({ color: pal.body, flatShading: true });
+    const bellyMat = new THREE.MeshLambertMaterial({ color: pal.belly, flatShading: true });
     const body = new THREE.Mesh(new THREE.OctahedronGeometry(0.5, 1), bodyMat);
     body.scale.set(0.75, 0.6, 1.9);
     const belly = new THREE.Mesh(new THREE.OctahedronGeometry(0.42, 1), bellyMat);
@@ -38,7 +41,7 @@ export class BirdMesh extends THREE.Group {
     }
     this.add(body, belly, head, beak);
 
-    const wingC = 0xb85a2b, tipC = 0x5b3a26;
+    const wingC = pal.wing, tipC = pal.tip;
     // inner wing: from body edge out to 1.2 m
     const inner = (s: number) => tri([
       [0, 0, -0.35], [1.25 * s, 0.05, -0.2], [1.25 * s, 0.05, 0.45],
