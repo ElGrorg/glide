@@ -56,4 +56,24 @@ export class WindAudio {
     const g = ctx.createGain(); g.gain.setValueAtTime(0.5, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
     o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.45);
   }
+
+  /** Little pea-shooter pop. Enemy shots are lower. */
+  pew(enemy = false) {
+    if (!this.ctx || this.muted) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = 'square';
+    const f0 = enemy ? 520 : 900;
+    o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f0 * 0.45, t + 0.07);
+    const g = ctx.createGain(); g.gain.setValueAtTime(enemy ? 0.05 : 0.06, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+    o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.09);
+  }
+
+  /** Radar / lock beep. */
+  beep(freq = 1200, len = 0.06, vol = 0.07) {
+    if (!this.ctx || this.muted) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = freq;
+    const g = ctx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + len);
+    o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + len + 0.01);
+  }
 }
