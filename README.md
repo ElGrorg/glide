@@ -21,7 +21,7 @@ Code map: `src/route.ts` forks and environments · `src/world.ts` terrain, canyo
 
 ## Dogfights
 Enemy birds join the run every 7 to 13 seconds (one at a time, two once you have a couple of kills).
-- **Hunters** (dark grey) spawn behind you and fire bursts from your tail. The radar (bottom right) glows red and a warning flashes when one is on you. Shake it: break hard, barrel-roll through its bursts (a roll shrugs off peas), loop, or slam the brakes when it's close and it overshoots into your sights.
+- **Hunters** (dark grey) spawn behind you and fire bursts from your tail. The radar (bottom right) glows red and a warning flashes when one is on you. Hunters react to your moves about half a second late and turn wider than you. A dodge roll (roll while banking) or a hard break makes them lose sight of you ("Shook it!"), and slamming the brakes when one is close makes it overshoot.
 - **Bandits** (blue) spawn ahead and flee. Once they see you lining up they jink, fake, barrel-roll and dive.
 - Hold an enemy near your nose for a moment to **lock on**: your peas are then aimed ahead of it and curve slightly toward it.
 - You have three feathers (hearts). One grows back after 20 s without being hit.

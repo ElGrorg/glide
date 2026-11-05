@@ -204,6 +204,7 @@ function onDogfight(ev: DogfightEvent) {
       audio.beep(700, 0.18, 0.08);
       break;
     case 'turned': popup('Bandit turned on you!', 'shake it'); break;
+    case 'shaken': { const pts = Math.round(100 * multiplier()); score += pts; combo++; comboTimer = 4; popup(`Shook it! +${pts}`, 'it lost sight of you'); audio.whoosh(0.7); break; }
     case 'overshoot': popup('Overshoot!', 'it flew past: get on its tail'); audio.whoosh(0.9); break;
     case 'hitEnemy': audio.beep(1700, 0.03, 0.05); break;
     case 'kill': {
