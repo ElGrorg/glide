@@ -86,13 +86,13 @@ const hud = { hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo')
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
 const PAD_HELP = {
-  flight: 'Controller (<b>flight sticks</b>): left stick ↑↓ = dive / pull up · right stick ←→ = roll (the bank holds when you let go)<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · <b>LB/RB</b> barrel roll (dodge) · <b>Back</b> = next layout',
+  flight: 'Controller (<b>flight sticks</b>): left stick ↑↓ = dive / pull up · right stick ←→ = roll, both all the way round (bank holds when you let go)<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · <b>LB/RB</b> barrel roll (dodge) · <b>Back</b> = next layout',
   classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>LT</b>/<b>A</b> brake, <b>LB/RB</b> roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
   wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · <b>LB/RB</b> barrel roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
 };
 const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.padScheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot<br><b>Q/E</b> barrel roll (while banking = dodge) &nbsp; hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop (Q/E at the top = half roll) &nbsp; <b>V</b> = change layout`;
 const TOUCH_HELP = () => input.padScheme === 'flight'
-  ? 'Left thumb: drag up to dive, down to pull up<br>Right thumb: drag ←→ to roll (the bank holds when you let go)<br>Flick the right side <b>←/→</b> to barrel roll · hold <b>FIRE</b> to shoot<br>Keep pulling down to loop (flick at the top to half-roll back uphill)'
+  ? 'Left thumb: drag up to dive, down to pull up<br>Right thumb: drag ←→ to roll, all the way round if you like (the bank holds when you let go)<br>Flick the right side <b>←/→</b> to barrel roll · hold <b>FIRE</b> to shoot<br>Keep pulling down to loop'
   : 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side <b>←/→</b> to barrel roll<br>Hold <b>FIRE</b> to shoot<br>Keep pulling down to loop (swipe at the top to half-roll back uphill)';
 const showControls = () => {
   $('controls').innerHTML = isTouch ? TOUCH_HELP() : `${KEYS_HELP()}<br>${PAD_HELP[input.padScheme]}`;
@@ -358,7 +358,7 @@ function rotateToward(cur: THREE.Vector3, want: THREE.Vector3, axis: THREE.Vecto
 function placeCamera(snap = false, dt = 0.016, lift = 0) {
   const g = glider;
   // how much of the climb the camera should follow: none in a normal glide, all of it past ~50 degrees
-  const steepWant = g.looping || g.trick?.type === 'half' ? 1 : THREE.MathUtils.smoothstep(g.pitch, 0.55, 0.95);
+  const steepWant = g.looping || g.trick?.type === 'half' ? 1 : THREE.MathUtils.smoothstep(g.free ? Math.abs(g.pitch) : g.pitch, 0.55, 0.95);
   camSteep = snap ? steepWant : camSteep + (steepWant - camSteep) * Math.min(1, 4 * dt);
 
   // forward: a normal glide keeps the horizon in view; steep flight follows the actual flight path
@@ -371,8 +371,10 @@ function placeCamera(snap = false, dt = 0.016, lift = 0) {
 
   // up: world up in a glide; the bird's own up (from pitch + heading, plus any half-roll spin) when steep
   tmpE.set(g.pitch, g.heading, g.trick?.type === 'half' ? -g.spin : 0, 'YXZ');
-  const birdUp = tmpUp.set(0, 1, 0).applyQuaternion(tmpQ.setFromEuler(tmpE));
-  const upWant = camSteep > 0.999 ? birdUp.clone() : birdUp.clone().multiplyScalar(camSteep).addScaledVector(WORLD_UP, 1 - camSteep);
+  const birdUp = g.free ? tmpUp.copy(g.up) : tmpUp.set(0, 1, 0).applyQuaternion(tmpQ.setFromEuler(tmpE));
+  // free flight: the camera rolls most of the way with the bird (never through zero, so it can't flip)
+  const upWant = g.free ? birdUp.clone().multiplyScalar(0.7).addScaledVector(WORLD_UP, 0.3)
+    : camSteep > 0.999 ? birdUp.clone() : birdUp.clone().multiplyScalar(camSteep).addScaledVector(WORLD_UP, 1 - camSteep);
   if (upWant.lengthSq() < 1e-4) upWant.copy(birdUp);
   upWant.normalize();
   if (snap) camUp.copy(upWant);
@@ -391,7 +393,7 @@ function placeCamera(snap = false, dt = 0.016, lift = 0) {
   if (shake > 0) camera.position.add(new THREE.Vector3((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake, 0));
   camera.up.copy(camUp);
   camera.lookAt(camLook);
-  camera.rotateZ(-g.roll * 0.35);
+  if (!g.free) camera.rotateZ(-g.roll * 0.35);
   const fov = THREE.MathUtils.clamp(62 + (g.speed - 25) * 0.55, 60, 98);
   camera.fov += (fov - camera.fov) * Math.min(1, 3 * dt);
   camera.updateProjectionMatrix();
@@ -427,7 +429,7 @@ function frame(now: number) {
     if (wind) {
       glider.speed = Math.min(90, glider.speed + 22 * dt);
       glider.pos.lerp(wind.axis, Math.min(1, 1.2 * dt));
-      glider.pitch += (Math.asin(THREE.MathUtils.clamp(wind.dir.y, -1, 1)) - glider.pitch) * Math.min(1, 1.5 * dt);
+      glider.steerToward(wind.dir, Math.min(1, 1.5 * dt));
     }
     const finished = glider.step(dt, inp);
     for (const ev of dogfight.update(dt, t, glider, inp.fire, true, wasInCloud)) onDogfight(ev);
@@ -443,9 +445,9 @@ function frame(now: number) {
     dodgeCd -= dt; hitFlash = Math.max(0, hitFlash - dt * 2.5);
     if (hp < 3 && (hpRegen += dt) > 20) { hp++; hpRegen = 0; popup('Feather regrown', `${hp}/3`); }
     // a loop starts when the nose comes steeply up (used for the low-loop bonus)
-    if (glider.pitch > 0.9 || glider.looping) {
+    if (glider.free ? Math.abs(glider.pitch) > 0.9 || glider.looping : glider.pitch > 0.9 || glider.looping) {
       if (!inLoop) { inLoop = true; loopMinClear = 99; }
-    } else if (glider.pitch < 0.7) inLoop = false;
+    } else if (glider.free ? Math.abs(glider.pitch) < 0.5 && !glider.looping : glider.pitch < 0.7) inLoop = false;
     const p = glider.pos;
     const ground = terrainHeight(p.x, p.z);
     clearance = p.y - ground;
@@ -548,7 +550,7 @@ function frame(now: number) {
     crashTimer += dt;
     dogfight.update(dt, t, glider, false, false);
     glider.speed *= Math.exp(-4 * dt);
-    glider.roll += dt * 6;
+    glider.spin += dt * 6;
   } else {
     // title: gentle demo glide that hovers in place
     glider.roll = Math.sin(t * 0.6) * 0.25;
