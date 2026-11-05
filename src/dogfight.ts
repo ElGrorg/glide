@@ -27,10 +27,10 @@ const DART_LOCK_TIME = 1.6;  // seconds it must keep you in its cone
 const DART_CONE = 0.45;      // ~25° either side of its nose
 const DART_RANGE_MIN = 45, DART_RANGE_MAX = 210;
 const DART_RELOAD = 11;
-const DART_SPEED = 78;       // faster than a glide, slower than a steep dive
-const DART_TURN = 1.25;      // rad/s: a hard break turns tighter than this up close
+const DART_SPEED = 95;       // faster than anything but a long steep dive
+const DART_TURN = 2.4;       // rad/s: tracks anything but a well-timed hard break
 const DART_LIFE = 7;
-const DART_HIT_R = 1.3;
+const DART_HIT_R = 2.0;      // proximity fuse
 // Your homing darts: hold your nose on a bird to lock, then fire. Limited ammo that recharges.
 const LOCK_CONE = 0.26;     // ~15° either side of your nose
 const LOCK_KEEP = 0.6;      // once locked, hold it out to ~35°
@@ -163,7 +163,9 @@ interface Pea { mesh: THREE.Mesh; pos: THREE.Vector3; vel: THREE.Vector3; life: 
 interface MyDart { mesh: THREE.Mesh; pos: THREE.Vector3; vel: THREE.Vector3; life: number; target: Enemy | null }
 
 /** A homing dart fired at you. `tracking` goes false once you shake it; then it flies straight and fizzles. */
-export interface Dart { mesh: THREE.Group; pos: THREE.Vector3; dir: THREE.Vector3; speed: number; life: number; tracking: boolean; trail: number; closest: number }
+export interface Dart {
+  /** the last-moment break check has been made for this dart */
+  breakChecked?: boolean; mesh: THREE.Group; pos: THREE.Vector3; dir: THREE.Vector3; speed: number; life: number; tracking: boolean; trail: number; closest: number }
 
 export type DogfightEvent =
   | { type: 'spawn'; role: Role }
@@ -213,6 +215,7 @@ export class Dogfight {
   dartLockProgress = 0;
   /** Closest dart still tracking you, in metres (Infinity if none). */
   dartIncoming = Infinity;
+  private prevDir = new THREE.Vector3();
   /** 0..1: strongest "someone is on your tail" signal this frame. */
   tailThreat = 0;
   shotThisFrame = false;
@@ -256,8 +259,9 @@ export class Dogfight {
 
   private launchDart(e: Enemy) {
     const d: Dart = {
-      mesh: this.makeDart(), pos: e.pos.clone().addScaledVector(e.dir, 2), dir: e.dir.clone(),
-      speed: Math.max(e.speed, 40), life: DART_LIFE, tracking: true, trail: 0, closest: 999,
+      // launched straight at you, carrying the hunter's speed plus a kick
+      mesh: this.makeDart(), pos: e.pos.clone().addScaledVector(e.dir, 2), dir: e.seenPos.clone().sub(e.pos).normalize(),
+      speed: Math.min(DART_SPEED, e.speed + 30), life: DART_LIFE, tracking: true, trail: 0, closest: 999,
     };
     this.darts.push(d);
   }
@@ -587,6 +591,9 @@ export class Dogfight {
     // ---- darts: home in with a limited turn rate. Shake them with a barrel roll as they close,
     // a break harder than they can follow, a cloud, or by leading them into the ground.
     this.dartIncoming = Infinity;
+    // how hard you're turning right now (rad/s): a last-moment hard break is how you beat a dart by flying
+    const turnRate = this.prevDir.lengthSq() > 0 ? this.prevDir.angleTo(g.dir) / Math.max(dt, 1e-3) : 0;
+    this.prevDir.copy(g.dir);
     for (const d of this.darts) {
       if (d.life <= 0) continue;
       d.life -= dt;
@@ -598,7 +605,8 @@ export class Dogfight {
         const off = d.dir.angleTo(to);
         if (inCloud) { d.tracking = false; out.push({ type: 'dartShaken', how: 'cloud' }); }
         else if (g.brake > 0.6 && dist < 16) { d.tracking = false; out.push({ type: 'dartShaken', how: 'flare' }); }   // flare hard and it shoots past
-        else if (off > 1.2 && dist < 60) { d.tracking = false; out.push({ type: 'dartShaken', how: 'turn' }); }   // you broke past its turn
+        else if (!d.breakChecked && dist < 25 && turnRate > 0.8 && (d.breakChecked = true)
+          && Math.random() < THREE.MathUtils.clamp((turnRate - 0.8) / 0.8, 0.3, 0.85)) { d.tracking = false; out.push({ type: 'dartShaken', how: 'turn' }); }   // you broke past its turn
         else {
           // aim a little ahead of you, turn no faster than it can
           const lead = tmpB.copy(g.pos).addScaledVector(g.vel, Math.min(0.6, dist / (d.speed + 1) * 0.5)).sub(d.pos).normalize();
@@ -607,10 +615,10 @@ export class Dogfight {
         }
       } else if (!active) d.tracking = false;
       if (!d.tracking) d.life = Math.min(d.life, 1.5);
-      const prev = tmpC.copy(d.pos);
+      const prev = d.pos.clone(); // (segDist uses the tmp vectors itself)
       d.pos.addScaledVector(d.dir, d.speed * dt);
       if (d.tracking && active && segDist(prev, d.pos, g.pos) < DART_HIT_R) {
-        if (this.hurtT <= 0) { out.push({ type: 'dartHit' }); this.hurtT = 0.8; }
+        out.push({ type: 'dartHit' }); this.hurtT = 0.8; // a dart always lands, even right after a pea hit
         this.puffs.burst(d.pos, tmpA.set(0, 2, 0), 5, 14, 0.8);
         this.removeDart(d); continue;
       }
@@ -660,8 +668,10 @@ export class Dogfight {
 }
 
 /** Distance from point c to segment ab. */
+const segAB = new THREE.Vector3(), segAC = new THREE.Vector3();
 function segDist(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3) {
-  const ab = tmpB.copy(b).sub(a);
-  const t = THREE.MathUtils.clamp(tmpC.copy(c).sub(a).dot(ab) / Math.max(ab.lengthSq(), 1e-6), 0, 1);
-  return tmpC.copy(a).addScaledVector(ab, t).distanceTo(c);
+  // own scratch vectors, so callers can pass the shared tmp vectors safely
+  const ab = segAB.copy(b).sub(a);
+  const t = THREE.MathUtils.clamp(segAC.copy(c).sub(a).dot(ab) / Math.max(ab.lengthSq(), 1e-6), 0, 1);
+  return segAC.copy(a).addScaledVector(ab, t).distanceTo(c);
 }
