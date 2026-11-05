@@ -7,6 +7,7 @@ import { BirdMesh, Glider } from './bird';
 import { Input } from './input';
 import { WindAudio } from './audio';
 import { Dogfight, type DogfightEvent } from './dogfight';
+import { setWorldSeed } from './noise';
 
 // ---------- Renderer, scene, camera ----------
 const SKY = new THREE.Color(0x9fd3f0);
@@ -127,7 +128,7 @@ const cloudsHit = new Set<string>();
 const nearby: Obstacle[] = [];
 
 function spawn(fresh = true) {
-  if (fresh) { route.reset(); world.reset(); }
+  if (fresh) { setWorldSeed((Math.random() * 2 ** 31) | 0); route.reset(); world.reset(); }
   const z = 0, x = route.mainCenter(z);
   glider.reset(x, terrainHeight(x, z) + 45, z, 0);
   startZ = z;
