@@ -88,9 +88,9 @@ const PAD_HELP = {
   wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · <b>LB/RB</b> barrel roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = classic sticks',
   classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>LT</b>/<b>A</b> brake, <b>LB/RB</b> roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = wing sticks',
 };
-const KEYS_HELP = '<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> bank &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot<br><b>Q/E</b> barrel roll (while banking = dodge) &nbsp; hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop';
+const KEYS_HELP = '<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> bank &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot<br><b>Q/E</b> barrel roll (while banking = dodge) &nbsp; hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop (Q/E at the top = half roll, back uphill)';
 const showControls = () => {
-  $('controls').innerHTML = isTouch ? 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side <b>←/→</b> to barrel roll<br>Hold <b>FIRE</b> to shoot (keep an enemy in front to lock on)<br>Keep pulling down to loop' : `${KEYS_HELP}<br>${PAD_HELP[input.padScheme]}`;
+  $('controls').innerHTML = isTouch ? 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side <b>←/→</b> to barrel roll<br>Hold <b>FIRE</b> to shoot (keep an enemy in front to lock on)<br>Keep pulling down to loop (swipe at the top to half-roll back uphill)' : `${KEYS_HELP}<br>${PAD_HELP[input.padScheme]}`;
 };
 showControls();
 addEventListener('gamepadconnected', showControls);
@@ -121,7 +121,7 @@ let startZ = 0;
 const near = new Map<string, { gap: number; type: string }>(); // obstacle id -> closest gap while passing
 const prevPos = new THREE.Vector3();
 let waterSkim = false, trickMinClear = 99, loopMinClear = 99, tunnelChain = 0, inCanyonRun = false, wasInCloud = false;
-let loopBack: THREE.Vector3 | null = null;
+let inLoop = false;
 let hp = 3, hpRegen = 0, hitFlash = 0, dodgeCd = 0, warnBeep = 0;
 let wasLocked: unknown = null;
 const cloudsHit = new Set<string>();
@@ -136,7 +136,7 @@ function spawn(fresh = true) {
   near.clear(); cloudsHit.clear();
   gates.reset(); gates.update(glider.pos.z, 0);
   prevPos.copy(glider.pos);
-  trickMinClear = 99; tunnelChain = 0; loopBack = null; wasInCloud = false;
+  trickMinClear = 99; tunnelChain = 0; inLoop = false; wasInCloud = false;
   puffs.clear();
   dogfight.reset(); hp = 3; hpRegen = 0; hitFlash = 0;
   // build the opening stretch straight away
@@ -294,26 +294,64 @@ function drawDogfightHud(show: boolean) {
 }
 
 // ---------- Camera ----------
+// A chase camera that stays behind the bird the whole time, loops included. It follows a smoothed
+// forward vector and a smoothed "up" that rotates with the bird once the nose goes steeply up,
+// so there is no point where lookAt has to flip the view over.
 const camPos = new THREE.Vector3();
 const camLook = new THREE.Vector3();
+const camFwd = new THREE.Vector3(0, 0, -1);
+const camUp = new THREE.Vector3(0, 1, 0);
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+let camSteep = 0; // 0 = normal glide framing, 1 = full chase (steep climbs, loops)
 const tmp = new THREE.Vector3();
+const tmpUp = new THREE.Vector3();
+const tmpQ = new THREE.Quaternion();
+const tmpE = new THREE.Euler();
+
+/** Turn `cur` toward `want` about `axis` (both kept perpendicular to it), by fraction k. Works for 180 degree gaps. */
+function rotateToward(cur: THREE.Vector3, want: THREE.Vector3, axis: THREE.Vector3, k: number) {
+  const a = cur.clone().projectOnPlane(axis), b = want.clone().projectOnPlane(axis);
+  if (a.lengthSq() < 1e-6 || b.lengthSq() < 1e-6) { cur.copy(want); return; }
+  a.normalize(); b.normalize();
+  const ang = Math.atan2(tmp.crossVectors(a, b).dot(axis), a.dot(b));
+  cur.copy(a).applyAxisAngle(axis, ang * k);
+}
+
 function placeCamera(snap = false, dt = 0.016, lift = 0) {
   const g = glider;
+  // how much of the climb the camera should follow: none in a normal glide, all of it past ~50 degrees
+  const steepWant = g.looping || g.trick?.type === 'half' ? 1 : THREE.MathUtils.smoothstep(g.pitch, 0.55, 0.95);
+  camSteep = snap ? steepWant : camSteep + (steepWant - camSteep) * Math.min(1, 4 * dt);
+
+  // forward: a normal glide keeps the horizon in view; steep flight follows the actual flight path
   const flat = tmp.set(-Math.sin(g.heading), 0, -Math.cos(g.heading));
-  // follow the flight path, but never so steeply that the horizon disappears
   const tilt = g.dir.clone(); tilt.y = Math.max(tilt.y, -0.4);
-  const back = loopBack ?? flat.clone().lerp(tilt, 0.45).normalize();
-  const dist = (loopBack ? 14 : 8.5) + Math.max(0, g.speed - 30) * 0.06;
-  const want = g.pos.clone().addScaledVector(back, -dist).add(new THREE.Vector3(0, 2.6 + lift, 0));
+  const glideFwd = flat.clone().lerp(tilt, 0.45).normalize();
+  const fwdWant = glideFwd.lerp(g.dir, camSteep).normalize();
+  if (snap) camFwd.copy(fwdWant);
+  else camFwd.lerp(fwdWant, 1 - Math.exp(-6 * dt)).normalize();
+
+  // up: world up in a glide; the bird's own up (from pitch + heading, plus any half-roll spin) when steep
+  tmpE.set(g.pitch, g.heading, g.trick?.type === 'half' ? -g.spin : 0, 'YXZ');
+  const birdUp = tmpUp.set(0, 1, 0).applyQuaternion(tmpQ.setFromEuler(tmpE));
+  const upWant = camSteep > 0.999 ? birdUp.clone() : birdUp.clone().multiplyScalar(camSteep).addScaledVector(WORLD_UP, 1 - camSteep);
+  if (upWant.lengthSq() < 1e-4) upWant.copy(birdUp);
+  upWant.normalize();
+  if (snap) camUp.copy(upWant);
+  else rotateToward(camUp, upWant, camFwd, 1 - Math.exp(-7 * dt));
+  camUp.projectOnPlane(camFwd).normalize();
+
+  const dist = 8.5 + camSteep * 2.5 + Math.max(0, g.speed - 30) * 0.06;
+  const want = g.pos.clone().addScaledVector(camFwd, -dist).addScaledVector(camUp, 2.6 + lift);
   const ground = terrainHeight(want.x, want.z) + 1.8;
   if (want.y < ground) want.y = ground;
-  const lookWant = loopBack ? g.pos.clone() : g.pos.clone().addScaledVector(g.dir, 10);
-  const k = snap ? 1 : 1 - Math.exp(-7 * dt);
-  camPos.lerp(want, k);
+  const lookWant = g.pos.clone().addScaledVector(g.dir, 10 - camSteep * 4);
+  camPos.lerp(want, snap ? 1 : 1 - Math.exp(-12 * dt));
   camLook.lerp(lookWant, snap ? 1 : 1 - Math.exp(-10 * dt));
   if (snap) { camPos.copy(want); camLook.copy(lookWant); }
   camera.position.copy(camPos);
   if (shake > 0) camera.position.add(new THREE.Vector3((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake, 0));
+  camera.up.copy(camUp);
   camera.lookAt(camLook);
   camera.rotateZ(-g.roll * 0.35);
   const fov = THREE.MathUtils.clamp(62 + (g.speed - 25) * 0.55, 60, 98);
@@ -343,7 +381,7 @@ function frame(now: number) {
   if (mode === 'flying') {
     prevPos.copy(glider.pos);
     if (inp.trick && glider.startTrick(inp.trick, inp.roll)) {
-      if (inp.roll * (inp.trick === 'rollL' ? -1 : 1) > 0.4) popup(inp.trick === 'rollL' ? '◀ Dodge' : 'Dodge ▶');
+      if (glider.trick?.type === 'roll' && inp.roll * (inp.trick === 'rollL' ? -1 : 1) > 0.4) popup(inp.trick === 'rollL' ? '◀ Dodge' : 'Dodge ▶');
       trickMinClear = 99;
     }
     // wind tunnels push you along and pull you toward the middle
@@ -363,10 +401,10 @@ function frame(now: number) {
     if (dogfight.tailThreat > 0 && warnBeep <= 0) { audio.beep(dogfight.tailThreat > 0.7 ? 1100 : 820, 0.07, 0.06); warnBeep = dogfight.tailThreat > 0.7 ? 0.18 : 0.6; }
     dodgeCd -= dt; hitFlash = Math.max(0, hitFlash - dt * 2.5);
     if (hp < 3 && (hpRegen += dt) > 20) { hp++; hpRegen = 0; popup('Feather regrown', `${hp}/3`); }
-    // hold the camera steady behind the loop instead of chasing the nose round
+    // a loop starts when the nose comes steeply up (used for the low-loop bonus)
     if (glider.pitch > 0.9 || glider.looping) {
-      if (!loopBack) { loopBack = new THREE.Vector3(-Math.sin(glider.heading), 0, -Math.cos(glider.heading)); loopMinClear = 99; }
-    } else if (glider.pitch < 0.7) loopBack = null;
+      if (!inLoop) { inLoop = true; loopMinClear = 99; }
+    } else if (glider.pitch < 0.7) inLoop = false;
     const p = glider.pos;
     const ground = terrainHeight(p.x, p.z);
     clearance = p.y - ground;
@@ -396,11 +434,12 @@ function frame(now: number) {
     trickMinClear = Math.min(trickMinClear, clearance);
     loopMinClear = Math.min(loopMinClear, clearance);
     if (finished && mode === 'flying') {
-      const low = (finished === 'loop' ? loopMinClear : trickMinClear) < 10;
-      const base = finished === 'loop' ? 400 : 150;
+      const low = (finished === 'roll' ? trickMinClear : loopMinClear) < 10;
+      const base = finished === 'loop' ? 400 : finished === 'half' ? 250 : 150;
       const pts = Math.round(base * (low ? 3 : 1) * multiplier());
       combo++; comboTimer = 4; score += pts;
-      popup(`${finished === 'loop' ? 'Loop' : 'Barrel roll'} +${pts}`, low ? 'LOW! x3' : '');
+      const name = finished === 'loop' ? 'Loop' : finished === 'half' ? 'Half loop' : 'Barrel roll';
+      popup(`${name} +${pts}`, low ? 'LOW! x3' : finished === 'half' ? 'turned back uphill' : '');
       audio.whoosh(0.7);
     }
 

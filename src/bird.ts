@@ -96,17 +96,29 @@ export class Glider {
   roll = 0;              // radians, + right wing down
   brake = 0;
   tuck = 0;
-  trick: { type: 'roll'; t: number; dur: number; dir: number; dodge: number } | null = null;
+  trick: { type: 'roll' | 'half'; t: number; dur: number; dir: number; dodge: number } | null = null;
   spin = 0;              // visual barrel-roll angle
   overTop = false;       // passed inverted at the top of a loop
 
   /** Nose pointing past vertical (upside down part of a loop). */
   get looping() { return this.overTop || Math.abs(this.pitch) > Math.PI / 2; }
 
-  /** Barrel roll. Rolling while already banking the same way turns it into a big sideways dodge. */
+  /** Barrel roll. Rolling while already banking the same way turns it into a big sideways dodge.
+   *  Upside down, the roll button does a half roll instead: you come out upright, flying the other way. */
   startTrick(req: 'rollL' | 'rollR', rollInput = 0): boolean {
-    if (this.trick || this.looping) return false;
+    if (this.trick) return false;
     const dir = req === 'rollL' ? -1 : 1;
+    if (this.looping) {
+      if (Math.abs(this.pitch) < 1.9) return false; // only once the nose is past ~110 degrees, near the top
+      // same orientation, written the upright way: (p, h, r) == (PI - p, h + PI, r + PI)
+      this.pitch = wrap(Math.PI - this.pitch);
+      this.heading = wrap(this.heading + Math.PI);
+      this.overTop = false;
+      this.spin = -dir * Math.PI;
+      this.trick = { type: 'half', t: 0, dur: 0.45, dir, dodge: 0 };
+      this.updateDir();
+      return true;
+    }
     const dodge = 6 + 22 * Math.max(0, rollInput * dir);
     this.trick = { type: 'roll', t: 0, dur: 0.7, dir, dodge };
     return true;
@@ -125,32 +137,38 @@ export class Glider {
   }
 
   /** Advance the flight model. Returns a trick that just finished, if any. */
-  step(dt: number, inp: InputState): 'roll' | 'loop' | null {
-    let finished: 'roll' | 'loop' | null = null;
+  step(dt: number, inp: InputState): 'roll' | 'loop' | 'half' | null {
+    let finished: 'roll' | 'loop' | 'half' | null = null;
     const tr = this.trick;
     if (tr) {
       tr.t += dt;
       const f = Math.min(1, tr.t / tr.dur);
       const e = f * f * (3 - 2 * f);
+      if (tr.type === 'half') {
+        this.spin = -tr.dir * Math.PI * (1 - e);
+        if (f >= 1) { finished = 'half'; this.trick = null; this.spin = 0; }
+      } else {
       this.spin = tr.dir * e * TAU;
       // a barrel roll also jinks you sideways a little
       const side = Math.sin(f * Math.PI) * tr.dir * tr.dodge * dt;
       this.pos.x += Math.cos(this.heading) * side;
       this.pos.z -= Math.sin(this.heading) * side;
       if (f >= 1) { finished = 'roll'; this.trick = null; this.spin = 0; }
+      }
     }
 
     const upright = Math.abs(this.pitch) <= Math.PI / 2 && !this.overTop;
-    // roll eases toward the stick (wings level themselves while upside down)
-    const targetRoll = upright ? inp.roll * 1.2 : inp.roll * 0.3;
-    this.roll += (targetRoll - this.roll) * Math.min(1, 5 * dt);
+    // roll eases toward the stick, upside down too, so you can steer all the way round a loop
+    this.roll += (inp.roll * 1.2 - this.roll) * Math.min(1, 5 * dt);
 
     // pitch is rate-controlled; faster birds pull round tighter
     const rate = 1.5 + Math.max(0, this.speed - 30) * 0.02;
     this.pitch += inp.pitch * rate * dt;
     if (Math.abs(inp.pitch) < 0.05) {
       if (upright) this.pitch += (NEUTRAL_PITCH - this.pitch) * 0.9 * (1 - this.tuck) * dt; // settle into a glide (not while tucked)
-      else this.pitch += 1.1 * dt; // let go mid-loop and the bird finishes it
+      // let go upside down and the bird just holds its line (near the top it eases into a shallow
+      // inverted glide); it never flies the rest of the loop for you
+      else if (Math.abs(this.pitch) > 2.3) this.pitch += wrap(Math.PI - NEUTRAL_PITCH - this.pitch) * 0.9 * dt;
     }
     if (upright) this.pitch -= Math.abs(Math.sin(this.roll)) * 0.12 * dt; // banking costs lift
     // stall: too slow and the nose falls toward the ground along the shortest way round
@@ -175,8 +193,10 @@ export class Glider {
     const acc = -G * Math.sin(this.pitch) - (DRAG * (1 - 0.7 * this.tuck) + BRAKE_DRAG * this.brake) * this.speed * this.speed;
     this.speed = Math.max(4, this.speed + acc * dt);
 
-    // coordinated turn
-    this.heading -= (G * Math.tan(this.roll) / Math.max(this.speed, 12)) * 1.35 * (1 - 0.5 * this.tuck) * dt;
+    // coordinated turn; upside down the bird travels back along its heading, so the turn flips to stay
+    // toward the lowered wing (otherwise steering feels reversed over the top of a loop)
+    const inverted = Math.cos(this.pitch) < 0 ? -1 : 1;
+    this.heading -= inverted * (G * Math.tan(this.roll) / Math.max(this.speed, 12)) * 1.35 * (1 - 0.5 * this.tuck) * dt;
 
     this.updateDir();
     this.vel.copy(this.dir).multiplyScalar(this.speed);
