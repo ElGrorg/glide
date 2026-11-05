@@ -23,7 +23,8 @@ Code map: `src/route.ts` forks and environments · `src/world.ts` terrain, canyo
 Enemy birds join the run every 7 to 13 seconds (one at a time, two once you have a couple of kills).
 - **Hunters** (dark grey) spawn behind you and fire bursts from your tail. The radar (bottom right) glows red and a warning flashes when one is on you. Hunters react to your moves about half a second late and turn wider than you. A dodge roll (roll while banking) or a hard break makes them lose sight of you ("Shook it!"), and slamming the brakes when one is close makes it overshoot.
 - **Bandits** (blue) spawn ahead and flee. Once they see you lining up they jink, fake, barrel-roll and dive.
-- Hold an enemy near your nose for a moment to **lock on**: your peas are then aimed ahead of it and curve slightly toward it.
+- The pea shooter is pure manual aim: lead your target yourself.
+- Hold an enemy near your nose for 1 s to **lock on**, then fire a **homing dart** (R or right-click, Y on the controller, DART on touch). Darts chase the locked bird hard and kill in one hit, but enemies see them coming, break hard across their path and barrel-roll to shake them off. You carry 2 and earn one back every 10 s (pips under the feathers).
 - You have three feathers (hearts). One grows back after 20 s without being hit.
 - Touch: hold the FIRE button.
 
