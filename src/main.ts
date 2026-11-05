@@ -273,8 +273,8 @@ function drawDogfightHud(show: boolean) {
     $('dartBtn').classList.toggle('dim', !dogfight.locked || dogfight.dartsLeft === 0);
   }
   const threat = show ? Math.max(dogfight.tailThreat, dogfight.dartLockProgress) : 0;
-  hud.warn.style.opacity = threat > 0 ? String((0.55 + 0.45 * Math.sin(t * (8 + threat * 14))) * Math.min(1, 0.4 + threat)) : '0';
-  hud.warn.textContent = !show ? '' : dogfight.dartIncoming < Infinity ? `▲ DART ${Math.round(dogfight.dartIncoming)} m: BREAK! ▲`
+  hud.warn.style.opacity = mode === 'flying' && glider.stalled ? String(0.6 + 0.4 * Math.sin(t * 16)) : threat > 0 ? String((0.55 + 0.45 * Math.sin(t * (8 + threat * 14))) * Math.min(1, 0.4 + threat)) : '0';
+  hud.warn.textContent = mode === 'flying' && glider.stalled ? '▼ STALL: DIVE TO GAIN SPEED ▼' : !show ? '' : dogfight.dartIncoming < Infinity ? `▲ DART ${Math.round(dogfight.dartIncoming)} m: BREAK! ▲`
     : dogfight.dartLockProgress > 0 ? `▼ DART LOCK ${Math.round(dogfight.dartLockProgress * 100)}% ▼`
     : threat > 0.7 ? '▼ IN ITS SIGHTS: BREAK! ▼' : '▼ ON YOUR TAIL ▼';
 
@@ -460,6 +460,7 @@ function frame(now: number) {
     } else if (dogfight.dartLockProgress > 0) {
       if (warnBeep <= 0) { audio.beep(1250, 0.06, 0.06); warnBeep = 0.35 - 0.25 * dogfight.dartLockProgress; }
     } else if (dogfight.tailThreat > 0 && warnBeep <= 0) { audio.beep(dogfight.tailThreat > 0.7 ? 1100 : 820, 0.07, 0.06); warnBeep = dogfight.tailThreat > 0.7 ? 0.18 : 0.6; }
+    if (glider.stalled) shake = Math.max(shake, 0.15); // buffeting as the wings stall
     dartHint -= dt; dodgeCd -= dt; hitFlash = Math.max(0, hitFlash - dt * 2.5);
     if (hp < 3 && (hpRegen += dt) > 20) { hp++; hpRegen = 0; popup('Feather regrown', `${hp}/3`); }
     // a loop starts when the nose comes steeply up (used for the low-loop bonus)

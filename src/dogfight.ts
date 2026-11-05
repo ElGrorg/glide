@@ -9,6 +9,11 @@ import type { CloudPuffs } from './puffs';
 export type Role = 'hunter' | 'prey';
 const G = 9.8;
 const UP = new THREE.Vector3(0, 1, 0);
+// Enemy birds fly on the same energy rules as you: gravity along the path, drag, air-brake, tuck,
+// a turn limited by how much lift their speed gives them, and a stall when they get too slow.
+const DRAG = 0.0016, BRAKE_DRAG = 0.0065, TUCK_THRUST = 8, MAX_SPEED = 115;
+const STALL_SPEED = 15;
+const MAX_LIFT_G = 1.65;   // same as your hardest banked pull
 const PEA_SPEED = 150;      // player pea muzzle speed (m/s, on top of your own speed)
 const ENEMY_PEA_SPEED = 120;
 const PEA_LIFE = 1.0;
@@ -102,6 +107,12 @@ export class Enemy {
     if (short > 0) { want.y = Math.max(want.y, Math.min(0.7, short * 0.06)); want.normalize(); }
     want.y = THREE.MathUtils.clamp(want.y, -0.75, 0.7); want.normalize();
 
+    // stalled: no lift, the nose drops whatever it wants
+    const stall = THREE.MathUtils.clamp((STALL_SPEED + 4 - this.speed) / 6, 0, 1);
+    if (stall > 0) { want.lerp(tmpA.set(this.dir.x, -1, this.dir.z), stall).normalize(); }
+    // turn rate is limited by lift, which needs speed (same numbers as yours): slow birds turn wide
+    const liftG = MAX_LIFT_G * Math.min(1, (this.speed / 26) ** 2);
+    rate = Math.min(rate, (liftG * G) / Math.max(this.speed, 12));
     const before = Math.atan2(-this.dir.x, -this.dir.z);
     turnToward(this.dir, want, rate * dt);
     const after = Math.atan2(-this.dir.x, -this.dir.z);
@@ -112,11 +123,13 @@ export class Enemy {
     const bank = THREE.MathUtils.clamp(Math.atan(-yawRate * this.speed / G), -1.35, 1.35);
     this.roll += (bank - this.roll) * Math.min(1, 6 * dt);
 
-    // speed: quick to accelerate, a bit slower to bleed off (so they can overshoot you)
-    const dv = wantSpeed - this.speed;
-    this.speed += THREE.MathUtils.clamp(dv, -(this.role === 'hunter' ? 4.5 : 10) * dt, 18 * dt); // hunters carry their speed: brake and they overshoot
-    this.speed += -G * this.dir.y * 0.4 * dt; // a little gravity feel
-    this.speed = THREE.MathUtils.clamp(this.speed, 18, 95);
+    // speed: no engine. Gravity along the path and drag, like you; it can tuck to go faster
+    // (only helps going downhill) or flare its wings to slow down
+    const tuck = wantSpeed > this.speed + 4 && this.dir.y < 0.1 ? 1 : 0;
+    const brake = wantSpeed < this.speed - 6 ? Math.min(1, (this.speed - wantSpeed) / 15) : 0;
+    const drag = (DRAG * (1 - 0.8 * tuck) + BRAKE_DRAG * brake) * this.speed * this.speed;
+    this.speed += (-G * this.dir.y - drag + TUCK_THRUST * tuck) * dt;
+    this.speed = THREE.MathUtils.clamp(this.speed, 4, MAX_SPEED);
 
     // barrel roll: a quick sideways juke
     if (this.rollT > 0) {
@@ -345,7 +358,7 @@ export class Dogfight {
       // slam the brakes with a hunter close behind and it overshoots
       e.overT = Math.max(0, e.overT - dt);
       if (e.role === 'hunter' && e.overT <= 0 && g.brake > 0.6 && behindYou && dist < 45) {
-        e.overT = 1.6; e.speed = Math.max(e.speed, g.speed + 12); out.push({ type: 'overshoot' });
+        e.overT = 1.6; out.push({ type: 'overshoot' });
       }
       const evade = threatened && (e.role === 'prey' || dist < 100);
       e.state = evade ? 'evade' : e.role === 'hunter' ? 'attack' : 'cruise';
@@ -369,12 +382,6 @@ export class Dogfight {
           e.jink.copy(g.dir).setY(0).normalize().multiplyScalar(0.55).addScaledVector(perp, 0.9);
           e.jink.y += rand(-0.5, 0.25);
           e.jink.normalize();
-          // dodge roll when you're right on it
-          if (playerAimErr < 0.18 && dist < 90 && e.rollT <= 0 && Math.random() < 0.4) {
-            e.rollT = 0.6;
-            const side = Math.cos(e.heading) * perp.x - Math.sin(e.heading) * perp.z;
-            e.rollDir = side >= 0 ? 1 : -1;
-          }
         }
         want.copy(e.jink);
         rate = 1.7;
@@ -497,8 +504,8 @@ export class Dogfight {
           tg.breakDir.copy(side).addScaledVector(d.vel.clone().normalize(), 0.15); tg.breakDir.y += rand(-0.35, 0.2); tg.breakDir.normalize();
           tg.breakT = 1.3;
         }
-        if (dist < 40 && tg.rollT <= 0 && tg.breakT > 0) { tg.rollT = 0.6; tg.rollDir = Math.random() < 0.5 ? 1 : -1; }
-        if (dist < 25 && tg.rollT > 0) d.target = null; // shaken off by a barrel roll
+        // no barrel rolls any more: it only gets away if its break takes it outside the dart's turn
+        if (dist < 50 && tmpB.copy(d.vel).normalize().angleTo(tmpC.copy(to).normalize()) > 1.2) d.target = null;
         else {
           const dir = tmpB.copy(d.vel).normalize();
           turnToward(dir, to.normalize(), MY_DART_TURN * dt);

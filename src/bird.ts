@@ -115,6 +115,11 @@ export class Glider {
   private loopTurn = 0;  // free mode: accumulated pitch rotation, a loop is a full turn
 
   /** Nose pointing past vertical (upside down part of a loop). */
+  /** 1 = full control; drops toward 0.25 as you slow below stall speed (the wings stop biting). */
+  get authority() { return THREE.MathUtils.clamp((this.speed - STALL_SPEED + 4) / 8, 0.25, 1); }
+  /** Too slow to fly: the nose drops until you've dived back up to speed. */
+  get stalled() { return this.speed < STALL_SPEED; }
+
   get looping() { return this.free ? this.up.y < 0 : this.overTop || Math.abs(this.pitch) > Math.PI / 2; }
 
   /** Barrel roll. Rolling while already banking the same way turns it into a big sideways dodge.
@@ -224,7 +229,7 @@ export class Glider {
 
     // pitch is rate-controlled; faster birds pull round tighter
     const rate = 1.5 + Math.max(0, this.speed - 30) * 0.02;
-    this.pitchVel += (inp.pitch * rate - this.pitchVel) * Math.min(1, 5 * dt);
+    this.pitchVel += (inp.pitch * rate * this.authority - this.pitchVel) * Math.min(1, 5 * dt);
     this.pitch += this.pitchVel * dt;
     if (Math.abs(inp.pitch) < 0.05) {
       if (upright) this.pitch += (NEUTRAL_PITCH - this.pitch) * 0.9 * (1 - this.tuck) * dt; // settle into a glide (not while tucked)
@@ -236,7 +241,7 @@ export class Glider {
     // stall: too slow and the nose falls toward the ground along the shortest way round
     if (this.speed < STALL_SPEED) {
       const toDown = wrap(-Math.PI / 2 - this.pitch);
-      this.pitch += Math.sign(toDown) * Math.min(Math.abs(toDown), (STALL_SPEED - this.speed) * 0.14 * dt);
+      this.pitch += Math.sign(toDown) * Math.min(Math.abs(toDown), (0.6 + (STALL_SPEED - this.speed) * 0.14) * dt);
     }
     // no bunting over forwards: the steepest dive is close to vertical
     if (upright && this.pitch < -1.35) this.pitch = -1.35;
@@ -296,8 +301,9 @@ export class Glider {
 
     // stick: smoothed rates about the bird's own axes
     const pRate = 1.6 + Math.max(0, this.speed - 30) * 0.02;
-    this.pitchVel += (inp.pitch * pRate - this.pitchVel) * Math.min(1, 5 * dt);
-    this.rollVel += (inp.roll * 2.6 - this.rollVel) * Math.min(1, 6 * dt);
+    const auth = this.authority;
+    this.pitchVel += (inp.pitch * pRate * auth - this.pitchVel) * Math.min(1, 5 * dt);
+    this.rollVel += (inp.roll * 2.6 * auth - this.rollVel) * Math.min(1, 6 * dt);
     this.yawVel += ((inp.yaw ?? 0) * 0.6 - this.yawVel) * Math.min(1, 4 * dt);
     const q = this.quat;
     q.multiply(_q.setFromAxisAngle(X_AXIS, this.pitchVel * dt));
@@ -309,7 +315,9 @@ export class Glider {
     const up = _v2.set(0, 1, 0).applyQuaternion(q);
     // a little extra lift in a bank so turns hold their height (arcade help); none upside down
     const bankHelp = up.y > 0 ? 0.6 * (1 - up.y) : 0;
-    const lift = G * Math.min(1.05 + bankHelp, (this.speed / 26) ** 2) * (1 - 0.6 * this.tuck);
+    // below stall speed the wing quits: almost no lift, so gravity pulls the nose down
+    const stallCut = this.speed < STALL_SPEED ? 0.25 : 1;
+    const lift = G * Math.min(1.05 + bankHelp, (this.speed / 26) ** 2) * (1 - 0.6 * this.tuck) * stallCut;
     const acc = _v3.copy(up).multiplyScalar(lift);
     acc.y -= G;
     acc.addScaledVector(fwd, -acc.dot(fwd));
