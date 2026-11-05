@@ -153,11 +153,16 @@ function multiplier() { return 1 + Math.min(combo, 8) * 0.5; }
 
 function addCloseCall(gap: number, label: string) {
   combo++; comboTimer = 4;
-  const tucked = glider.tuck > 0.6; // threading a gap mid tuck-dive pays double
-  const pts = Math.round((60 + (3.5 - gap) * 80) * multiplier() * (tucked ? 2 : 1));
+  const pts = Math.round((60 + (3.5 - gap) * 80) * multiplier());
   score += pts;
   const veryClose = gap < 1.2;
-  popup(veryClose ? `INSANE! +${pts}` : `Close call +${pts}`, `${label} · ${gap.toFixed(1)} m${tucked ? ' · tucked x2' : ''}`);
+  // flying dangerously pays: a slipstream speed kick and a chunk of dart recharge, more the closer you cut it
+  const kick = veryClose ? 7 : 3 + (3.5 - gap) * 1.2;
+  glider.speed = Math.min(95, glider.speed + kick);
+  const refilled = dogfight.chargeDart(veryClose ? 0.5 : 0.25);
+  const perks = `+${Math.round(kick * 3.6)} km/h${refilled ? ' · DART RELOADED' : ''}`;
+  popup(veryClose ? `INSANE! +${pts}` : `Close call +${pts}`, `${label} · ${gap.toFixed(1)} m · ${perks}`);
+  if (refilled) audio.beep(1600, 0.1, 0.07);
   audio.whoosh(veryClose ? 1 : 0.6);
   rumble(veryClose ? 0.8 : 0.4, 120);
   if (veryClose) slowmo = 0.5;
@@ -533,6 +538,7 @@ function frame(now: number) {
     // ground skim
     if (clearance < 5 && mode === 'flying') {
       score += dt * (5 - clearance) * glider.speed * 0.35 * multiplier();
+      if (dogfight.chargeDart(dt * 0.08 * (5 - clearance) / 5)) { popup('Dart reloaded', 'skimming the ground'); audio.beep(1600, 0.1, 0.07); }
       comboTimer = Math.max(comboTimer, 1.5);
     }
 

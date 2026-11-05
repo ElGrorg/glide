@@ -14,7 +14,10 @@ const UP = new THREE.Vector3(0, 1, 0);
 const DRAG = 0.0016, BRAKE_DRAG = 0.0065, MAX_SPEED = 115;
 const STALL_SPEED = 15;
 const MAX_LIFT_G = 1.65;   // same as your hardest banked pull
-const PEA_SPEED = 150;      // player pea muzzle speed (m/s, on top of your own speed)
+const PEA_SPEED = 150;
+const ASSIST_CONE = 0.14;   // pea aim assist kicks in within ~8° of your nose
+const ASSIST_BEND = 0.055;  // and bends the shot at most ~3°
+const ASSIST_RANGE = 150;      // player pea muzzle speed (m/s, on top of your own speed)
 const ENEMY_PEA_SPEED = 120;
 const PEA_LIFE = 1.0;
 const ENEMY_HIT_R = 1.6;    // generous: these are small birds moving fast
@@ -193,6 +196,13 @@ export class Dogfight {
   /** Your darts left, and 0..1 recharge progress toward the next one. */
   dartsLeft = MAX_DARTS;
   dartCharge = 0;
+  /** Reward for risky flying: push the next dart's recharge along (1 = a whole dart). Returns true if a dart came back. */
+  chargeDart(amount: number): boolean {
+    if (this.dartsLeft >= MAX_DARTS) return false;
+    this.dartCharge += amount;
+    if (this.dartCharge >= 1) { this.dartCharge = 0; this.dartsLeft++; return true; }
+    return false;
+  }
   /** Enemy your darts will chase. */
   locked: Enemy | null = null;
   /** Enemy you're currently locking (before the lock completes), and progress 0..1. */
@@ -449,8 +459,24 @@ export class Dogfight {
     if (active && fire && this.fireCd <= 0) {
       this.fireCd = 0.1;
       const muzzle = g.pos.clone().addScaledVector(g.dir, 1.6);
-      // no aim assist: peas leave straight off your nose (plus your own speed)
-      const v = g.dir.clone().multiplyScalar(PEA_SPEED).add(g.vel);
+      // light aim assist: with a bird within ~8° of your nose, the stream bends up to ~3° toward
+      // where it will be (you still have to point at it; it can't follow a hard break)
+      const aim = g.dir.clone();
+      let assist: Enemy | null = null, bestErr = ASSIST_CONE;
+      for (const e of this.enemies) {
+        if (!e.alive) continue;
+        const d = tmpA.copy(e.pos).sub(muzzle); const dist = d.length();
+        if (dist > ASSIST_RANGE) continue;
+        const err = g.dir.angleTo(d);
+        if (err < bestErr) { bestErr = err; assist = e; }
+      }
+      if (assist) {
+        const T = assist.pos.distanceTo(muzzle) / (PEA_SPEED + g.speed);
+        const ev = assist.vel.clone(); // (vel reuses a scratch vector)
+        const lead = assist.pos.clone().addScaledVector(ev, T).sub(muzzle).normalize();
+        turnToward(aim, lead, ASSIST_BEND);
+      }
+      const v = aim.multiplyScalar(PEA_SPEED).add(g.vel);
       this.shoot(false, muzzle, v);
       this.shotThisFrame = true;
     }
