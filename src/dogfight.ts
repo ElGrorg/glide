@@ -14,10 +14,15 @@ const ENEMY_PEA_SPEED = 120;
 const PEA_LIFE = 1.0;
 const ENEMY_HIT_R = 1.6;    // generous: these are small birds moving fast
 const PLAYER_HIT_R = 0.85;
-const LOCK_CONE = 0.26;     // ~15° either side of your nose
-const LOCK_KEEP = 0.6;      // once locked, hold it out to ~35°
-const LOCK_RANGE = 170;
-const LOCK_TIME = 0.35;
+// Hunter darts: a hunter that holds you in its sights locks on, then launches a homing dart.
+const DART_LOCK_TIME = 1.6;  // seconds it must keep you in its cone
+const DART_CONE = 0.45;      // ~25° either side of its nose
+const DART_RANGE_MIN = 45, DART_RANGE_MAX = 210;
+const DART_RELOAD = 11;
+const DART_SPEED = 78;       // faster than a glide, slower than a tucked dive
+const DART_TURN = 1.25;      // rad/s: a hard break turns tighter than this up close
+const DART_LIFE = 7;
+const DART_HIT_R = 1.3;
 
 const HUNTER_COLORS: BirdPalette = { body: 0x3a3f4a, belly: 0x9aa0aa, wing: 0x2b2f38, tip: 0x121418 };
 const PREY_COLORS: BirdPalette = { body: 0x4f93c4, belly: 0xe8eef2, wing: 0x3a6c98, tip: 0x1d3350 };
@@ -64,6 +69,9 @@ export class Enemy {
   seenInit = false;
   /** 0..1: how squarely this enemy has you in its sights (hunters only). */
   aimAtPlayer = 0;
+  /** Dart lock progress, seconds (hunters only), and reload timer. */
+  dartLock = 0;
+  dartCd = rand(3, 6);
   heading = 0;
   constructor(public role: Role, scene: THREE.Scene) {
     this.mesh = new BirdMesh(role === 'hunter' ? HUNTER_COLORS : PREY_COLORS);
@@ -122,7 +130,10 @@ export class Enemy {
   dispose(scene: THREE.Scene) { scene.remove(this.mesh); }
 }
 
-interface Pea { mesh: THREE.Mesh; pos: THREE.Vector3; vel: THREE.Vector3; life: number; enemy: boolean; target: Enemy | null; near: number }
+interface Pea { mesh: THREE.Mesh; pos: THREE.Vector3; vel: THREE.Vector3; life: number; enemy: boolean; near: number }
+
+/** A homing dart fired at you. `tracking` goes false once you shake it; then it flies straight and fizzles. */
+export interface Dart { mesh: THREE.Group; pos: THREE.Vector3; dir: THREE.Vector3; speed: number; life: number; tracking: boolean; trail: number; closest: number }
 
 export type DogfightEvent =
   | { type: 'spawn'; role: Role }
@@ -130,7 +141,11 @@ export type DogfightEvent =
   | { type: 'overshoot' }
   | { type: 'shaken' }
   | { type: 'hitEnemy'; enemy: Enemy }
-  | { type: 'kill'; role: Role; locked: boolean; ground: boolean }
+  | { type: 'kill'; role: Role; ground: boolean }
+  | { type: 'dartLocking' }
+  | { type: 'dartLaunch' }
+  | { type: 'dartShaken'; how: 'roll' | 'turn' | 'cloud' | 'ground' }
+  | { type: 'dartHit' }
   | { type: 'hitPlayer' }
   | { type: 'dodged' }
   | { type: 'escaped' };
@@ -143,11 +158,11 @@ export class Dogfight {
   private spawnT = 9;
   private lastRole: Role = 'prey';
   kills = 0;
-  /** Enemy in front that your peas will home in on. */
-  locked: Enemy | null = null;
-  /** Enemy you're currently locking (before the lock completes). */
-  locking: Enemy | null = null;
-  lockT = 0;
+  darts: Dart[] = [];
+  /** 0..1: how far the closest hunter is through locking a dart onto you. */
+  dartLockProgress = 0;
+  /** Closest dart still tracking you, in metres (Infinity if none). */
+  dartIncoming = Infinity;
   /** 0..1: strongest "someone is on your tail" signal this frame. */
   tailThreat = 0;
   shotThisFrame = false;
@@ -162,21 +177,48 @@ export class Dogfight {
       const enemy = i >= 60;
       const mesh = new THREE.Mesh(geo, enemy ? theirs : mine);
       mesh.visible = false; scene.add(mesh);
-      this.peas.push({ mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, enemy, target: null, near: 99 });
+      this.peas.push({ mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, enemy, near: 99 });
     }
   }
+
+  private makeDart(): THREE.Group {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.14, 1.6, 6), new THREE.MeshLambertMaterial({ color: 0x40464f }));
+    body.rotation.x = Math.PI / 2;
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.5, 6), new THREE.MeshBasicMaterial({ color: 0xff3b2e, fog: false }));
+    tip.rotation.x = -Math.PI / 2; tip.position.z = -1.05;
+    const fins = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.04, 0.35), new THREE.MeshLambertMaterial({ color: 0xff3b2e }));
+    fins.position.z = 0.65;
+    const fins2 = fins.clone(); fins2.rotation.z = Math.PI / 2;
+    g.add(body, tip, fins, fins2);
+    g.scale.setScalar(1.3);
+    this.scene.add(g);
+    return g;
+  }
+
+  private launchDart(e: Enemy) {
+    const d: Dart = {
+      mesh: this.makeDart(), pos: e.pos.clone().addScaledVector(e.dir, 2), dir: e.dir.clone(),
+      speed: Math.max(e.speed, 40), life: DART_LIFE, tracking: true, trail: 0, closest: 999,
+    };
+    this.darts.push(d);
+  }
+
+  private removeDart(d: Dart) { this.scene.remove(d.mesh); d.life = 0; }
 
   reset() {
     for (const e of this.enemies) e.dispose(this.scene);
     this.enemies = [];
     for (const p of this.peas) { p.life = 0; p.mesh.visible = false; }
-    this.spawnT = 9; this.kills = 0; this.locked = null; this.locking = null; this.lockT = 0; this.tailThreat = 0;
+    for (const d of this.darts) this.removeDart(d);
+    this.darts = [];
+    this.spawnT = 9; this.kills = 0; this.tailThreat = 0; this.dartLockProgress = 0; this.dartIncoming = Infinity;
   }
 
-  private shoot(enemy: boolean, from: THREE.Vector3, vel: THREE.Vector3, target: Enemy | null) {
+  private shoot(enemy: boolean, from: THREE.Vector3, vel: THREE.Vector3) {
     const p = this.peas.find((q) => q.enemy === enemy && q.life <= 0);
     if (!p) return;
-    p.pos.copy(from); p.vel.copy(vel); p.life = PEA_LIFE; p.target = target; p.near = 99;
+    p.pos.copy(from); p.vel.copy(vel); p.life = PEA_LIFE; p.near = 99;
     p.mesh.visible = true;
   }
 
@@ -199,9 +241,11 @@ export class Dogfight {
     this.enemies.push(e);
   }
 
-  /** Advance everything. `active` is false on the crash screen: enemies keep flying but hold fire. */
-  update(dt: number, t: number, g: Glider, fire: boolean, active: boolean): DogfightEvent[] {
+  /** Advance everything. `active` is false on the crash screen: enemies keep flying but hold fire.
+   *  `inCloud`: you're inside a cloud, which breaks dart locks. */
+  update(dt: number, t: number, g: Glider, fire: boolean, active: boolean, inCloud = false): DogfightEvent[] {
     const out: DogfightEvent[] = [];
+    this.dartLockProgress = 0;
     this.shotThisFrame = false;
     this.enemyShotThisFrame = false;
 
@@ -291,6 +335,7 @@ export class Dogfight {
         rate = 1.7;
         wantSpeed = Math.max(28, g.speed * (e.role === 'prey' ? 0.9 : 1.0)); // jinking bleeds speed
       } else if (e.state === 'attack' && e.lostT > 0) {
+        e.dartLock = 0;
         // lost you: carries on wide in a lazy turn, then comes looking again
         // (turns away from where it last saw you and bleeds speed, so you open up a real gap)
         const away = tmpC.set(-e.dir.z, 0, e.dir.x).multiplyScalar(e.id % 2 ? 1 : -1);
@@ -314,12 +359,24 @@ export class Dogfight {
         if (active && e.fireCd <= 0 && dist < 100 && aimErr < 0.08) {
           const spread = tmpC.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(0.06);
           const v = e.dir.clone().add(spread).normalize().multiplyScalar(ENEMY_PEA_SPEED).addScaledVector(e.dir, e.speed);
-          this.shoot(true, e.pos.clone().addScaledVector(e.dir, 1.5), v, null);
+          this.shoot(true, e.pos.clone().addScaledVector(e.dir, 1.5), v);
           this.enemyShotThisFrame = true;
           e.burst++;
           e.fireCd = e.burst >= 4 ? rand(1.1, 2.0) : 0.15;
           if (e.burst >= 4) e.burst = 0;
         }
+        // dart lock: keep you inside its cone, at range, out of the clouds, and it launches a dart
+        e.dartCd -= dt;
+        const inCone = e.dir.angleTo(toPlayer) < DART_CONE && dist > DART_RANGE_MIN && dist < DART_RANGE_MAX && !inCloud;
+        if (active && e.dartCd <= 0 && inCone) {
+          if (e.dartLock === 0) out.push({ type: 'dartLocking' });
+          e.dartLock += dt;
+          if (e.dartLock >= DART_LOCK_TIME) {
+            this.launchDart(e); out.push({ type: 'dartLaunch' });
+            e.dartLock = 0; e.dartCd = DART_RELOAD;
+          }
+        } else e.dartLock = Math.max(0, e.dartLock - dt * 2); // lose it and the lock unwinds
+        this.dartLockProgress = Math.max(this.dartLockProgress, e.dartLock / DART_LOCK_TIME);
       } else {
         // cruising bandit: fly the valley downhill, not too far ahead of you
         const ahead = e.pos.z - 140;
@@ -335,37 +392,15 @@ export class Dogfight {
       if (dist > 520) { e.alive = false; e.dying = 99; out.push({ type: 'escaped' }); }
     }
 
-    // ---- lock-on: hold your nose on an enemy for a moment
-    let best: Enemy | null = null, bestErr = LOCK_CONE;
-    for (const e of this.enemies) {
-      if (!e.alive) continue;
-      const d = tmpA.copy(e.pos).sub(g.pos); const dist = d.length();
-      if (dist > LOCK_RANGE * 1.25) continue;
-      const err = g.dir.angleTo(d);
-      if (e === this.locked && err < LOCK_KEEP) { best = e; break; }
-      if (dist < LOCK_RANGE && err < bestErr) { best = e; bestErr = err; }
-    }
-    if (best && best === this.locked) { /* keep */ }
-    else if (best && best === this.locking) { this.lockT += dt; if (this.lockT >= LOCK_TIME) this.locked = best; }
-    else { this.locking = best; this.lockT = 0; this.locked = null; }
-    if (this.locked && !this.locked.alive) this.locked = null;
-
     // ---- your pea shooter
     this.fireCd -= dt;
     this.hurtT -= dt;
     if (active && fire && this.fireCd <= 0) {
       this.fireCd = 0.1;
       const muzzle = g.pos.clone().addScaledVector(g.dir, 1.6);
-      // locked: the shooter leads the target for you (but can't follow its jinks)
-      const aim = g.dir.clone();
-      if (this.locked) {
-        const T = this.locked.pos.distanceTo(muzzle) / (PEA_SPEED + g.speed);
-        const lead = this.locked.pos.clone().addScaledVector(this.locked.vel, T).sub(muzzle).normalize();
-        turnToward(aim, lead, 0.3);
-      }
-      const spread = new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(0.012);
-      const v = aim.add(spread).normalize().multiplyScalar(PEA_SPEED).add(g.vel);
-      this.shoot(false, muzzle, v, this.locked);
+      // no aim assist: peas leave straight off your nose (plus your own speed)
+      const v = g.dir.clone().multiplyScalar(PEA_SPEED).add(g.vel);
+      this.shoot(false, muzzle, v);
       this.shotThisFrame = true;
     }
 
@@ -374,14 +409,6 @@ export class Dogfight {
     for (const p of this.peas) {
       if (p.life <= 0) continue;
       p.life -= dt;
-      // locked peas curve onto the target
-      if (p.target && p.target.alive) {
-        const sp = p.vel.length();
-        const want = tmpA.copy(p.target.pos).addScaledVector(p.target.vel, 0.05).sub(p.pos).normalize();
-        const d = tmpB.copy(p.vel).normalize();
-        turnToward(d, want, 0.35 * dt);
-        p.vel.copy(d).multiplyScalar(sp);
-      }
       prev.copy(p.pos);
       p.pos.addScaledVector(p.vel, dt);
       if (p.pos.y < terrainHeight(p.pos.x, p.pos.z)) { p.life = 0; }
@@ -392,7 +419,7 @@ export class Dogfight {
             p.life = 0; e.hp--; e.flash = 0.12; e.alert = 3; e.jinkT = 0;
             this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.2), 4, 6, 0.6);
             out.push({ type: 'hitEnemy', enemy: e });
-            if (e.hp <= 0) this.kill(e, out, !!p.target);
+            if (e.hp <= 0) this.kill(e, out);
             break;
           }
         }
@@ -406,11 +433,57 @@ export class Dogfight {
       else { p.mesh.position.copy(p.pos); p.mesh.lookAt(tmpA.copy(p.pos).add(p.vel)); }
     }
 
+    // ---- darts: home in with a limited turn rate. Shake them with a barrel roll as they close,
+    // a break harder than they can follow, a cloud, or by leading them into the ground.
+    this.dartIncoming = Infinity;
+    for (const d of this.darts) {
+      if (d.life <= 0) continue;
+      d.life -= dt;
+      d.speed = Math.min(DART_SPEED, d.speed + 30 * dt);
+      const to = tmpA.copy(g.pos).sub(d.pos);
+      const dist = to.length();
+      if (d.tracking && active) {
+        to.normalize();
+        const off = d.dir.angleTo(to);
+        if (inCloud) { d.tracking = false; out.push({ type: 'dartShaken', how: 'cloud' }); }
+        else if (g.trick && dist < 16) { d.tracking = false; out.push({ type: 'dartShaken', how: 'roll' }); }
+        else if (off > 1.2 && dist < 60) { d.tracking = false; out.push({ type: 'dartShaken', how: 'turn' }); }   // you broke past its turn
+        else {
+          // aim a little ahead of you, turn no faster than it can
+          const lead = tmpB.copy(g.pos).addScaledVector(g.vel, Math.min(0.6, dist / (d.speed + 1) * 0.5)).sub(d.pos).normalize();
+          turnToward(d.dir, lead, DART_TURN * dt);
+          this.dartIncoming = Math.min(this.dartIncoming, dist);
+        }
+      } else if (!active) d.tracking = false;
+      if (!d.tracking) d.life = Math.min(d.life, 1.5);
+      const prev = tmpC.copy(d.pos);
+      d.pos.addScaledVector(d.dir, d.speed * dt);
+      if (d.tracking && active && segDist(prev, d.pos, g.pos) < DART_HIT_R) {
+        if (this.hurtT <= 0) { out.push({ type: 'dartHit' }); this.hurtT = 0.8; }
+        this.puffs.burst(d.pos, tmpA.set(0, 2, 0), 5, 14, 0.8);
+        this.removeDart(d); continue;
+      }
+      if (d.pos.y < terrainHeight(d.pos.x, d.pos.z) + 0.3) {
+        if (d.tracking) out.push({ type: 'dartShaken', how: 'ground' });
+        this.puffs.burst(d.pos, tmpA.set(0, 5, 0), 5, 14, 0.9);
+        this.removeDart(d); continue;
+      }
+      // smoke trail so you can see it coming
+      d.trail -= dt;
+      if (d.trail <= 0) { d.trail = 0.03; this.puffs.burst(d.pos, tmpB.set(0, 0.5, 0), 0.6, 1, d.tracking ? 0.55 : 0.35); }
+      if (d.life <= 0) { this.puffs.burst(d.pos, tmpA.set(0, 1, 0), 2, 4, 0.5); this.removeDart(d); continue; }
+      d.mesh.position.copy(d.pos);
+      d.mesh.lookAt(tmpA.copy(d.pos).sub(d.dir));
+      d.mesh.rotateZ(t * 12);
+    }
+    this.darts = this.darts.filter((d) => d.life > 0);
+    if (this.dartIncoming < 200) this.tailThreat = Math.max(this.tailThreat, 1);
+
     // ---- crashes, clean-up, drawing
     for (const e of this.enemies) {
       if (e.alive && e.pos.y <= terrainHeight(e.pos.x, e.pos.z) + 2.6 && e.state === 'evade' && e.dir.y < -0.3) {
         // chased into the ground
-        this.kill(e, out, false, true);
+        this.kill(e, out, true);
       }
       if (!e.alive && e.dying < 90 && e.pos.y < terrainHeight(e.pos.x, e.pos.z) + 0.5) {
         this.puffs.burst(e.pos, tmpA.set(0, 6, 0), 6, 14, 1.0);
@@ -426,12 +499,11 @@ export class Dogfight {
     return out;
   }
 
-  private kill(e: Enemy, out: DogfightEvent[], locked: boolean, ground = false) {
+  private kill(e: Enemy, out: DogfightEvent[], ground = false) {
     e.alive = false; e.dying = 0.001; e.rollT = 0;
     this.kills++;
-    if (this.locked === e) this.locked = null;
     this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.3), 8, 22, 0.9);
-    out.push({ type: 'kill', role: e.role, locked, ground });
+    out.push({ type: 'kill', role: e.role, ground });
     this.spawnT = Math.min(this.spawnT, rand(5, 9));
   }
 }

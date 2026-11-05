@@ -78,19 +78,24 @@ camera.add(streaks);
 
 // ---------- Input, audio, HUD ----------
 const input = new Input(document);
-input.onSchemeChange = (sc) => { showControls(); popup(sc === 'wings' ? 'Wing sticks' : 'Classic sticks', sc === 'wings' ? 'one stick per wing' : 'left stick steers'); };
+const LAYOUT_NAMES = { flight: ['Flight sticks', 'left stick pitch + roll, right stick rudder + flare'], classic: ['Classic', 'one stick steers'], wings: ['Wing sticks', 'one stick per wing'] } as const;
+input.onSchemeChange = (sc) => { showControls(); popup(LAYOUT_NAMES[sc][0], LAYOUT_NAMES[sc][1]); };
 const audio = new WindAudio();
 const $ = (id: string) => document.getElementById(id)!;
 const hud = { hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('stats'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
 const PAD_HELP = {
-  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · <b>LB/RB</b> barrel roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = classic sticks',
-  classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>LT</b>/<b>A</b> brake, <b>LB/RB</b> roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = wing sticks',
+  flight: 'Controller (<b>flight sticks</b>): left stick = pitch + roll (the bank holds when you let go) · right stick ←→ = rudder · right stick back = flare/brake, forward = tuck<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · <b>LB/RB</b> barrel roll (dodge) · <b>Back</b> = next layout',
+  classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>LT</b>/<b>A</b> brake, <b>LB/RB</b> roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
+  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · <b>LB/RB</b> barrel roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
 };
-const KEYS_HELP = '<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> bank &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot<br><b>Q/E</b> barrel roll (while banking = dodge) &nbsp; hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop (Q/E at the top = half roll, back uphill)';
+const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.padScheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot<br><b>Q/E</b> barrel roll (while banking = dodge) &nbsp; hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop (Q/E at the top = half roll) &nbsp; <b>V</b> = change layout`;
+const TOUCH_HELP = () => input.padScheme === 'flight'
+  ? 'Left thumb: drag to pitch and roll (the bank holds when you let go)<br>Right thumb: drag ←→ for rudder, pull back to brake, push up to tuck<br>Flick the right side <b>←/→</b> to barrel roll · hold <b>FIRE</b> to shoot<br>Keep pulling down to loop (flick at the top to half-roll back uphill)'
+  : 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side <b>←/→</b> to barrel roll<br>Hold <b>FIRE</b> to shoot<br>Keep pulling down to loop (swipe at the top to half-roll back uphill)';
 const showControls = () => {
-  $('controls').innerHTML = isTouch ? 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side <b>←/→</b> to barrel roll<br>Hold <b>FIRE</b> to shoot (keep an enemy in front to lock on)<br>Keep pulling down to loop (swipe at the top to half-roll back uphill)' : `${KEYS_HELP}<br>${PAD_HELP[input.padScheme]}`;
+  $('controls').innerHTML = isTouch ? TOUCH_HELP() : `${KEYS_HELP()}<br>${PAD_HELP[input.padScheme]}`;
 };
 showControls();
 addEventListener('gamepadconnected', showControls);
@@ -123,7 +128,6 @@ const prevPos = new THREE.Vector3();
 let waterSkim = false, trickMinClear = 99, loopMinClear = 99, tunnelChain = 0, inCanyonRun = false, wasInCloud = false;
 let inLoop = false;
 let hp = 3, hpRegen = 0, hitFlash = 0, dodgeCd = 0, warnBeep = 0;
-let wasLocked: unknown = null;
 const cloudsHit = new Set<string>();
 const nearby: Obstacle[] = [];
 
@@ -201,7 +205,7 @@ function crash(title = 'Crunch!') {
 function onDogfight(ev: DogfightEvent) {
   switch (ev.type) {
     case 'spawn':
-      popup(ev.role === 'hunter' ? 'Hunter on your tail!' : 'Bandit ahead!', ev.role === 'hunter' ? 'shake it: break, brake or barrel roll' : 'chase it down and lock on');
+      popup(ev.role === 'hunter' ? 'Hunter on your tail!' : 'Bandit ahead!', ev.role === 'hunter' ? 'shake it: break, brake or barrel roll' : 'get it in front of your nose');
       audio.beep(700, 0.18, 0.08);
       break;
     case 'turned': popup('Bandit turned on you!', 'shake it'); break;
@@ -212,7 +216,7 @@ function onDogfight(ev: DogfightEvent) {
       combo++; comboTimer = 4;
       const pts = Math.round((ev.role === 'hunter' ? 600 : 450) * (ev.ground ? 1.5 : 1) * multiplier());
       score += pts;
-      popup(ev.ground ? `Ground kill! +${pts}` : `Shot down! +${pts}`, `${ev.role === 'hunter' ? 'hunter' : 'bandit'}${ev.locked ? ' · locked' : ''} · ${dogfight.kills} down`);
+      popup(ev.ground ? `Ground kill! +${pts}` : `Shot down! +${pts}`, `${ev.role === 'hunter' ? 'hunter' : 'bandit'} · ${dogfight.kills} down`);
       audio.thud(); audio.whoosh(0.8); rumble(0.6, 200); slowmo = 0.4;
       break;
     }
@@ -227,6 +231,22 @@ function onDogfight(ev: DogfightEvent) {
       if (dodgeCd <= 0) { const pts = Math.round(50 * multiplier()); score += pts; popup(`Dodged! +${pts}`, 'rolled through the shots'); dodgeCd = 0.8; }
       break;
     case 'escaped': popup('Bandit escaped'); break;
+    case 'dartLocking': audio.beep(950, 0.08, 0.06); break;
+    case 'dartLaunch': popup('DART!', 'roll as it closes, break hard, or hide in a cloud'); audio.whoosh(1); rumble(0.4, 120); break;
+    case 'dartShaken': {
+      const pts = Math.round((ev.how === 'ground' ? 300 : 200) * multiplier());
+      score += pts; combo++; comboTimer = 4;
+      const how = { roll: 'rolled out of its path', turn: 'it couldn\'t follow your turn', cloud: 'lost you in the cloud', ground: 'it hit the ground' }[ev.how];
+      popup(`Dart evaded! +${pts}`, how); audio.whoosh(0.9);
+      break;
+    }
+    case 'dartHit':
+      hp--; hpRegen = 0; hitFlash = 1; shake = Math.max(shake, 0.9);
+      rumble(1, 260); audio.thud();
+      puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.3), 4, 16, 0.7);
+      if (hp <= 0) crash('Darted!');
+      else popup('Dart hit!', `${hp} feather${hp > 1 ? 's' : ''} left`);
+      break;
   }
 }
 
@@ -238,9 +258,11 @@ const rets: HTMLElement[] = [];
 function drawDogfightHud(show: boolean) {
   radar.style.opacity = show ? '1' : '0';
   hud.hp.textContent = show ? '♥'.repeat(Math.max(0, hp)) + '♡'.repeat(Math.max(0, 3 - hp)) : '';
-  const threat = show ? dogfight.tailThreat : 0;
+  const threat = show ? Math.max(dogfight.tailThreat, dogfight.dartLockProgress) : 0;
   hud.warn.style.opacity = threat > 0 ? String((0.55 + 0.45 * Math.sin(t * (8 + threat * 14))) * Math.min(1, 0.4 + threat)) : '0';
-  hud.warn.textContent = threat > 0.7 ? '▼ LOCKED ON: BREAK! ▼' : '▼ ON YOUR TAIL ▼';
+  hud.warn.textContent = !show ? '' : dogfight.dartIncoming < Infinity ? `▲ DART ${Math.round(dogfight.dartIncoming)} m: BREAK! ▲`
+    : dogfight.dartLockProgress > 0 ? `▼ DART LOCK ${Math.round(dogfight.dartLockProgress * 100)}% ▼`
+    : threat > 0.7 ? '▼ IN ITS SIGHTS: BREAK! ▼' : '▼ ON YOUR TAIL ▼';
 
   // radar: you in the middle, nose up the screen
   const dpr = Math.min(2, devicePixelRatio), S = 112;
@@ -256,9 +278,6 @@ function drawDogfightHud(show: boolean) {
     c.strokeStyle = 'rgba(255,255,255,0.55)'; c.lineWidth = 1;
     c.beginPath(); c.arc(cx, cy, R, 0, Math.PI * 2); c.stroke();
     c.beginPath(); c.arc(cx, cy, R / 2, 0, Math.PI * 2); c.stroke();
-    // forward lock cone
-    c.fillStyle = 'rgba(255,255,255,0.12)';
-    c.beginPath(); c.moveTo(cx, cy); c.arc(cx, cy, R, -Math.PI / 2 - 0.26, -Math.PI / 2 + 0.26); c.fill();
     c.fillStyle = '#fff'; c.beginPath(); c.moveTo(cx, cy - 5); c.lineTo(cx - 4, cy + 4); c.lineTo(cx + 4, cy + 4); c.fill();
     const h = glider.heading, fx = -Math.sin(h), fz = -Math.cos(h);
     for (const e of dogfight.enemies) {
@@ -269,7 +288,15 @@ function drawDogfightHud(show: boolean) {
       ahead *= k; right *= k;
       c.fillStyle = e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
       c.beginPath(); c.arc(cx + right, cy - ahead, d > RADAR_RANGE ? 2.5 : 4, 0, Math.PI * 2); c.fill();
-      if (e === dogfight.locked) { c.strokeStyle = '#fff'; c.lineWidth = 1.5; c.beginPath(); c.arc(cx + right, cy - ahead, 7, 0, Math.PI * 2); c.stroke(); }
+    }
+    for (const d of dogfight.darts) {
+      if (!d.tracking) continue;
+      const dx = d.pos.x - glider.pos.x, dz = d.pos.z - glider.pos.z;
+      let ahead = dx * fx + dz * fz, right = dx * -fz + dz * fx;
+      const dd = Math.hypot(ahead, right), k = Math.min(1, dd / RADAR_RANGE) * R / Math.max(dd, 1e-3);
+      ahead *= k; right *= k;
+      c.fillStyle = '#fff'; c.strokeStyle = '#ff3b2e'; c.lineWidth = 2;
+      c.beginPath(); c.moveTo(cx + right, cy - ahead - 5); c.lineTo(cx + right - 4, cy - ahead + 4); c.lineTo(cx + right + 4, cy - ahead + 4); c.closePath(); c.fill(); c.stroke();
     }
   }
 
@@ -282,13 +309,24 @@ function drawDogfightHud(show: boolean) {
     let el = rets[n];
     if (!el) { el = document.createElement('div'); el.className = 'ret'; el.innerHTML = '<span></span>'; $('rets').appendChild(el); rets.push(el); }
     n++;
-    const locked = e === dogfight.locked, locking = e === dogfight.locking && !locked;
-    el.className = `ret ${e.role}${locked ? ' lock' : ''}`;
+    const locking = e.dartLock > 0;
+    el.className = `ret ${e.role}${locking ? ' lock' : ''}`;
     el.style.display = 'block';
-    const sc = locking ? 1.8 - 0.8 * Math.min(1, dogfight.lockT / 0.35) : 1;
-    el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px) scale(${sc})`;
+    el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
     const dist = Math.round(e.pos.distanceTo(glider.pos));
-    (el.firstChild as HTMLElement).textContent = locked ? `LOCK ${dist} m` : `${dist} m`;
+    (el.firstChild as HTMLElement).textContent = locking ? `LOCKING YOU ${dist} m` : `${dist} m`;
+  }
+  // darts coming at you
+  if (show) for (const d of dogfight.darts) {
+    if (!d.tracking) continue;
+    const v = tmp.copy(d.pos).project(camera);
+    if (v.z > 1 || Math.abs(v.x) > 1.1 || Math.abs(v.y) > 1.1) continue;
+    let el = rets[n];
+    if (!el) { el = document.createElement('div'); el.className = 'ret'; el.innerHTML = '<span></span>'; $('rets').appendChild(el); rets.push(el); }
+    n++;
+    el.className = 'ret dart'; el.style.display = 'block';
+    el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px) rotate(45deg)`;
+    (el.firstChild as HTMLElement).textContent = `DART ${Math.round(d.pos.distanceTo(glider.pos))} m`;
   }
   for (let i = n; i < rets.length; i++) rets[i].style.display = 'none';
 }
@@ -392,13 +430,16 @@ function frame(now: number) {
       glider.pitch += (Math.asin(THREE.MathUtils.clamp(wind.dir.y, -1, 1)) - glider.pitch) * Math.min(1, 1.5 * dt);
     }
     const finished = glider.step(dt, inp);
-    for (const ev of dogfight.update(dt, t, glider, inp.fire, true)) onDogfight(ev);
+    for (const ev of dogfight.update(dt, t, glider, inp.fire, true, wasInCloud)) onDogfight(ev);
     if (dogfight.shotThisFrame) audio.pew();
     if (dogfight.enemyShotThisFrame) audio.pew(true);
-    if (dogfight.locked && dogfight.locked !== wasLocked) audio.beep(1900, 0.12, 0.07);
-    wasLocked = dogfight.locked;
     warnBeep -= dt;
-    if (dogfight.tailThreat > 0 && warnBeep <= 0) { audio.beep(dogfight.tailThreat > 0.7 ? 1100 : 820, 0.07, 0.06); warnBeep = dogfight.tailThreat > 0.7 ? 0.18 : 0.6; }
+    if (dogfight.dartIncoming < Infinity) {
+      // incoming dart: beeps speed up as it closes
+      if (warnBeep <= 0) { audio.beep(1500, 0.05, 0.07); warnBeep = THREE.MathUtils.clamp(dogfight.dartIncoming / 400, 0.06, 0.3); }
+    } else if (dogfight.dartLockProgress > 0) {
+      if (warnBeep <= 0) { audio.beep(1250, 0.06, 0.06); warnBeep = 0.35 - 0.25 * dogfight.dartLockProgress; }
+    } else if (dogfight.tailThreat > 0 && warnBeep <= 0) { audio.beep(dogfight.tailThreat > 0.7 ? 1100 : 820, 0.07, 0.06); warnBeep = dogfight.tailThreat > 0.7 ? 0.18 : 0.6; }
     dodgeCd -= dt; hitFlash = Math.max(0, hitFlash - dt * 2.5);
     if (hp < 3 && (hpRegen += dt) > 20) { hp++; hpRegen = 0; popup('Feather regrown', `${hp}/3`); }
     // a loop starts when the nose comes steeply up (used for the low-loop bonus)

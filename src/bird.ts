@@ -99,6 +99,10 @@ export class Glider {
   trick: { type: 'roll' | 'half'; t: number; dur: number; dir: number; dodge: number } | null = null;
   spin = 0;              // visual barrel-roll angle
   overTop = false;       // passed inverted at the top of a loop
+  pitchVel = 0;          // smoothed pitch rate (rad/s): stick moves ease in and out instead of snapping
+  rollVel = 0;           // smoothed roll rate (flight layout)
+  yawVel = 0;            // smoothed rudder rate
+  slip = 0;              // visual yaw from the rudder
 
   /** Nose pointing past vertical (upside down part of a loop). */
   get looping() { return this.overTop || Math.abs(this.pitch) > Math.PI / 2; }
@@ -114,6 +118,7 @@ export class Glider {
       this.pitch = wrap(Math.PI - this.pitch);
       this.heading = wrap(this.heading + Math.PI);
       this.overTop = false;
+      this.pitchVel = -this.pitchVel; // same motion, measured the other way round
       this.spin = -dir * Math.PI;
       this.trick = { type: 'half', t: 0, dur: 0.45, dir, dodge: 0 };
       this.updateDir();
@@ -128,6 +133,7 @@ export class Glider {
     this.pos.set(x, y, z);
     this.speed = 32; this.pitch = NEUTRAL_PITCH; this.heading = heading; this.roll = 0; this.brake = 0;
     this.trick = null; this.spin = 0; this.overTop = false;
+    this.pitchVel = 0; this.rollVel = 0; this.yawVel = 0; this.slip = 0;
     this.updateDir();
   }
 
@@ -158,12 +164,22 @@ export class Glider {
     }
 
     const upright = Math.abs(this.pitch) <= Math.PI / 2 && !this.overTop;
-    // roll eases toward the stick, upside down too, so you can steer all the way round a loop
-    this.roll += (inp.roll * 1.2 - this.roll) * Math.min(1, 5 * dt);
+    // roll, upside down too, so you can steer all the way round a loop
+    if (inp.rollRate) {
+      // flight sim: the stick rolls the bird and the bank holds when you let go (easing back very gently)
+      this.rollVel += (inp.roll * 1.9 - this.rollVel) * Math.min(1, 6 * dt);
+      this.roll += this.rollVel * dt;
+      if (Math.abs(inp.roll) < 0.05) this.roll -= this.roll * 0.25 * dt;
+      this.roll = THREE.MathUtils.clamp(this.roll, -1.25, 1.25);
+    } else {
+      // classic: the stick sets the bank, eased so it doesn't snap
+      this.roll += (inp.roll * 1.2 - this.roll) * Math.min(1, 3.5 * dt);
+    }
 
     // pitch is rate-controlled; faster birds pull round tighter
     const rate = 1.5 + Math.max(0, this.speed - 30) * 0.02;
-    this.pitch += inp.pitch * rate * dt;
+    this.pitchVel += (inp.pitch * rate - this.pitchVel) * Math.min(1, 5 * dt);
+    this.pitch += this.pitchVel * dt;
     if (Math.abs(inp.pitch) < 0.05) {
       if (upright) this.pitch += (NEUTRAL_PITCH - this.pitch) * 0.9 * (1 - this.tuck) * dt; // settle into a glide (not while tucked)
       // let go upside down and the bird just holds its line (near the top it eases into a shallow
@@ -197,6 +213,10 @@ export class Glider {
     // toward the lowered wing (otherwise steering feels reversed over the top of a loop)
     const inverted = Math.cos(this.pitch) < 0 ? -1 : 1;
     this.heading -= inverted * (G * Math.tan(this.roll) / Math.max(this.speed, 12)) * 1.35 * (1 - 0.5 * this.tuck) * dt;
+    // rudder: a slow flat turn, no bank needed (handy for lining up a shot)
+    this.yawVel += ((inp.yaw ?? 0) * 0.7 - this.yawVel) * Math.min(1, 4 * dt);
+    this.heading -= inverted * this.yawVel * dt;
+    this.slip += (-this.yawVel * 0.35 - this.slip) * Math.min(1, 6 * dt);
 
     this.updateDir();
     this.vel.copy(this.dir).multiplyScalar(this.speed);
@@ -206,6 +226,6 @@ export class Glider {
 
   applyTo(obj: THREE.Object3D) {
     obj.position.copy(this.pos);
-    obj.rotation.set(this.pitch, this.heading, -(this.roll + this.spin), 'YXZ');
+    obj.rotation.set(this.pitch, this.heading + this.slip, -(this.roll + this.spin), 'YXZ');
   }
 }

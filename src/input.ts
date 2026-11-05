@@ -1,7 +1,9 @@
 // One input layer: keyboard, touch and gamepad all feed the same values.
 export interface InputState {
   pitch: number;   // -1 dive .. +1 pull up
-  roll: number;    // -1 left .. +1 right
+  roll: number;    // -1 left .. +1 right (a bank angle, or a roll *rate* in the flight layout)
+  yaw: number;     // -1 left .. +1 right: rudder, flat turn without banking (flight layout)
+  rollRate: boolean; // true: roll is rate-controlled (flight sim), false: stick sets the bank directly
   brake: number;   // 0..1
   tuck: number;    // 0..1: hold both bumpers (or Q+E) to fold the wings and dive
   fire: boolean;   // held: pea shooter
@@ -12,9 +14,14 @@ export interface InputState {
 
 const DEAD = 0.15;
 const dz = (v: number) => (Math.abs(v) < DEAD ? 0 : (v - Math.sign(v) * DEAD) / (1 - DEAD));
+/** Soft response curve: fine control near the middle, full deflection at the edge. */
+const expo = (v: number) => Math.sign(v) * (0.35 * Math.abs(v) + 0.65 * v * v);
+
+export type PadScheme = 'flight' | 'classic' | 'wings';
+const SCHEMES: PadScheme[] = ['flight', 'classic', 'wings'];
 
 export class Input {
-  state: InputState = { pitch: 0, roll: 0, brake: 0, tuck: 0, fire: false, anyPress: false, trick: null, source: 'keyboard' };
+  state: InputState = { pitch: 0, roll: 0, yaw: 0, rollRate: true, brake: 0, tuck: 0, fire: false, anyPress: false, trick: null, source: 'keyboard' };
   private trick: InputState['trick'] = null;
   private swipes = new Map<number, { x: number; y: number; t: number }>();
   private keys = new Set<string>();
@@ -22,6 +29,10 @@ export class Input {
   private stickId: number | null = null;
   private stickOrigin = { x: 0, y: 0 };
   private stickVec = { x: 0, y: 0 };
+  // second touch stick (right side) in the flight layout
+  private rStickId: number | null = null;
+  private rStickOrigin = { x: 0, y: 0 };
+  private rStickVec = { x: 0, y: 0 };
   private brakeIds = new Set<number>();
   private fireIds = new Set<number>();
   private mouseFire = false;
@@ -33,17 +44,17 @@ export class Input {
   private pendingRoll: 'rollL' | 'rollR' | null = null;
   private pendingAt = 0;
   private queueRoll(r: 'rollL' | 'rollR') { this.pendingRoll = r; this.pendingAt = performance.now(); }
-  /** Controller layout: 'wings' (one stick per wing) or 'classic' (left stick only). */
-  padScheme: 'wings' | 'classic' = 'classic';
-  onSchemeChange: ((s: 'wings' | 'classic') => void) | null = null;
+  /** Control layout: 'flight' (two sticks, flight-sim style, default), 'classic' (one stick) or 'wings' (one stick per wing). */
+  padScheme: PadScheme = 'flight';
+  onSchemeChange: ((s: PadScheme) => void) | null = null;
   toggleScheme() {
-    this.padScheme = this.padScheme === 'wings' ? 'classic' : 'wings';
-    try { localStorage.setItem('glide.padScheme', this.padScheme); } catch { /* storage unavailable */ }
+    this.padScheme = SCHEMES[(SCHEMES.indexOf(this.padScheme) + 1) % SCHEMES.length];
+    try { localStorage.setItem('glide.layout', this.padScheme); } catch { /* storage unavailable */ }
     this.onSchemeChange?.(this.padScheme);
   }
 
   constructor(target: HTMLElement | Document = document) {
-    try { if (localStorage.getItem('glide.padScheme') === 'wings') this.padScheme = 'wings'; } catch { /* ignore */ }
+    try { const v = localStorage.getItem('glide.layout') as PadScheme; if (SCHEMES.includes(v)) this.padScheme = v; } catch { /* ignore */ }
     this.stickEl = document.getElementById('stick')!;
     this.knobEl = document.getElementById('knob')!;
     addEventListener('keydown', (e) => {
@@ -51,6 +62,7 @@ export class Input {
         this.pressed = true;
         if (e.code === 'KeyQ') this.queueRoll('rollL');
         if (e.code === 'KeyE') this.queueRoll('rollR');
+        if (e.code === 'KeyV') this.toggleScheme();
       }
       this.keys.add(e.code);
       this.state.source = 'keyboard';
@@ -74,7 +86,9 @@ export class Input {
           this.stickVec = { x: 0, y: 0 };
           this.showStick(true);
         } else {
-          this.brakeIds.add(t.identifier);
+          if (this.padScheme === 'flight') {
+            if (this.rStickId === null) { this.rStickId = t.identifier; this.rStickOrigin = { x: t.clientX, y: t.clientY }; this.rStickVec = { x: 0, y: 0 }; }
+          } else this.brakeIds.add(t.identifier);
           this.swipes.set(t.identifier, { x: t.clientX, y: t.clientY, t: performance.now() });
         }
       }
@@ -89,6 +103,12 @@ export class Input {
           if (len > 1) { x /= len; y /= len; }
           this.stickVec = { x, y };
           this.knobEl.style.transform = `translate(${x * R}px, ${y * R}px)`;
+        } else if (t.identifier === this.rStickId) {
+          const R = 60;
+          let x = (t.clientX - this.rStickOrigin.x) / R, y = (t.clientY - this.rStickOrigin.y) / R;
+          const len = Math.hypot(x, y);
+          if (len > 1) { x /= len; y /= len; }
+          this.rStickVec = { x, y };
         }
       }
     }, opts);
@@ -96,14 +116,16 @@ export class Input {
       e.preventDefault();
       for (const t of (Array.from((e as TouchEvent).changedTouches) as Touch[])) {
         if (t.identifier === this.stickId) { this.stickId = null; this.stickVec = { x: 0, y: 0 }; this.showStick(false); }
+        if (t.identifier === this.rStickId) { this.rStickId = null; this.rStickVec = { x: 0, y: 0 }; }
         this.brakeIds.delete(t.identifier);
         if (this.fireIds.delete(t.identifier)) continue;
         // quick sideways swipe on the right side = barrel roll
         const sw = this.swipes.get(t.identifier);
         this.swipes.delete(t.identifier);
-        if (sw && performance.now() - sw.t < 450) {
+        const flick = this.padScheme === 'flight' ? 280 : 450; // the right stick drags slower than a flick
+        if (sw && performance.now() - sw.t < flick) {
           const dx = t.clientX - sw.x, dy = t.clientY - sw.y;
-          if (Math.max(Math.abs(dx), Math.abs(dy)) > 45) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) > (this.padScheme === 'flight' ? 60 : 45)) {
             this.trick = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'rollL' : 'rollR') : null;
           }
         }
@@ -124,34 +146,48 @@ export class Input {
 
   poll(): InputState {
     const k = this.keys;
-    let pitch = 0, roll = 0, brake = 0;
+    let pitch = 0, roll = 0, yaw = 0, brake = 0, tuck = 0;
     let fire = this.mouseFire || this.fireIds.size > 0 || k.has('KeyF') || k.has('KeyJ') || k.has('Enter');
     // keyboard: W / Up = nose down (dive), S / Down = pull up (flight-sim style)
     if (k.has('KeyW') || k.has('ArrowUp')) pitch -= 1;
     if (k.has('KeyS') || k.has('ArrowDown')) pitch += 1;
     if (k.has('KeyA') || k.has('ArrowLeft')) roll -= 1;
     if (k.has('KeyD') || k.has('ArrowRight')) roll += 1;
+    if (k.has('KeyZ')) yaw -= 1;
+    if (k.has('KeyC')) yaw += 1;
     if (k.has('Space') || k.has('ShiftLeft') || k.has('ShiftRight')) brake = 1;
 
     // touch: stick up = dive, down = pull up
-    if (this.stickId !== null) { pitch += this.stickVec.y; roll += this.stickVec.x; }
+    if (this.stickId !== null) { pitch += expo(this.stickVec.y); roll += expo(this.stickVec.x); }
     if (this.brakeIds.size) brake = 1;
+    // flight layout, right touch stick: sideways = rudder, pull back = flare (brake), push up = tuck
+    if (this.rStickId !== null) {
+      yaw += expo(dz(this.rStickVec.x));
+      const ry = dz(this.rStickVec.y);
+      if (ry > 0) brake = Math.max(brake, ry); else tuck = Math.max(tuck, -ry);
+    }
 
     // gamepad
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     for (const gp of pads) {
       if (!gp) continue;
       const ax = dz(gp.axes[0] ?? 0), ay = dz(gp.axes[1] ?? 0);
-      const ry = dz(gp.axes[3] ?? 0);
-      if (ax || ay || ry) this.state.source = 'gamepad';
-      if (this.padScheme === 'wings') {
+      const rx = dz(gp.axes[2] ?? 0), ry = dz(gp.axes[3] ?? 0);
+      if (ax || ay || rx || ry) this.state.source = 'gamepad';
+      if (this.padScheme === 'flight') {
+        // flight sim: left stick = pitch + roll rate, right stick X = rudder,
+        // right stick back = flare (air-brake), forward = tuck (fold the wings)
+        roll += expo(ax); pitch += expo(ay);
+        yaw += expo(rx);
+        if (ry > 0) brake = Math.max(brake, ry); else tuck = Math.max(tuck, -ry);
+      } else if (this.padScheme === 'wings') {
         // wing sticks: left stick Y is the left wing, right stick Y is the right wing.
         // Stick up lifts that wing. Both up = dive, both down = climb,
         // opposite = hard bank (right up + left down = sharp left).
         roll += (ry - ay) * 0.75;
         pitch += (ay + ry) * 0.6;
       } else {
-        roll += ax; pitch += ay;
+        roll += expo(ax); pitch += expo(ay);
       }
       // RT or X fires the pea shooter; LT or A is the air-brake
       const rt = gp.buttons[7]?.value ?? 0, lt = gp.buttons[6]?.value ?? 0;
@@ -175,11 +211,13 @@ export class Input {
     for (const gp of pads) { if (gp) { both ||= !!(gp.buttons[4]?.pressed && gp.buttons[5]?.pressed); break; } }
     if (both) this.pendingRoll = null;
     else if (this.pendingRoll && performance.now() - this.pendingAt > 90) { this.trick = this.pendingRoll; this.pendingRoll = null; }
-    this.state.tuck = both ? 1 : 0;
+    this.state.tuck = Math.max(both ? 1 : 0, tuck);
 
     const clamp = (v: number) => Math.max(-1, Math.min(1, v));
     this.state.pitch = clamp(this.invertPitch ? -pitch : pitch);
     this.state.roll = clamp(roll);
+    this.state.yaw = clamp(yaw);
+    this.state.rollRate = this.padScheme === 'flight';
     this.state.brake = Math.min(1, brake);
     this.state.fire = fire;
     this.state.anyPress = this.pressed;
