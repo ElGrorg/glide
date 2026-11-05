@@ -23,6 +23,17 @@ const DART_SPEED = 78;       // faster than a glide, slower than a tucked dive
 const DART_TURN = 1.25;      // rad/s: a hard break turns tighter than this up close
 const DART_LIFE = 7;
 const DART_HIT_R = 1.3;
+// Your homing darts: hold your nose on a bird to lock, then fire. Limited ammo that recharges.
+const LOCK_CONE = 0.26;     // ~15° either side of your nose
+const LOCK_KEEP = 0.6;      // once locked, hold it out to ~35°
+const LOCK_RANGE = 170;
+const LOCK_TIME = 1;        // hold your nose on a bird this long to lock
+export const MAX_DARTS = 2;
+const MY_DART_RECHARGE = 10; // seconds to earn one dart back
+const MY_DART_SPEED = 70;    // on top of your own speed
+const MY_DART_TURN = 2.6;    // rad/s: homes hard, but a bird that breaks across its path can outturn it
+const MY_DART_LIFE = 4.5;
+const MY_DART_HIT_R = 2.4;
 
 const HUNTER_COLORS: BirdPalette = { body: 0x3a3f4a, belly: 0x9aa0aa, wing: 0x2b2f38, tip: 0x121418 };
 const PREY_COLORS: BirdPalette = { body: 0x4f93c4, belly: 0xe8eef2, wing: 0x3a6c98, tip: 0x1d3350 };
@@ -55,6 +66,8 @@ export class Enemy {
   jinkT = 0;
   jink = new THREE.Vector3();
   rollT = 0; rollDir = 1;
+  /** Seconds left of a hard break to dodge an incoming dart of yours, and the heading it breaks toward. */
+  breakT = 0; breakDir = new THREE.Vector3();
   fireCd = 1.5; burst = 0;
   flash = 0;
   /** Seconds of heightened awareness after being shot at or targeted. */
@@ -132,6 +145,8 @@ export class Enemy {
 
 interface Pea { mesh: THREE.Mesh; pos: THREE.Vector3; vel: THREE.Vector3; life: number; enemy: boolean; near: number }
 
+interface MyDart { mesh: THREE.Mesh; pos: THREE.Vector3; vel: THREE.Vector3; life: number; target: Enemy | null }
+
 /** A homing dart fired at you. `tracking` goes false once you shake it; then it flies straight and fizzles. */
 export interface Dart { mesh: THREE.Group; pos: THREE.Vector3; dir: THREE.Vector3; speed: number; life: number; tracking: boolean; trail: number; closest: number }
 
@@ -146,6 +161,9 @@ export type DogfightEvent =
   | { type: 'dartLaunch' }
   | { type: 'dartShaken'; how: 'flare' | 'turn' | 'cloud' | 'ground' }
   | { type: 'dartHit' }
+  | { type: 'myDart' }
+  | { type: 'noLock' }
+  | { type: 'myDartMiss' }
   | { type: 'hitPlayer' }
   | { type: 'dodged' }
   | { type: 'escaped' };
@@ -159,6 +177,16 @@ export class Dogfight {
   private lastRole: Role = 'prey';
   kills = 0;
   darts: Dart[] = [];
+  private myDarts: MyDart[] = [];
+  /** Your darts left, and 0..1 recharge progress toward the next one. */
+  dartsLeft = MAX_DARTS;
+  dartCharge = 0;
+  /** Enemy your darts will chase. */
+  locked: Enemy | null = null;
+  /** Enemy you're currently locking (before the lock completes), and progress 0..1. */
+  locking: Enemy | null = null;
+  lockT = 0;
+  myDartThisFrame = false;
   /** 0..1: how far the closest hunter is through locking a dart onto you. */
   dartLockProgress = 0;
   /** Closest dart still tracking you, in metres (Infinity if none). */
@@ -173,6 +201,14 @@ export class Dogfight {
     geo.rotateX(Math.PI / 2);
     const mine = new THREE.MeshBasicMaterial({ color: 0xfff27a, fog: false });
     const theirs = new THREE.MeshBasicMaterial({ color: 0xff4a3a, fog: false });
+    const dgeo = new THREE.ConeGeometry(0.28, 1.6, 6);
+    dgeo.rotateX(Math.PI / 2);
+    const dmat = new THREE.MeshBasicMaterial({ color: 0x7af0ff, fog: false });
+    for (let i = 0; i < MAX_DARTS + 2; i++) {
+      const mesh = new THREE.Mesh(dgeo, dmat);
+      mesh.visible = false; scene.add(mesh);
+      this.myDarts.push({ mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, target: null });
+    }
     for (let i = 0; i < 120; i++) {
       const enemy = i >= 60;
       const mesh = new THREE.Mesh(geo, enemy ? theirs : mine);
@@ -212,6 +248,9 @@ export class Dogfight {
     for (const p of this.peas) { p.life = 0; p.mesh.visible = false; }
     for (const d of this.darts) this.removeDart(d);
     this.darts = [];
+    for (const d of this.myDarts) { d.life = 0; d.mesh.visible = false; }
+    this.dartsLeft = MAX_DARTS; this.dartCharge = 0;
+    this.locked = null; this.locking = null; this.lockT = 0;
     this.spawnT = 9; this.kills = 0; this.tailThreat = 0; this.dartLockProgress = 0; this.dartIncoming = Infinity;
   }
 
@@ -243,10 +282,11 @@ export class Dogfight {
 
   /** Advance everything. `active` is false on the crash screen: enemies keep flying but hold fire.
    *  `inCloud`: you're inside a cloud, which breaks dart locks. */
-  update(dt: number, t: number, g: Glider, fire: boolean, active: boolean, inCloud = false): DogfightEvent[] {
+  update(dt: number, t: number, g: Glider, fire: boolean, dart: boolean, active: boolean, inCloud = false): DogfightEvent[] {
     const out: DogfightEvent[] = [];
     this.dartLockProgress = 0;
     this.shotThisFrame = false;
+    this.myDartThisFrame = false;
     this.enemyShotThisFrame = false;
 
     // ---- spawning: one at a time to start, two once you've got a couple of kills
@@ -293,6 +333,7 @@ export class Dogfight {
       e.seenPos.addScaledVector(e.seenVel, dt).lerp(g.pos, k);
       e.seenVel.lerp(g.vel, k);
       e.lostT = Math.max(0, e.lostT - dt);
+      e.breakT = Math.max(0, e.breakT - dt);
       // a dodge roll right in front of a close hunter makes it lose you
       if (e.role === 'hunter' && g.trick && g.trick.dodge > 10 && behindYou && dist < 70 && e.lostT <= 0) {
         e.lostT = 2.5; out.push({ type: 'shaken' });
@@ -309,7 +350,11 @@ export class Dogfight {
       const evade = threatened && (e.role === 'prey' || dist < 100);
       e.state = evade ? 'evade' : e.role === 'hunter' ? 'attack' : 'cruise';
 
-      if (e.overT > 0) {
+      if (e.breakT > 0) {
+        // dart inbound: snap hard across its path, faster than the dart can follow
+        want.copy(e.breakDir); rate = 3.6; wantSpeed = Math.max(g.speed, e.speed);
+        e.state = 'evade'; e.aimAtPlayer = 0; e.dartLock = 0;
+      } else if (e.overT > 0) {
         // committed: it keeps going straight past you and only starts jinking once it's out in front
         want.copy(e.dir).add(tmpC.set(0, 0.12, 0)).normalize(); wantSpeed = e.speed; rate = 0.4; // passes just over your head
       } else if (e.state === 'evade') {
@@ -402,6 +447,80 @@ export class Dogfight {
       const v = g.dir.clone().multiplyScalar(PEA_SPEED).add(g.vel);
       this.shoot(false, muzzle, v);
       this.shotThisFrame = true;
+    }
+
+    // ---- lock-on: hold your nose on an enemy for a moment
+    let best: Enemy | null = null, bestErr = LOCK_CONE;
+    for (const e of this.enemies) {
+      if (!e.alive) continue;
+      const d = tmpA.copy(e.pos).sub(g.pos); const dist = d.length();
+      if (dist > LOCK_RANGE * 1.25) continue;
+      const err = g.dir.angleTo(d);
+      if (e === this.locked && err < LOCK_KEEP) { best = e; break; }
+      if (dist < LOCK_RANGE && err < bestErr) { best = e; bestErr = err; }
+    }
+    if (!active) best = null;
+    if (best && best === this.locked) { /* keep */ }
+    else if (best && best === this.locking) { this.lockT += dt; if (this.lockT >= LOCK_TIME) this.locked = best; }
+    else { this.locking = best; this.lockT = 0; this.locked = null; }
+    if (this.locked && !this.locked.alive) this.locked = null;
+
+    // ---- your homing darts: need a lock, limited ammo that recharges
+    if (this.dartsLeft < MAX_DARTS) {
+      this.dartCharge += dt / MY_DART_RECHARGE;
+      if (this.dartCharge >= 1) { this.dartCharge = 0; this.dartsLeft++; }
+    } else this.dartCharge = 0;
+    if (active && dart) {
+      const free = this.myDarts.find((d) => d.life <= 0);
+      if (!this.locked) out.push({ type: 'noLock' });
+      else if (this.dartsLeft > 0 && free) {
+        this.dartsLeft--;
+        free.pos.copy(g.pos).addScaledVector(g.dir, 1.6);
+        free.vel.copy(g.dir).multiplyScalar(MY_DART_SPEED).add(g.vel);
+        free.life = MY_DART_LIFE; free.target = this.locked; free.mesh.visible = true;
+        this.myDartThisFrame = true;
+        out.push({ type: 'myDart' });
+      }
+    }
+    const mprev = new THREE.Vector3();
+    for (const d of this.myDarts) {
+      if (d.life <= 0) continue;
+      d.life -= dt;
+      const tg = d.target;
+      if (tg && tg.alive) {
+        const sp = d.vel.length();
+        const to = tmpA.copy(tg.pos).sub(d.pos);
+        const dist = to.length();
+        // the target sees it coming: break hard across the dart's path, then roll when it's close
+        if (dist < 90 && tg.breakT <= 0) {
+          const side = tmpC.crossVectors(d.vel, UP).normalize().multiplyScalar(Math.random() < 0.5 ? 1 : -1);
+          tg.breakDir.copy(side).addScaledVector(d.vel.clone().normalize(), 0.15); tg.breakDir.y += rand(-0.35, 0.2); tg.breakDir.normalize();
+          tg.breakT = 1.3;
+        }
+        if (dist < 40 && tg.rollT <= 0 && tg.breakT > 0) { tg.rollT = 0.6; tg.rollDir = Math.random() < 0.5 ? 1 : -1; }
+        if (dist < 25 && tg.rollT > 0) d.target = null; // shaken off by a barrel roll
+        else {
+          const dir = tmpB.copy(d.vel).normalize();
+          turnToward(dir, to.normalize(), MY_DART_TURN * dt);
+          d.vel.copy(dir).multiplyScalar(Math.max(sp, MY_DART_SPEED + 20));
+        }
+      }
+      mprev.copy(d.pos);
+      d.pos.addScaledVector(d.vel, dt);
+      let ended = d.pos.y < terrainHeight(d.pos.x, d.pos.z);
+      for (const e of this.enemies) {
+        if (!e.alive || ended) continue;
+        if (segDist(mprev, d.pos, e.pos) < MY_DART_HIT_R) {
+          ended = true; e.hp = 0; e.flash = 0.2;
+          this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.2), 6, 10, 0.7);
+          out.push({ type: 'hitEnemy', enemy: e });
+          this.kill(e, out);
+        }
+      }
+      if (ended) d.life = 0;
+      else if (d.life <= 0) out.push({ type: 'myDartMiss' });
+      if (d.life <= 0) d.mesh.visible = false;
+      else { d.mesh.position.copy(d.pos); d.mesh.lookAt(tmpA.copy(d.pos).add(d.vel)); }
     }
 
     // ---- peas

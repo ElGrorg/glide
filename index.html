@@ -39,14 +39,25 @@
   @keyframes pulse { 50% { opacity: .45; } }
   #hp { top: calc(12px + env(safe-area-inset-top)); left: 16px; font-size: 22px; letter-spacing: 2px; color: #ff6b6b; }
   #radar { position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); width: 112px; height: 112px; pointer-events: none; opacity: 0; transition: opacity .3s; }
+  #darts { top: calc(44px + env(safe-area-inset-top)); left: 16px; font-size: 13px; font-weight: 800; letter-spacing: 1px; color: #7af0ff; display: flex; align-items: center; gap: 5px; opacity: 0; transition: opacity .3s; }
+  #darts i { width: 8px; height: 22px; border-radius: 4px 4px 1px 1px; background: #7af0ff; box-shadow: 0 0 6px var(--shadow); }
+  #darts i.off { background: rgba(255,255,255,.18); }
+  #darts i.cd { background: linear-gradient(to top, #7af0ff var(--p), rgba(255,255,255,.18) var(--p)); }
+  #darts.ready b { color: #fff; }
   #warn { top: calc(84px + env(safe-area-inset-top)); left: 0; right: 0; text-align: center; font-size: 20px; font-weight: 900; color: #ff5a4a; letter-spacing: 3px; opacity: 0; }
   #fire { position: fixed; right: 20px; bottom: calc(146px + env(safe-area-inset-bottom)); width: 84px; height: 84px; border-radius: 50%;
     border: 2px solid rgba(255,255,255,.75); background: rgba(255,90,60,.35); display: none; pointer-events: none;
     align-items: center; justify-content: center; font-weight: 900; font-size: 15px; letter-spacing: 1px; }
+  #dartBtn { position: fixed; right: 20px; bottom: calc(244px + env(safe-area-inset-bottom)); width: 72px; height: 72px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,.75); background: rgba(70,200,230,.35); display: none; pointer-events: none;
+    align-items: center; justify-content: center; font-weight: 900; font-size: 13px; letter-spacing: 1px; }
+  #dartBtn.dim { opacity: .4; }
   .ret { position: fixed; left: 0; top: 0; width: 30px; height: 30px; margin: -17px 0 0 -17px; border: 2px solid #ff5a4a; border-radius: 4px;
     pointer-events: none; display: none; box-shadow: 0 0 6px var(--shadow); }
   .ret.prey { border-color: #ffb347; }
   .ret.lock { border-color: #fff; border-radius: 50%; border-width: 3px; }
+  .ret.mylocking { border-color: #7af0ff; border-style: dashed; }
+  .ret.mylocked { border-color: #7af0ff; border-radius: 50%; border-width: 3px; }
   .ret.dart { border-color: #ff3b2e; border-width: 3px; width: 22px; height: 22px; margin: -13px 0 0 -13px; background: rgba(255,59,46,.25); }
   .ret.dart span { transform: translateX(-50%) rotate(-45deg); color: #ff8a80; }
   .ret span { position: absolute; top: -19px; left: 50%; transform: translateX(-50%); font-size: 11px; font-weight: 800; white-space: nowrap; color: #fff; }
@@ -66,7 +77,9 @@
   <div id="hp" class="hud"></div>
   <div id="warn" class="hud">▼ ON YOUR TAIL ▼</div>
   <canvas id="radar"></canvas>
+  <div id="darts" class="hud"></div>
   <div id="fire">FIRE</div>
+  <div id="dartBtn">DART</div>
   <div id="rets"></div>
   <div id="stick"><div id="knob"></div></div>
   <div id="overlay">

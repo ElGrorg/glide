@@ -6,7 +6,7 @@ import { Gates, type GateEvent } from './gates';
 import { BirdMesh, Glider } from './bird';
 import { Input } from './input';
 import { WindAudio } from './audio';
-import { Dogfight, type DogfightEvent } from './dogfight';
+import { Dogfight, MAX_DARTS, type DogfightEvent } from './dogfight';
 import { setWorldSeed } from './noise';
 
 // ---------- Renderer, scene, camera ----------
@@ -82,24 +82,24 @@ const LAYOUT_NAMES = { flight: ['Flight sticks', 'left stick pitches, right stic
 input.onSchemeChange = (sc) => { showControls(); popup(LAYOUT_NAMES[sc][0], LAYOUT_NAMES[sc][1]); };
 const audio = new WindAudio();
 const $ = (id: string) => document.getElementById(id)!;
-const hud = { hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('stats'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
+const hud = { hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('stats'), darts: $('darts'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
 const PAD_HELP = {
-  flight: 'Controller (<b>flight sticks</b>): left stick ↑↓ = dive / pull up · right stick ←→ = roll, both all the way round (bank holds when you let go)<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
-  classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
-  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
+  flight: 'Controller (<b>flight sticks</b>): left stick ↑↓ = dive / pull up · right stick ←→ = roll, both all the way round (bank holds when you let go)<br><b>RT</b>/<b>X</b> shoot · <b>Y</b> homing dart · <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
+  classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>Y</b> homing dart, <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
+  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>Y</b> homing dart · <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
 };
-const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.padScheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot<br>hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop &nbsp; <b>V</b> = change layout`;
+const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.padScheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot &nbsp; <b>R</b> or right-click = homing dart (hold your nose on a bird for 1 s to lock)<br>hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop &nbsp; <b>V</b> = change layout`;
 const TOUCH_HELP = () => input.padScheme === 'flight'
-  ? 'Left thumb: drag up to dive, down to pull up<br>Right thumb: drag ←→ to roll, all the way round if you like (the bank holds when you let go)<br>Hold <b>FIRE</b> to shoot<br>Keep pulling down to loop'
-  : 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Hold <b>FIRE</b> to shoot<br>Keep pulling down to loop';
+  ? 'Left thumb: drag up to dive, down to pull up<br>Right thumb: drag ←→ to roll, all the way round if you like (the bank holds when you let go)<br>Hold <b>FIRE</b> to shoot<br>Hold your nose on a bird to lock, then tap <b>DART</b><br>Keep pulling down to loop'
+  : 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Hold <b>FIRE</b> to shoot<br>Hold your nose on a bird to lock, then tap <b>DART</b><br>Keep pulling down to loop';
 const showControls = () => {
   $('controls').innerHTML = isTouch ? TOUCH_HELP() : `${KEYS_HELP()}<br>${PAD_HELP[input.padScheme]}`;
 };
 showControls();
 addEventListener('gamepadconnected', showControls);
-if (isTouch) $('fire').style.display = 'flex';
+if (isTouch) { $('fire').style.display = 'flex'; $('dartBtn').style.display = 'flex'; }
 $('go').textContent = isTouch ? 'Tap to glide' : 'Press any key or button to glide';
 
 let best = 0;
@@ -127,7 +127,8 @@ const near = new Map<string, { gap: number; type: string }>(); // obstacle id ->
 const prevPos = new THREE.Vector3();
 let waterSkim = false, trickMinClear = 99, loopMinClear = 99, tunnelChain = 0, inCanyonRun = false, wasInCloud = false;
 let inLoop = false;
-let hp = 3, hpRegen = 0, hitFlash = 0, dodgeCd = 0, warnBeep = 0;
+let hp = 3, hpRegen = 0, hitFlash = 0, dodgeCd = 0, warnBeep = 0, dartHint = 0;
+let wasLocked: unknown = null;
 const cloudsHit = new Set<string>();
 const nearby: Obstacle[] = [];
 
@@ -231,6 +232,9 @@ function onDogfight(ev: DogfightEvent) {
       if (dodgeCd <= 0) { const pts = Math.round(50 * multiplier()); score += pts; popup(`Dodged! +${pts}`, 'rolled through the shots'); dodgeCd = 0.8; }
       break;
     case 'escaped': popup('Bandit escaped'); break;
+    case 'myDart': popup('Dart away!', `${dogfight.dartsLeft} left`); break;
+    case 'noLock': if (dartHint <= 0) { popup('No lock', 'hold your nose on a bird for a second first'); dartHint = 1.5; } break;
+    case 'myDartMiss': popup('Dart missed', 'it lost the target'); break;
     case 'dartLocking': audio.beep(950, 0.08, 0.06); break;
     case 'dartLaunch': popup('DART!', 'brake hard as it closes, break hard, or hide in a cloud'); audio.whoosh(1); rumble(0.4, 120); break;
     case 'dartShaken': {
@@ -258,6 +262,16 @@ const rets: HTMLElement[] = [];
 function drawDogfightHud(show: boolean) {
   radar.style.opacity = show ? '1' : '0';
   hud.hp.textContent = show ? '♥'.repeat(Math.max(0, hp)) + '♡'.repeat(Math.max(0, 3 - hp)) : '';
+  // dart ammo: one pip per dart, the next one fills as it recharges
+  hud.darts.style.opacity = show ? '1' : '0';
+  if (show) {
+    const pips = Array.from({ length: MAX_DARTS }, (_, i) =>
+      i < dogfight.dartsLeft ? '<i></i>' : i === dogfight.dartsLeft ? `<i class="cd" style="--p:${Math.round(dogfight.dartCharge * 100)}%"></i>` : '<i class="off"></i>').join('');
+    hud.darts.innerHTML = `${pips}<b>DARTS${dogfight.locked && dogfight.dartsLeft ? ' · R' : ''}</b>`;
+    hud.darts.classList.toggle('ready', !!dogfight.locked && dogfight.dartsLeft > 0);
+    $('dartBtn').textContent = `DART ${dogfight.dartsLeft}`;
+    $('dartBtn').classList.toggle('dim', !dogfight.locked || dogfight.dartsLeft === 0);
+  }
   const threat = show ? Math.max(dogfight.tailThreat, dogfight.dartLockProgress) : 0;
   hud.warn.style.opacity = threat > 0 ? String((0.55 + 0.45 * Math.sin(t * (8 + threat * 14))) * Math.min(1, 0.4 + threat)) : '0';
   hud.warn.textContent = !show ? '' : dogfight.dartIncoming < Infinity ? `▲ DART ${Math.round(dogfight.dartIncoming)} m: BREAK! ▲`
@@ -310,11 +324,12 @@ function drawDogfightHud(show: boolean) {
     if (!el) { el = document.createElement('div'); el.className = 'ret'; el.innerHTML = '<span></span>'; $('rets').appendChild(el); rets.push(el); }
     n++;
     const locking = e.dartLock > 0;
-    el.className = `ret ${e.role}${locking ? ' lock' : ''}`;
+    const mine = e === dogfight.locked ? ' mylocked' : e === dogfight.locking ? ' mylocking' : '';
+    el.className = `ret ${e.role}${locking ? ' lock' : ''}${mine}`;
     el.style.display = 'block';
     el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
     const dist = Math.round(e.pos.distanceTo(glider.pos));
-    (el.firstChild as HTMLElement).textContent = locking ? `LOCKING YOU ${dist} m` : `${dist} m`;
+    (el.firstChild as HTMLElement).textContent = locking ? `LOCKING YOU ${dist} m` : e === dogfight.locked ? `LOCKED ${dist} m` : e === dogfight.locking ? `LOCK ${Math.round(dogfight.lockT * 100)}%` : `${dist} m`;
   }
   // darts coming at you
   if (show) for (const d of dogfight.darts) {
@@ -432,7 +447,10 @@ function frame(now: number) {
       glider.steerToward(wind.dir, Math.min(1, 1.5 * dt));
     }
     const finished = glider.step(dt, inp);
-    for (const ev of dogfight.update(dt, t, glider, inp.fire, true, wasInCloud)) onDogfight(ev);
+    for (const ev of dogfight.update(dt, t, glider, inp.fire, inp.dart, true, wasInCloud)) onDogfight(ev);
+    if (dogfight.myDartThisFrame) { audio.dart(); rumble(0.3, 80); }
+    if (dogfight.locked && dogfight.locked !== wasLocked) audio.beep(1900, 0.12, 0.07);
+    wasLocked = dogfight.locked;
     if (dogfight.shotThisFrame) audio.pew();
     if (dogfight.enemyShotThisFrame) audio.pew(true);
     warnBeep -= dt;
@@ -442,7 +460,7 @@ function frame(now: number) {
     } else if (dogfight.dartLockProgress > 0) {
       if (warnBeep <= 0) { audio.beep(1250, 0.06, 0.06); warnBeep = 0.35 - 0.25 * dogfight.dartLockProgress; }
     } else if (dogfight.tailThreat > 0 && warnBeep <= 0) { audio.beep(dogfight.tailThreat > 0.7 ? 1100 : 820, 0.07, 0.06); warnBeep = dogfight.tailThreat > 0.7 ? 0.18 : 0.6; }
-    dodgeCd -= dt; hitFlash = Math.max(0, hitFlash - dt * 2.5);
+    dartHint -= dt; dodgeCd -= dt; hitFlash = Math.max(0, hitFlash - dt * 2.5);
     if (hp < 3 && (hpRegen += dt) > 20) { hp++; hpRegen = 0; popup('Feather regrown', `${hp}/3`); }
     // a loop starts when the nose comes steeply up (used for the low-loop bonus)
     if (glider.free ? Math.abs(glider.pitch) > 0.9 || glider.looping : glider.pitch > 0.9 || glider.looping) {
@@ -548,7 +566,7 @@ function frame(now: number) {
     if (comboTimer <= 0) combo = 0;
   } else if (mode === 'crashed') {
     crashTimer += dt;
-    dogfight.update(dt, t, glider, false, false);
+    dogfight.update(dt, t, glider, false, false, false);
     glider.speed *= Math.exp(-4 * dt);
     glider.spin += dt * 6;
   } else {
