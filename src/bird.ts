@@ -87,10 +87,25 @@ export class Glider {
   heading = 0;           // radians, 0 = -Z
   roll = 0;              // radians, + right wing down
   brake = 0;
+  trick: { type: 'roll' | 'loop'; t: number; dur: number; dir: number; p0: number } | null = null;
+  spin = 0; // visual barrel-roll angle
+
+  /** Start a trick if possible. Loops need speed. */
+  startTrick(req: 'rollL' | 'rollR' | 'loop'): boolean {
+    if (this.trick) return false;
+    if (req === 'loop') {
+      if (this.speed < 24) return false;
+      this.trick = { type: 'loop', t: 0, dur: 2.5, dir: 1, p0: this.pitch };
+    } else {
+      this.trick = { type: 'roll', t: 0, dur: 0.7, dir: req === 'rollL' ? -1 : 1, p0: 0 };
+    }
+    return true;
+  }
 
   reset(x: number, y: number, z: number, heading = 0) {
     this.pos.set(x, y, z);
     this.speed = 32; this.pitch = NEUTRAL_PITCH; this.heading = heading; this.roll = 0; this.brake = 0;
+    this.trick = null; this.spin = 0;
     this.updateDir();
   }
 
@@ -99,7 +114,24 @@ export class Glider {
     this.dir.set(-Math.sin(this.heading) * cp, Math.sin(this.pitch), -Math.cos(this.heading) * cp);
   }
 
-  step(dt: number, inp: InputState) {
+  /** Advance the flight model. Returns the trick that just finished, if any. */
+  step(dt: number, inp: InputState): 'roll' | 'loop' | null {
+    let finished: 'roll' | 'loop' | null = null;
+    const tr = this.trick;
+    if (tr) {
+      tr.t += dt;
+      const f = Math.min(1, tr.t / tr.dur);
+      if (tr.type === 'roll') {
+        const e = f * f * (3 - 2 * f);
+        this.spin = tr.dir * e * Math.PI * 2;
+        // a barrel roll also jinks you sideways a little
+        const side = Math.sin(f * Math.PI) * tr.dir * 6 * dt;
+        this.pos.x += Math.cos(this.heading) * side;
+        this.pos.z -= Math.sin(this.heading) * side;
+      }
+      if (f >= 1) { finished = tr.type; this.trick = null; this.spin = 0; if (tr.type === 'loop') this.pitch = tr.p0; }
+    }
+    if (this.trick?.type === 'loop') return this.stepLoop(dt) ?? finished;
     // roll eases toward the stick
     const targetRoll = inp.roll * 1.05;
     this.roll += (targetRoll - this.roll) * Math.min(1, 5 * dt);
@@ -124,10 +156,24 @@ export class Glider {
     this.updateDir();
     this.vel.copy(this.dir).multiplyScalar(this.speed);
     this.pos.addScaledVector(this.vel, dt);
+    return finished;
+  }
+
+  /** Scripted loop: pitch sweeps a full circle, gravity and drag still act on speed. */
+  private stepLoop(dt: number): null {
+    const tr = this.trick!;
+    this.roll += (0 - this.roll) * Math.min(1, 8 * dt);
+    this.pitch = tr.p0 + Math.PI * 2 * Math.min(1, tr.t / tr.dur);
+    const acc = -G * Math.sin(this.pitch) - DRAG * this.speed * this.speed;
+    this.speed = Math.max(12, this.speed + acc * dt);
+    this.updateDir();
+    this.vel.copy(this.dir).multiplyScalar(this.speed);
+    this.pos.addScaledVector(this.vel, dt);
+    return null;
   }
 
   applyTo(obj: THREE.Object3D) {
     obj.position.copy(this.pos);
-    obj.rotation.set(this.pitch, this.heading, -this.roll, 'YXZ');
+    obj.rotation.set(this.pitch, this.heading, -(this.roll + this.spin), 'YXZ');
   }
 }

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { World, terrainHeight, valleyCenter, obstaclesNear, obstacleGap, type Obstacle } from './world';
+import { World, terrainHeight, valleyCenter, obstaclesNear, obstacleGap, canyonAmount, basePlane, CANYON_RIM, type Obstacle } from './world';
+import { Gates, type GateEvent } from './gates';
 import { BirdMesh, Glider } from './bird';
 import { Input } from './input';
 import { WindAudio } from './audio';
@@ -39,6 +40,7 @@ scene.add(sky);
 
 // ---------- World + bird ----------
 const world = new World(scene, 4);
+const gates = new Gates(scene);
 const glider = new Glider();
 const bird = new BirdMesh();
 scene.add(bird);
@@ -74,8 +76,8 @@ const hud = { score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('s
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
 $('controls').innerHTML = isTouch
-  ? 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake'
-  : '<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> bank<br><b>Space</b> air-brake &nbsp; Controller: left stick + triggers';
+  ? 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side: <b>←/→</b> barrel roll, <b>↑</b> loop'
+  : '<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> bank &nbsp; <b>Space</b> air-brake<br><b>Q/E</b> barrel roll &nbsp; <b>F</b> loop<br>Controller: left stick, triggers brake, <b>LB/RB</b> roll, <b>Y</b> loop';
 $('go').textContent = isTouch ? 'Tap to glide' : 'Press any key or button to glide';
 
 let best = 0;
@@ -99,7 +101,10 @@ type Mode = 'title' | 'flying' | 'crashed';
 let mode: Mode = 'title';
 let score = 0, combo = 0, comboTimer = 0, slowmo = 0, crashTimer = 0, shake = 0;
 let startZ = 0;
-const near = new Map<string, number>(); // obstacle id -> closest gap while passing
+const near = new Map<string, { gap: number; type: string }>(); // obstacle id -> closest gap while passing
+const prevPos = new THREE.Vector3();
+let trickMinClear = 99, tunnelChain = 0, canyonWarned = -1, inCanyonRun = false;
+let loopBack: THREE.Vector3 | null = null;
 const cloudsHit = new Set<string>();
 const nearby: Obstacle[] = [];
 
@@ -109,6 +114,9 @@ function spawn() {
   startZ = z;
   score = 0; combo = 0; comboTimer = 0; slowmo = 0; shake = 0;
   near.clear(); cloudsHit.clear();
+  gates.reset(); gates.update(glider.pos.z, 0);
+  prevPos.copy(glider.pos);
+  trickMinClear = 99; tunnelChain = 0; canyonWarned = -1; loopBack = null;
   placeCamera(true);
 }
 
@@ -123,6 +131,35 @@ function addCloseCall(gap: number, label: string) {
   audio.whoosh(veryClose ? 1 : 0.6);
   rumble(veryClose ? 0.8 : 0.4, 120);
   if (veryClose) slowmo = 0.5;
+}
+
+function onGate(e: GateEvent) {
+  if (e.type === 'tunnel') {
+    if (!e.hit) { if (tunnelChain > 0) popup('Tunnel broken'); tunnelChain = 0; return; }
+    tunnelChain++;
+    const pts = Math.round(30 * tunnelChain * multiplier());
+    score += pts; comboTimer = 4;
+    audio.whoosh(0.35);
+    if (e.index === e.total - 1) {
+      const full = tunnelChain === e.total;
+      const bonus = Math.round((full ? 500 : 150) * multiplier());
+      score += bonus; combo++;
+      popup(full ? `Wind tunnel! +${bonus}` : `Tunnel +${bonus}`, full ? 'every ring' : `${tunnelChain}/${e.total} rings`);
+      tunnelChain = 0;
+    }
+    return;
+  }
+  if (!e.hit) return;
+  combo++; comboTimer = 4;
+  if (e.type === 'ring') {
+    const pts = Math.round(80 * multiplier());
+    score += pts; glider.speed = Math.min(90, glider.speed + 8);
+    popup(`Ring +${pts}`, 'speed boost'); audio.whoosh(0.5);
+  } else {
+    const pts = Math.round((e.type === 'needle' ? 350 : 300) * multiplier());
+    score += pts; glider.speed = Math.min(90, glider.speed + 5);
+    popup(`${e.type === 'needle' ? 'Thread the needle' : 'Under the arch'} +${pts}`); audio.whoosh(1); rumble(0.5, 120);
+  }
 }
 
 function crash() {
@@ -145,12 +182,12 @@ function placeCamera(snap = false, dt = 0.016, lift = 0) {
   const flat = tmp.set(-Math.sin(g.heading), 0, -Math.cos(g.heading));
   // follow the flight path, but never so steeply that the horizon disappears
   const tilt = g.dir.clone(); tilt.y = Math.max(tilt.y, -0.4);
-  const back = flat.clone().lerp(tilt, 0.45).normalize();
-  const dist = 8.5 + Math.max(0, g.speed - 30) * 0.06;
+  const back = loopBack ?? flat.clone().lerp(tilt, 0.45).normalize();
+  const dist = (loopBack ? 14 : 8.5) + Math.max(0, g.speed - 30) * 0.06;
   const want = g.pos.clone().addScaledVector(back, -dist).add(new THREE.Vector3(0, 2.6 + lift, 0));
   const ground = terrainHeight(want.x, want.z) + 1.8;
   if (want.y < ground) want.y = ground;
-  const lookWant = g.pos.clone().addScaledVector(g.dir, 10);
+  const lookWant = loopBack ? g.pos.clone() : g.pos.clone().addScaledVector(g.dir, 10);
   const k = snap ? 1 : 1 - Math.exp(-7 * dt);
   camPos.lerp(want, k);
   camLook.lerp(lookWant, snap ? 1 : 1 - Math.exp(-10 * dt));
@@ -186,7 +223,22 @@ function frame(now: number) {
 
   let mist = 0, clearance = 99;
   if (mode === 'flying') {
-    glider.step(dt, inp);
+    prevPos.copy(glider.pos);
+    if (inp.trick && glider.startTrick(inp.trick)) {
+      trickMinClear = 99;
+      if (glider.trick?.type === 'loop') {
+        loopBack = new THREE.Vector3(-Math.sin(glider.heading), 0, -Math.cos(glider.heading));
+      }
+    }
+    // wind tunnels push you along and pull you toward the middle
+    const wind = gates.windAt(glider.pos);
+    if (wind) {
+      glider.speed = Math.min(90, glider.speed + 22 * dt);
+      glider.pos.lerp(wind.axis, Math.min(1, 1.2 * dt));
+      glider.pitch += (Math.asin(THREE.MathUtils.clamp(wind.dir.y, -1, 1)) - glider.pitch) * Math.min(1, 1.5 * dt);
+    }
+    const finished = glider.step(dt, inp);
+    if (!glider.trick) loopBack = null;
     const p = glider.pos;
     const ground = terrainHeight(p.x, p.z);
     clearance = p.y - ground;
@@ -194,6 +246,7 @@ function frame(now: number) {
 
     // obstacles: collision + close calls
     obstaclesNear(p.x, p.z, 14, nearby);
+    gates.obstacles(nearby);
     const seen = new Set<string>();
     for (const o of nearby) {
       const gap = obstacleGap(o, p.x, p.y, p.z) - 0.5; // bird radius
@@ -201,15 +254,36 @@ function frame(now: number) {
       if (gap < 6) {
         seen.add(o.id);
         const prev = near.get(o.id);
-        near.set(o.id, prev === undefined ? gap : Math.min(prev, gap));
+        near.set(o.id, { gap: prev === undefined ? gap : Math.min(prev.gap, gap), type: o.type });
       }
     }
-    if (mode === 'flying') for (const [id, gap] of near) {
+    if (mode === 'flying') for (const [id, nr] of near) {
       if (!seen.has(id)) {
         near.delete(id);
-        if (gap < 3.5) addCloseCall(gap, id[0] === 't' ? 'tree' : id[0] === 's' ? 'spire' : 'rock');
+        if (nr.gap < 3.5) addCloseCall(nr.gap, nr.type);
       }
     }
+
+    // tricks: score when they land, worth triple if pulled off low
+    trickMinClear = Math.min(trickMinClear, clearance);
+    if (finished && mode === 'flying') {
+      const low = trickMinClear < 10;
+      const base = finished === 'loop' ? 400 : 150;
+      const pts = Math.round(base * (low ? 3 : 1) * multiplier());
+      combo++; comboTimer = 4; score += pts;
+      popup(`${finished === 'loop' ? 'Loop' : 'Barrel roll'} +${pts}`, low ? 'LOW! x3' : '');
+      audio.whoosh(0.7);
+    }
+
+    // gates
+    gates.check(prevPos, p, (e: GateEvent) => onGate(e));
+
+    // canyon run: stay below the rim for a steady bonus
+    const c = canyonAmount(p.z);
+    inCanyonRun = c > 0.6 && p.y < basePlane(p.z) + CANYON_RIM * c - 8;
+    if (inCanyonRun) { score += dt * 25 * multiplier(); comboTimer = Math.max(comboTimer, 1.5); }
+    const aheadK = Math.floor((-p.z - 250) / 600);
+    if (canyonAmount(p.z - 250) > 0.6 && c < 0.2 && canyonWarned !== aheadK) { canyonWarned = aheadK; popup('Canyon ahead', 'dive in and stay below the rim'); }
 
     // ground skim
     if (clearance < 5 && mode === 'flying') {
@@ -254,6 +328,7 @@ function frame(now: number) {
 
   // stream terrain ahead of the bird
   world.update(gp.x + glider.dir.x * 180, gp.z + glider.dir.z * 180, 2);
+  gates.update(gp.z, t);
 
   placeCamera(false, dt, mode === 'crashed' ? Math.min(10, crashTimer * 8) : 0);
   sky.position.copy(camera.position);
@@ -276,7 +351,8 @@ function frame(now: number) {
   hud.mist.style.opacity = String(Math.min(0.9, mist * 2.2));
   const danger = mode === 'flying' ? THREE.MathUtils.clamp((5 - clearance) / 5, 0, 1) : 0;
   hud.edge.style.opacity = String(danger * 0.7);
-  hud.skim.style.opacity = String(danger > 0 ? 0.6 + danger * 0.4 : 0);
+  hud.skim.textContent = danger > 0 ? 'SKIM' : 'CANYON RUN';
+  hud.skim.style.opacity = String(danger > 0 ? 0.6 + danger * 0.4 : inCanyonRun && mode === 'flying' ? 0.7 : 0);
   hud.score.textContent = mode === 'title' ? '' : String(Math.floor(score));
   hud.combo.style.opacity = combo > 0 && mode === 'flying' ? '1' : '0';
   hud.combo.textContent = `combo x${multiplier().toFixed(1)}`;
@@ -294,4 +370,4 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
-(window as any).__glide = { glider, world, get mode() { return mode; } };
+(window as any).__glide = { glider, world, gates, get mode() { return mode; }, get score() { return score; }, canyonAmount, terrainHeight, valleyCenter };

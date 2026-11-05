@@ -4,6 +4,7 @@ export interface InputState {
   roll: number;    // -1 left .. +1 right
   brake: number;   // 0..1
   anyPress: boolean; // edge-triggered "start / restart"
+  trick: 'rollL' | 'rollR' | 'loop' | null; // edge-triggered trick request
   source: 'keyboard' | 'touch' | 'gamepad';
 }
 
@@ -11,7 +12,9 @@ const DEAD = 0.15;
 const dz = (v: number) => (Math.abs(v) < DEAD ? 0 : (v - Math.sign(v) * DEAD) / (1 - DEAD));
 
 export class Input {
-  state: InputState = { pitch: 0, roll: 0, brake: 0, anyPress: false, source: 'keyboard' };
+  state: InputState = { pitch: 0, roll: 0, brake: 0, anyPress: false, trick: null, source: 'keyboard' };
+  private trick: InputState['trick'] = null;
+  private swipes = new Map<number, { x: number; y: number; t: number }>();
   private keys = new Set<string>();
   private pressed = false;
   private stickId: number | null = null;
@@ -27,7 +30,12 @@ export class Input {
     this.stickEl = document.getElementById('stick')!;
     this.knobEl = document.getElementById('knob')!;
     addEventListener('keydown', (e) => {
-      if (!e.repeat) this.pressed = true;
+      if (!e.repeat) {
+        this.pressed = true;
+        if (e.code === 'KeyQ') this.trick = 'rollL';
+        if (e.code === 'KeyE') this.trick = 'rollR';
+        if (e.code === 'KeyF' || e.code === 'KeyL') this.trick = 'loop';
+      }
       this.keys.add(e.code);
       this.state.source = 'keyboard';
       if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
@@ -48,6 +56,7 @@ export class Input {
           this.showStick(true);
         } else {
           this.brakeIds.add(t.identifier);
+          this.swipes.set(t.identifier, { x: t.clientX, y: t.clientY, t: performance.now() });
         }
       }
     }, opts);
@@ -69,6 +78,15 @@ export class Input {
       for (const t of (Array.from((e as TouchEvent).changedTouches) as Touch[])) {
         if (t.identifier === this.stickId) { this.stickId = null; this.stickVec = { x: 0, y: 0 }; this.showStick(false); }
         this.brakeIds.delete(t.identifier);
+        // quick swipe on the right side = trick (left/right = barrel roll, up = loop)
+        const sw = this.swipes.get(t.identifier);
+        this.swipes.delete(t.identifier);
+        if (sw && performance.now() - sw.t < 450) {
+          const dx = t.clientX - sw.x, dy = t.clientY - sw.y;
+          if (Math.max(Math.abs(dx), Math.abs(dy)) > 45) {
+            this.trick = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'rollL' : 'rollR') : (dy < 0 ? 'loop' : null);
+          }
+        }
       }
     };
     target.addEventListener('touchend', end, opts);
@@ -108,7 +126,12 @@ export class Input {
       const a = gp.buttons[0]?.pressed ? 1 : 0;
       brake = Math.max(brake, rt, lt, a);
       gp.buttons.forEach((b, i) => {
-        if (b.pressed && !this.padButtonsPrev[i]) { this.pressed = true; this.state.source = 'gamepad'; }
+        if (b.pressed && !this.padButtonsPrev[i]) {
+          this.pressed = true; this.state.source = 'gamepad';
+          if (i === 4) this.trick = 'rollL';
+          if (i === 5) this.trick = 'rollR';
+          if (i === 3) this.trick = 'loop';
+        }
         this.padButtonsPrev[i] = b.pressed;
       });
       break; // first connected pad only
@@ -120,6 +143,8 @@ export class Input {
     this.state.brake = Math.min(1, brake);
     this.state.anyPress = this.pressed;
     this.pressed = false;
+    this.state.trick = this.trick;
+    this.trick = null;
     return this.state;
   }
 }
