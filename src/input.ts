@@ -7,6 +7,9 @@ export interface InputState {
   brake: number;   // 0..1
   tuck: number;    // 0..1: hold both bumpers (or Q+E) to fold the wings and dive
   fire: boolean;   // held: pea shooter
+  dart: boolean;   // edge-triggered: fire a homing dart at your locked target
+  aimX: number;    // -1..1 targeting reticle offset from your nose (right stick, mouse or right thumb)
+  aimY: number;    // -1..1, + = down the screen
   anyPress: boolean; // edge-triggered "start / restart"
   trick: 'rollL' | 'rollR' | null; // edge-triggered barrel-roll request
   source: 'keyboard' | 'touch' | 'gamepad';
@@ -21,7 +24,7 @@ export type PadScheme = 'flight' | 'classic' | 'wings';
 const SCHEMES: PadScheme[] = ['flight', 'classic', 'wings'];
 
 export class Input {
-  state: InputState = { pitch: 0, roll: 0, yaw: 0, rollRate: true, brake: 0, tuck: 0, fire: false, anyPress: false, trick: null, source: 'keyboard' };
+  state: InputState = { pitch: 0, roll: 0, yaw: 0, rollRate: true, brake: 0, tuck: 0, fire: false, dart: false, aimX: 0, aimY: 0, anyPress: false, trick: null, source: 'keyboard' };
   private trick: InputState['trick'] = null;
   private swipes = new Map<number, { x: number; y: number; t: number }>();
   private keys = new Set<string>();
@@ -36,6 +39,8 @@ export class Input {
   private brakeIds = new Set<number>();
   private fireIds = new Set<number>();
   private mouseFire = false;
+  private dartReq = false;
+  private mouseAim: { x: number; y: number } | null = null;
   private padButtonsPrev: boolean[] = [];
   private stickEl: HTMLElement;
   private knobEl: HTMLElement;
@@ -63,6 +68,7 @@ export class Input {
         if (e.code === 'KeyQ') this.queueRoll('rollL');
         if (e.code === 'KeyE') this.queueRoll('rollR');
         if (e.code === 'KeyV') this.toggleScheme();
+        if (e.code === 'KeyR') this.dartReq = true;
       }
       this.keys.add(e.code);
       this.state.source = 'keyboard';
@@ -77,8 +83,12 @@ export class Input {
       this.state.source = 'touch';
       this.pressed = true;
       for (const t of (Array.from((e as TouchEvent).changedTouches) as Touch[])) {
-        const fb = document.getElementById('fire')?.getBoundingClientRect();
-        if (fb && fb.width && t.clientX >= fb.left - 12 && t.clientX <= fb.right + 12 && t.clientY >= fb.top - 12 && t.clientY <= fb.bottom + 12) {
+        const hit = (id: string) => {
+          const b = document.getElementById(id)?.getBoundingClientRect();
+          return !!b && b.width > 0 && t.clientX >= b.left - 12 && t.clientX <= b.right + 12 && t.clientY >= b.top - 12 && t.clientY <= b.bottom + 12;
+        };
+        if (hit('dartBtn')) { this.dartReq = true; this.fireIds.add(-1 - t.identifier); }
+        else if (hit('fire')) {
           this.fireIds.add(t.identifier);
         } else if (t.clientX < innerWidth * 0.5 && this.stickId === null) {
           this.stickId = t.identifier;
@@ -119,6 +129,7 @@ export class Input {
         if (t.identifier === this.rStickId) { this.rStickId = null; this.rStickVec = { x: 0, y: 0 }; }
         this.brakeIds.delete(t.identifier);
         if (this.fireIds.delete(t.identifier)) continue;
+        if (this.fireIds.delete(-1 - t.identifier)) continue;
         // quick sideways swipe on the right side = barrel roll
         const sw = this.swipes.get(t.identifier);
         this.swipes.delete(t.identifier);
@@ -133,7 +144,18 @@ export class Input {
     };
     target.addEventListener('touchend', end, opts);
     target.addEventListener('touchcancel', end, opts);
-    target.addEventListener('mousedown', (e: any) => { this.pressed = true; if ((e as MouseEvent).button === 0) this.mouseFire = true; });
+    target.addEventListener('mousedown', (e: any) => {
+      this.pressed = true;
+      if ((e as MouseEvent).button === 0) this.mouseFire = true;
+      if ((e as MouseEvent).button === 2) this.dartReq = true;
+    });
+    target.addEventListener('contextmenu', (e: any) => e.preventDefault());
+    addEventListener('mousemove', (e) => {
+      // the mouse aims the reticle (relative to the middle of the screen)
+      this.mouseAim = { x: (e.clientX / innerWidth) * 2 - 1, y: (e.clientY / innerHeight) * 2 - 1 };
+      if (this.state.source !== 'touch') this.state.source = 'keyboard';
+    });
+    addEventListener('mouseout', (e) => { if (!(e as MouseEvent).relatedTarget) this.mouseAim = null; });
     addEventListener('mouseup', () => { this.mouseFire = false; });
   }
 
@@ -147,7 +169,7 @@ export class Input {
   poll(): InputState {
     const k = this.keys;
     let pitch = 0, roll = 0, yaw = 0, brake = 0, tuck = 0;
-    let fire = this.mouseFire || this.fireIds.size > 0 || k.has('KeyF') || k.has('KeyJ') || k.has('Enter');
+    let fire = this.mouseFire || [...this.fireIds].some((id) => id >= 0) || k.has('KeyF') || k.has('KeyJ') || k.has('Enter');
     // keyboard: W / Up = nose down (dive), S / Down = pull up (flight-sim style)
     if (k.has('KeyW') || k.has('ArrowUp')) pitch -= 1;
     if (k.has('KeyS') || k.has('ArrowDown')) pitch += 1;
@@ -158,13 +180,12 @@ export class Input {
     if (k.has('Space') || k.has('ShiftLeft') || k.has('ShiftRight')) brake = 1;
 
     // touch: stick up = dive, down = pull up
-    if (this.stickId !== null) {
-      pitch += expo(this.stickVec.y);
-      if (this.padScheme !== 'flight') roll += expo(this.stickVec.x);
-    }
+    if (this.stickId !== null) { pitch += expo(this.stickVec.y); roll += expo(this.stickVec.x); }
     if (this.brakeIds.size) brake = 1;
-    // flight layout: left thumb pitches (up = dive, down = pull up), right thumb rolls
-    if (this.rStickId !== null) roll += expo(dz(this.rStickVec.x));
+    let aimX = 0, aimY = 0;
+    // flight layout: right thumb moves the targeting reticle
+    if (this.rStickId !== null) { aimX = this.rStickVec.x; aimY = this.rStickVec.y; }
+    else if (this.mouseAim && this.state.source === 'keyboard') { aimX = this.mouseAim.x * 1.6; aimY = this.mouseAim.y * 1.6; }
 
     // gamepad
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -174,8 +195,9 @@ export class Input {
       const rx = dz(gp.axes[2] ?? 0), ry = dz(gp.axes[3] ?? 0);
       if (ax || ay || rx || ry) this.state.source = 'gamepad';
       if (this.padScheme === 'flight') {
-        // flight sticks: left stick ↑↓ pitches, right stick ←→ rolls (the bank holds)
-        pitch += expo(ay); roll += expo(rx);
+        // flight sticks: left stick pitches and rolls (the bank holds), right stick aims the targeting reticle
+        pitch += expo(ay); roll += expo(ax);
+        if (this.state.source === 'gamepad') { aimX = rx; aimY = ry; }
       } else if (this.padScheme === 'wings') {
         // wing sticks: left stick Y is the left wing, right stick Y is the right wing.
         // Stick up lifts that wing. Both up = dive, both down = climb,
@@ -196,6 +218,7 @@ export class Input {
           if (i === 4) this.queueRoll('rollL');
           if (i === 5) this.queueRoll('rollR');
           if (i === 8) this.toggleScheme();
+          if (i === 3) this.dartReq = true;
         }
         this.padButtonsPrev[i] = b.pressed;
       });
@@ -216,6 +239,8 @@ export class Input {
     this.state.rollRate = this.padScheme === 'flight';
     this.state.brake = Math.min(1, brake);
     this.state.fire = fire;
+    this.state.dart = this.dartReq; this.dartReq = false;
+    this.state.aimX = clamp(aimX); this.state.aimY = clamp(aimY);
     this.state.anyPress = this.pressed;
     this.pressed = false;
     this.state.trick = this.trick;
