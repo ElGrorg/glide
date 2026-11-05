@@ -65,8 +65,6 @@ export class Input {
     addEventListener('keydown', (e) => {
       if (!e.repeat) {
         this.pressed = true;
-        if (e.code === 'KeyQ') this.queueRoll('rollL');
-        if (e.code === 'KeyE') this.queueRoll('rollR');
         if (e.code === 'KeyV') this.toggleScheme();
         if (e.code === 'KeyR') this.dartReq = true;
       }
@@ -137,7 +135,7 @@ export class Input {
         if (sw && performance.now() - sw.t < flick) {
           const dx = t.clientX - sw.x, dy = t.clientY - sw.y;
           if (Math.max(Math.abs(dx), Math.abs(dy)) > (this.padScheme === 'flight' ? 80 : 45)) {
-            this.trick = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'rollL' : 'rollR') : null;
+            // (barrel roll removed: flicks no longer do anything)
           }
         }
       }
@@ -180,12 +178,15 @@ export class Input {
     if (k.has('Space') || k.has('ShiftLeft') || k.has('ShiftRight')) brake = 1;
 
     // touch: stick up = dive, down = pull up
-    if (this.stickId !== null) { pitch += expo(this.stickVec.y); roll += expo(this.stickVec.x); }
+    if (this.stickId !== null) {
+      pitch += expo(this.stickVec.y);
+      if (this.padScheme !== 'flight') roll += expo(this.stickVec.x);
+    }
     if (this.brakeIds.size) brake = 1;
     let aimX = 0, aimY = 0;
-    // flight layout: right thumb moves the targeting reticle
-    if (this.rStickId !== null) { aimX = this.rStickVec.x; aimY = this.rStickVec.y; }
-    else if (this.mouseAim && this.state.source === 'keyboard') { aimX = this.mouseAim.x * 1.6; aimY = this.mouseAim.y * 1.6; }
+    // flight layout: left thumb pitches, right thumb rolls
+    if (this.rStickId !== null) roll += expo(dz(this.rStickVec.x));
+    if (this.mouseAim && this.state.source === 'keyboard') { aimX = this.mouseAim.x * 1.6; aimY = this.mouseAim.y * 1.6; }
 
     // gamepad
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -195,9 +196,8 @@ export class Input {
       const rx = dz(gp.axes[2] ?? 0), ry = dz(gp.axes[3] ?? 0);
       if (ax || ay || rx || ry) this.state.source = 'gamepad';
       if (this.padScheme === 'flight') {
-        // flight sticks: left stick pitches and rolls (the bank holds), right stick aims the targeting reticle
-        pitch += expo(ay); roll += expo(ax);
-        if (this.state.source === 'gamepad') { aimX = rx; aimY = ry; }
+        // flight sticks: left stick ↑↓ pitches, right stick ←→ rolls (the bank holds)
+        pitch += expo(ay); roll += expo(rx);
       } else if (this.padScheme === 'wings') {
         // wing sticks: left stick Y is the left wing, right stick Y is the right wing.
         // Stick up lifts that wing. Both up = dive, both down = climb,
@@ -215,8 +215,6 @@ export class Input {
       gp.buttons.forEach((b, i) => {
         if (b.pressed && !this.padButtonsPrev[i]) {
           this.pressed = true; this.state.source = 'gamepad';
-          if (i === 4) this.queueRoll('rollL');
-          if (i === 5) this.queueRoll('rollR');
           if (i === 8) this.toggleScheme();
           if (i === 3) this.dartReq = true;
         }

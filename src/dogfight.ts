@@ -144,7 +144,7 @@ export type DogfightEvent =
   | { type: 'kill'; role: Role; ground: boolean }
   | { type: 'dartLocking' }
   | { type: 'dartLaunch' }
-  | { type: 'dartShaken'; how: 'roll' | 'turn' | 'cloud' | 'ground' }
+  | { type: 'dartShaken'; how: 'flare' | 'turn' | 'cloud' | 'ground' }
   | { type: 'dartHit' }
   | { type: 'hitPlayer' }
   | { type: 'dodged' }
@@ -446,7 +446,7 @@ export class Dogfight {
         to.normalize();
         const off = d.dir.angleTo(to);
         if (inCloud) { d.tracking = false; out.push({ type: 'dartShaken', how: 'cloud' }); }
-        else if (g.trick && dist < 16) { d.tracking = false; out.push({ type: 'dartShaken', how: 'roll' }); }
+        else if (g.brake > 0.6 && dist < 16) { d.tracking = false; out.push({ type: 'dartShaken', how: 'flare' }); }   // flare hard and it shoots past
         else if (off > 1.2 && dist < 60) { d.tracking = false; out.push({ type: 'dartShaken', how: 'turn' }); }   // you broke past its turn
         else {
           // aim a little ahead of you, turn no faster than it can

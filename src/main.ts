@@ -78,7 +78,7 @@ camera.add(streaks);
 
 // ---------- Input, audio, HUD ----------
 const input = new Input(document);
-const LAYOUT_NAMES = { flight: ['Flight sticks', 'left stick pitches and rolls'], classic: ['Classic', 'one stick steers'], wings: ['Wing sticks', 'one stick per wing'] } as const;
+const LAYOUT_NAMES = { flight: ['Flight sticks', 'left stick pitches, right stick rolls'], classic: ['Classic', 'one stick steers'], wings: ['Wing sticks', 'one stick per wing'] } as const;
 input.onSchemeChange = (sc) => { showControls(); popup(LAYOUT_NAMES[sc][0], LAYOUT_NAMES[sc][1]); };
 const audio = new WindAudio();
 const $ = (id: string) => document.getElementById(id)!;
@@ -86,14 +86,14 @@ const hud = { hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo')
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
 const PAD_HELP = {
-  flight: 'Controller (<b>flight sticks</b>): left stick ↑↓ = dive / pull up, ←→ = roll, both all the way round (bank holds when you let go)<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · <b>LB/RB</b> barrel roll (dodge) · <b>Back</b> = next layout',
-  classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>LT</b>/<b>A</b> brake, <b>LB/RB</b> roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
-  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · <b>LB/RB</b> barrel roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
+  flight: 'Controller (<b>flight sticks</b>): left stick ↑↓ = dive / pull up · right stick ←→ = roll, both all the way round (bank holds when you let go)<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
+  classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
+  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
 };
-const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.padScheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot<br><b>Q/E</b> barrel roll (while banking = dodge) &nbsp; hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop (Q/E at the top = half roll) &nbsp; <b>V</b> = change layout`;
+const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.padScheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot<br>hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop &nbsp; <b>V</b> = change layout`;
 const TOUCH_HELP = () => input.padScheme === 'flight'
-  ? 'Left thumb: drag up to dive, down to pull up, ←→ to roll, all the way round if you like (the bank holds when you let go)<br>Flick the right side <b>←/→</b> to barrel roll · hold <b>FIRE</b> to shoot<br>Keep pulling down to loop'
-  : 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side <b>←/→</b> to barrel roll<br>Hold <b>FIRE</b> to shoot<br>Keep pulling down to loop (swipe at the top to half-roll back uphill)';
+  ? 'Left thumb: drag up to dive, down to pull up<br>Right thumb: drag ←→ to roll, all the way round if you like (the bank holds when you let go)<br>Hold <b>FIRE</b> to shoot<br>Keep pulling down to loop'
+  : 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Hold <b>FIRE</b> to shoot<br>Keep pulling down to loop';
 const showControls = () => {
   $('controls').innerHTML = isTouch ? TOUCH_HELP() : `${KEYS_HELP()}<br>${PAD_HELP[input.padScheme]}`;
 };
@@ -205,7 +205,7 @@ function crash(title = 'Crunch!') {
 function onDogfight(ev: DogfightEvent) {
   switch (ev.type) {
     case 'spawn':
-      popup(ev.role === 'hunter' ? 'Hunter on your tail!' : 'Bandit ahead!', ev.role === 'hunter' ? 'shake it: break, brake or barrel roll' : 'get it in front of your nose');
+      popup(ev.role === 'hunter' ? 'Hunter on your tail!' : 'Bandit ahead!', ev.role === 'hunter' ? 'shake it: break hard or brake' : 'get it in front of your nose');
       audio.beep(700, 0.18, 0.08);
       break;
     case 'turned': popup('Bandit turned on you!', 'shake it'); break;
@@ -232,11 +232,11 @@ function onDogfight(ev: DogfightEvent) {
       break;
     case 'escaped': popup('Bandit escaped'); break;
     case 'dartLocking': audio.beep(950, 0.08, 0.06); break;
-    case 'dartLaunch': popup('DART!', 'roll as it closes, break hard, or hide in a cloud'); audio.whoosh(1); rumble(0.4, 120); break;
+    case 'dartLaunch': popup('DART!', 'brake hard as it closes, break hard, or hide in a cloud'); audio.whoosh(1); rumble(0.4, 120); break;
     case 'dartShaken': {
       const pts = Math.round((ev.how === 'ground' ? 300 : 200) * multiplier());
       score += pts; combo++; comboTimer = 4;
-      const how = { roll: 'rolled out of its path', turn: 'it couldn\'t follow your turn', cloud: 'lost you in the cloud', ground: 'it hit the ground' }[ev.how];
+      const how = { flare: 'it shot past as you braked', turn: 'it couldn\'t follow your turn', cloud: 'lost you in the cloud', ground: 'it hit the ground' }[ev.how];
       popup(`Dart evaded! +${pts}`, how); audio.whoosh(0.9);
       break;
     }
