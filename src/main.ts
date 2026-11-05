@@ -6,6 +6,7 @@ import { Gates, type GateEvent } from './gates';
 import { BirdMesh, Glider } from './bird';
 import { Input } from './input';
 import { WindAudio } from './audio';
+import { Dogfight, type DogfightEvent } from './dogfight';
 
 // ---------- Renderer, scene, camera ----------
 const SKY = new THREE.Color(0x9fd3f0);
@@ -47,6 +48,7 @@ const puffs = new CloudPuffs(scene);
 const skyNow = SKY.clone();
 const skyMat = () => (sky.material as THREE.ShaderMaterial).uniforms.bottom.value as THREE.Color;
 const glider = new Glider();
+const dogfight = new Dogfight(scene, puffs);
 const bird = new BirdMesh();
 scene.add(bird);
 
@@ -78,19 +80,20 @@ const input = new Input(document);
 input.onSchemeChange = (sc) => { showControls(); popup(sc === 'wings' ? 'Wing sticks' : 'Classic sticks', sc === 'wings' ? 'one stick per wing' : 'left stick steers'); };
 const audio = new WindAudio();
 const $ = (id: string) => document.getElementById(id)!;
-const hud = { score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('stats'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
+const hud = { hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('stats'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
 const PAD_HELP = {
-  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>LB/RB</b> barrel roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · triggers brake · <b>Back</b> = classic sticks',
-  classic: 'Controller (<b>classic</b>): left stick steers, triggers brake, <b>LB/RB</b> roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = wing sticks',
+  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · <b>LB/RB</b> barrel roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = classic sticks',
+  classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>LT</b>/<b>A</b> brake, <b>LB/RB</b> roll (roll while turning = dodge) · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = wing sticks',
 };
-const KEYS_HELP = '<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> bank &nbsp; <b>Space</b> air-brake<br><b>Q/E</b> barrel roll (while banking = dodge) &nbsp; hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop';
+const KEYS_HELP = '<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> bank &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot<br><b>Q/E</b> barrel roll (while banking = dodge) &nbsp; hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop';
 const showControls = () => {
-  $('controls').innerHTML = isTouch ? 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side <b>←/→</b> to barrel roll<br>Keep pulling down to loop' : `${KEYS_HELP}<br>${PAD_HELP[input.padScheme]}`;
+  $('controls').innerHTML = isTouch ? 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Swipe the right side <b>←/→</b> to barrel roll<br>Hold <b>FIRE</b> to shoot (keep an enemy in front to lock on)<br>Keep pulling down to loop' : `${KEYS_HELP}<br>${PAD_HELP[input.padScheme]}`;
 };
 showControls();
 addEventListener('gamepadconnected', showControls);
+if (isTouch) $('fire').style.display = 'flex';
 $('go').textContent = isTouch ? 'Tap to glide' : 'Press any key or button to glide';
 
 let best = 0;
@@ -118,6 +121,8 @@ const near = new Map<string, { gap: number; type: string }>(); // obstacle id ->
 const prevPos = new THREE.Vector3();
 let waterSkim = false, trickMinClear = 99, loopMinClear = 99, tunnelChain = 0, inCanyonRun = false, wasInCloud = false;
 let loopBack: THREE.Vector3 | null = null;
+let hp = 3, hpRegen = 0, hitFlash = 0, dodgeCd = 0, warnBeep = 0;
+let wasLocked: unknown = null;
 const cloudsHit = new Set<string>();
 const nearby: Obstacle[] = [];
 
@@ -132,6 +137,7 @@ function spawn(fresh = true) {
   prevPos.copy(glider.pos);
   trickMinClear = 99; tunnelChain = 0; loopBack = null; wasInCloud = false;
   puffs.clear();
+  dogfight.reset(); hp = 3; hpRegen = 0; hitFlash = 0;
   // build the opening stretch straight away
   for (let i = 0; i < 10 && world.update(glider.pos.x, glider.pos.z - 150, 8) > 0; i++);
   placeCamera(true);
@@ -180,15 +186,109 @@ function onGate(e: GateEvent) {
   }
 }
 
-function crash() {
+function crash(title = 'Crunch!') {
   mode = 'crashed'; crashTimer = 0; shake = 1;
   audio.thud(); rumble(1, 300);
   const final = Math.floor(score);
   const isBest = final > best;
   if (isBest) { best = final; try { localStorage.setItem('glide.best', String(best)); } catch { /* ignore */ } }
   const dist = Math.round(startZ - glider.pos.z);
-  hud.overlay.innerHTML = `<div><h1>Crunch!</h1><p><b>${final}</b> points · ${dist} m downhill</p><p>${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div></div>`;
+  hud.overlay.innerHTML = `<div><h1>${title}</h1><p><b>${final}</b> points · ${dist} m downhill${dogfight.kills ? ` · ${dogfight.kills} shot down` : ''}</p><p>${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div></div>`;
   setTimeout(() => { if (mode === 'crashed') hud.overlay.classList.remove('hidden'); }, 700);
+}
+
+function onDogfight(ev: DogfightEvent) {
+  switch (ev.type) {
+    case 'spawn':
+      popup(ev.role === 'hunter' ? 'Hunter on your tail!' : 'Bandit ahead!', ev.role === 'hunter' ? 'shake it: break, brake or barrel roll' : 'chase it down and lock on');
+      audio.beep(700, 0.18, 0.08);
+      break;
+    case 'turned': popup('Bandit turned on you!', 'shake it'); break;
+    case 'overshoot': popup('Overshoot!', 'it flew past: get on its tail'); audio.whoosh(0.9); break;
+    case 'hitEnemy': audio.beep(1700, 0.03, 0.05); break;
+    case 'kill': {
+      combo++; comboTimer = 4;
+      const pts = Math.round((ev.role === 'hunter' ? 600 : 450) * (ev.ground ? 1.5 : 1) * multiplier());
+      score += pts;
+      popup(ev.ground ? `Ground kill! +${pts}` : `Shot down! +${pts}`, `${ev.role === 'hunter' ? 'hunter' : 'bandit'}${ev.locked ? ' · locked' : ''} · ${dogfight.kills} down`);
+      audio.thud(); audio.whoosh(0.8); rumble(0.6, 200); slowmo = 0.4;
+      break;
+    }
+    case 'hitPlayer':
+      hp--; hpRegen = 0; hitFlash = 1; shake = Math.max(shake, 0.6);
+      rumble(0.9, 180); audio.thud();
+      puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.3), 3, 10, 0.5);
+      if (hp <= 0) crash('Shot down!');
+      else popup('Hit!', `${hp} feather${hp > 1 ? 's' : ''} left`);
+      break;
+    case 'dodged':
+      if (dodgeCd <= 0) { const pts = Math.round(50 * multiplier()); score += pts; popup(`Dodged! +${pts}`, 'rolled through the shots'); dodgeCd = 0.8; }
+      break;
+    case 'escaped': popup('Bandit escaped'); break;
+  }
+}
+
+// ---------- Dogfight HUD: tail radar, reticles, feathers ----------
+const radar = $('radar') as HTMLCanvasElement;
+const rctx = radar.getContext('2d')!;
+const RADAR_RANGE = 300;
+const rets: HTMLElement[] = [];
+function drawDogfightHud(show: boolean) {
+  radar.style.opacity = show ? '1' : '0';
+  hud.hp.textContent = show ? '♥'.repeat(Math.max(0, hp)) + '♡'.repeat(Math.max(0, 3 - hp)) : '';
+  const threat = show ? dogfight.tailThreat : 0;
+  hud.warn.style.opacity = threat > 0 ? String((0.55 + 0.45 * Math.sin(t * (8 + threat * 14))) * Math.min(1, 0.4 + threat)) : '0';
+  hud.warn.textContent = threat > 0.7 ? '▼ LOCKED ON: BREAK! ▼' : '▼ ON YOUR TAIL ▼';
+
+  // radar: you in the middle, nose up the screen
+  const dpr = Math.min(2, devicePixelRatio), S = 112;
+  if (radar.width !== S * dpr) { radar.width = S * dpr; radar.height = S * dpr; }
+  const c = rctx; c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, S, S);
+  if (show) {
+    const R = S / 2 - 2, cx = S / 2, cy = S / 2;
+    c.fillStyle = 'rgba(20,40,60,0.35)'; c.beginPath(); c.arc(cx, cy, R, 0, Math.PI * 2); c.fill();
+    if (threat > 0) { // rear half glows red
+      c.fillStyle = `rgba(255,70,50,${0.25 + 0.35 * threat * (0.5 + 0.5 * Math.sin(t * 12))})`;
+      c.beginPath(); c.arc(cx, cy, R, 0, Math.PI); c.fill();
+    }
+    c.strokeStyle = 'rgba(255,255,255,0.55)'; c.lineWidth = 1;
+    c.beginPath(); c.arc(cx, cy, R, 0, Math.PI * 2); c.stroke();
+    c.beginPath(); c.arc(cx, cy, R / 2, 0, Math.PI * 2); c.stroke();
+    // forward lock cone
+    c.fillStyle = 'rgba(255,255,255,0.12)';
+    c.beginPath(); c.moveTo(cx, cy); c.arc(cx, cy, R, -Math.PI / 2 - 0.26, -Math.PI / 2 + 0.26); c.fill();
+    c.fillStyle = '#fff'; c.beginPath(); c.moveTo(cx, cy - 5); c.lineTo(cx - 4, cy + 4); c.lineTo(cx + 4, cy + 4); c.fill();
+    const h = glider.heading, fx = -Math.sin(h), fz = -Math.cos(h);
+    for (const e of dogfight.enemies) {
+      if (!e.alive) continue;
+      const dx = e.pos.x - glider.pos.x, dz = e.pos.z - glider.pos.z;
+      let ahead = dx * fx + dz * fz, right = dx * -fz + dz * fx;
+      const d = Math.hypot(ahead, right), k = Math.min(1, d / RADAR_RANGE) * R / Math.max(d, 1e-3);
+      ahead *= k; right *= k;
+      c.fillStyle = e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
+      c.beginPath(); c.arc(cx + right, cy - ahead, d > RADAR_RANGE ? 2.5 : 4, 0, Math.PI * 2); c.fill();
+      if (e === dogfight.locked) { c.strokeStyle = '#fff'; c.lineWidth = 1.5; c.beginPath(); c.arc(cx + right, cy - ahead, 7, 0, Math.PI * 2); c.stroke(); }
+    }
+  }
+
+  // reticles on enemies in view
+  let n = 0;
+  if (show) for (const e of dogfight.enemies) {
+    if (!e.alive) continue;
+    const v = tmp.copy(e.pos).project(camera);
+    if (v.z > 1 || Math.abs(v.x) > 1.1 || Math.abs(v.y) > 1.1) continue;
+    let el = rets[n];
+    if (!el) { el = document.createElement('div'); el.className = 'ret'; el.innerHTML = '<span></span>'; $('rets').appendChild(el); rets.push(el); }
+    n++;
+    const locked = e === dogfight.locked, locking = e === dogfight.locking && !locked;
+    el.className = `ret ${e.role}${locked ? ' lock' : ''}`;
+    el.style.display = 'block';
+    const sc = locking ? 1.8 - 0.8 * Math.min(1, dogfight.lockT / 0.35) : 1;
+    el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px) scale(${sc})`;
+    const dist = Math.round(e.pos.distanceTo(glider.pos));
+    (el.firstChild as HTMLElement).textContent = locked ? `LOCK ${dist} m` : `${dist} m`;
+  }
+  for (let i = n; i < rets.length; i++) rets[i].style.display = 'none';
 }
 
 // ---------- Camera ----------
@@ -252,6 +352,15 @@ function frame(now: number) {
       glider.pitch += (Math.asin(THREE.MathUtils.clamp(wind.dir.y, -1, 1)) - glider.pitch) * Math.min(1, 1.5 * dt);
     }
     const finished = glider.step(dt, inp);
+    for (const ev of dogfight.update(dt, t, glider, inp.fire, true)) onDogfight(ev);
+    if (dogfight.shotThisFrame) audio.pew();
+    if (dogfight.enemyShotThisFrame) audio.pew(true);
+    if (dogfight.locked && dogfight.locked !== wasLocked) audio.beep(1900, 0.12, 0.07);
+    wasLocked = dogfight.locked;
+    warnBeep -= dt;
+    if (dogfight.tailThreat > 0 && warnBeep <= 0) { audio.beep(dogfight.tailThreat > 0.7 ? 1100 : 820, 0.07, 0.06); warnBeep = dogfight.tailThreat > 0.7 ? 0.18 : 0.6; }
+    dodgeCd -= dt; hitFlash = Math.max(0, hitFlash - dt * 2.5);
+    if (hp < 3 && (hpRegen += dt) > 20) { hp++; hpRegen = 0; popup('Feather regrown', `${hp}/3`); }
     // hold the camera steady behind the loop instead of chasing the nose round
     if (glider.pitch > 0.9 || glider.looping) {
       if (!loopBack) { loopBack = new THREE.Vector3(-Math.sin(glider.heading), 0, -Math.cos(glider.heading)); loopMinClear = 99; }
@@ -355,6 +464,7 @@ function frame(now: number) {
     if (comboTimer <= 0) combo = 0;
   } else if (mode === 'crashed') {
     crashTimer += dt;
+    dogfight.update(dt, t, glider, false, false);
     glider.speed *= Math.exp(-4 * dt);
     glider.roll += dt * 6;
   } else {
@@ -412,7 +522,9 @@ function frame(now: number) {
   // HUD
   hud.mist.style.opacity = String(Math.min(0.9, mist * 2.2));
   const danger = mode === 'flying' ? THREE.MathUtils.clamp((5 - clearance) / 5, 0, 1) : 0;
-  hud.edge.style.opacity = String(danger * 0.7);
+  hud.edge.style.opacity = String(Math.max(danger * 0.7, hitFlash));
+  hud.edge.style.boxShadow = hitFlash > danger * 0.7 ? 'inset 0 0 140px 40px rgba(255, 40, 40, .85)' : '';
+  drawDogfightHud(mode === 'flying');
   hud.skim.textContent = danger > 0 ? (waterSkim ? 'WATER SKIM' : 'SKIM') : 'CANYON RUN';
   hud.skim.style.opacity = String(danger > 0 ? 0.6 + danger * 0.4 : inCanyonRun && mode === 'flying' ? 0.7 : 0);
   hud.score.textContent = mode === 'title' ? '' : String(Math.floor(score));
@@ -432,4 +544,4 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
-(window as any).__glide = { glider, world, gates, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
+(window as any).__glide = { glider, dogfight, world, gates, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
