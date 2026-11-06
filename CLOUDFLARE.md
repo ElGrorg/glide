@@ -5,6 +5,8 @@ One Cloudflare Worker does everything:
 - **Serves the game** (the built `dist/` folder) at `https://glide.<your-subdomain>.workers.dev`. Static files are free and unmetered.
 - **Runs the online rooms.** Each room code is one Durable Object. Every player holds a single WebSocket to it and it relays messages between them, the same job the host's browser did over PeerJS. Because it's a plain WebSocket to Cloudflare's edge, there's no WebRTC, no NAT punching and no TURN relay to fail: if a player can load a web page, they can play (home Wi-Fi, phone data, school/office networks that block peer to peer).
 
+A third piece, the **Lobby** Durable Object, keeps the list of public rooms for the in-game room browser (`GET /rooms`). Rooms report their player count to it when it changes and every 2 minutes while open; a room it hasn't heard from in 5 minutes drops off. Private rooms are never listed.
+
 The game knows which mode to use from how it was built:
 
 | Build | Online play goes through |
@@ -26,6 +28,8 @@ Rough numbers for this game (each player sends ~20 updates a second, the host ~1
 | Durable Object requests | 100,000 | ~10 h of 2-player play, or ~6 h of 4-player play, per day |
 | Durable Object duration | 13,000 GB-s | ~28 hours of open rooms per day |
 | Static files (the game) | unlimited | as many players as you like |
+
+The room browser adds very little: one request every 4 seconds per player looking at the list, and one every 2 minutes per open public room.
 
 An idle lobby costs nothing: the server uses the Hibernation API and Cloudflare answers keep-alive pings itself.
 

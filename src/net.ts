@@ -57,6 +57,19 @@ function relayBase(): string {
   return v.replace(/^http/, 'ws').replace(/\/+$/, '');
 }
 
+/** A public room as the room browser shows it. */
+export type RoomInfo = { code: string; name: string; players: number; max: number; phase: string; arena: number };
+
+/** Relay mode only: the open public rooms. Throws if the server can't be reached. */
+export async function listRooms(): Promise<RoomInfo[]> {
+  const base = relayBase();
+  if (!base) return [];
+  const r = await fetch(`${base.replace(/^ws/, 'http')}/rooms`, { cache: 'no-store' });
+  if (!r.ok) throw new Error(`rooms ${r.status}`);
+  return r.json();
+}
+export const hasRoomBrowser = () => !!relayBase();
+
 export class Net {
   peer: Peer | null = null;
   isHost = false;
@@ -79,10 +92,10 @@ export class Net {
   get peerCount() { return this.conns.size; }
 
   /** Open a room. Resolves with the room code once the signalling server has registered it. */
-  host(): Promise<string> {
+  host(opts: { name?: string; public?: boolean } = {}): Promise<string> {
     this.close();
     this.isHost = true; this.myId = 'p0';
-    if (this.relay) return this.relayHost();
+    if (this.relay) return this.relayHost(opts);
     return new Promise((resolve, reject) => {
       let tries = 0;
       const attempt = () => {
@@ -148,10 +161,11 @@ export class Net {
   // ---------- relay mode (Cloudflare Durable Object) ----------
 
   /** Connect a WebSocket to a room. Resolves with the first control message the server sends. */
-  private relayOpen(code: string, host: boolean): Promise<{ ws: WebSocket; first: NetMsg }> {
+  private relayOpen(code: string, host: boolean, opts: { name?: string; public?: boolean } = {}): Promise<{ ws: WebSocket; first: NetMsg }> {
     return new Promise((resolve, reject) => {
       let ws: WebSocket;
-      try { ws = new WebSocket(`${this.relay}/room/${code}${host ? '?role=host' : ''}`); }
+      const q = host ? `?role=host&public=${opts.public ? 1 : 0}&name=${encodeURIComponent(opts.name || '')}` : '';
+      try { ws = new WebSocket(`${this.relay}/room/${code}${q}`); }
       catch { reject(new Error('Couldn\'t reach the game server.')); return; }
       let settled = false;
       const timer = setTimeout(() => { if (!settled) { settled = true; ws.close(); reject(new Error('The game server took too long to answer. Check your connection.')); } }, 12000);
@@ -189,10 +203,10 @@ export class Net {
     this.pingTimer = window.setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send('ping'); }, 20000);
   }
 
-  private async relayHost(): Promise<string> {
+  private async relayHost(opts: { name?: string; public?: boolean }): Promise<string> {
     for (let tries = 0; tries < 5; tries++) {
       const code = makeCode();
-      const { ws, first } = await this.relayOpen(code, true);
+      const { ws, first } = await this.relayOpen(code, true, opts);
       if (first.t === '_taken') { ws.close(); continue; }
       if (first.t !== '_ready') { ws.close(); throw new Error('The game server refused the room.'); }
       this.code = code;
@@ -219,6 +233,11 @@ export class Net {
       if (m.to) this.conns.get(m.to)?.send(m);
       else for (const c of this.conns.values()) c.send(m);
     } else this.conns.get('p0')?.send(m);
+  }
+
+  /** Host, relay mode: update the room's entry in the room browser (public/private, match running, arena). */
+  meta(m: { public?: boolean; name?: string; phase?: 'lobby' | 'playing'; arena?: number }) {
+    if (this.ws && this.isHost && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ t: '_meta', ...m }));
   }
 
   /** Host only: assign an id (the host gives each joiner theirs in the welcome message). */

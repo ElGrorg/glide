@@ -9,7 +9,7 @@ import { WindAudio } from './audio';
 import { Dogfight, MAX_DARTS, PEA_SPEED, PEA_LIFE, flapAmount, type DogfightEvent } from './dogfight';
 import { setWorldSeed } from './noise';
 import { Online, PLAYER_CSS, colorIndex, type MatchRules } from './online';
-import { cleanCode } from './net';
+import { cleanCode, hasRoomBrowser, listRooms, type RoomInfo } from './net';
 
 // ---------- Renderer, scene, camera ----------
 const SKY = new THREE.Color(0x9fd3f0);
@@ -107,7 +107,7 @@ if (isTouch) { $('fire').style.display = 'flex'; $('dartBtn').style.display = 'f
 // ---------- Game settings: endless downhill or arena ----------
 type GameMode = 'endless' | 'arena' | 'online';
 const settings = { mode: 'endless' as GameMode, env: ARENAS.length /* = random */, enemies: 3, myDarts: true, enemyDarts: true,
-  /* online */ name: '', bots: 2, allies: false, code: '',
+  /* online */ name: '', bots: 2, allies: false, code: '', public: true,
   /* HUD: lead marker showing where to aim your peas */ lead: true };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('glide.settings') || '{}')); } catch { /* storage unavailable */ }
 settings.env = THREE.MathUtils.clamp(Math.round(settings.env) || 0, 0, ARENAS.length);
@@ -126,14 +126,47 @@ loadBest();
 /** The arena chosen for this match ("random" rolls one per match). */
 let arenaIdx = 0;
 
-const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'go', 'host', 'join'] as const;
+const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'go', 'vis', 'host', 'join', 'rooms'] as const;
 const GO_ROW = MENU_ROWS.indexOf('go');
 let menuRow = inviteCode ? MENU_ROWS.indexOf('join') : GO_ROW;
 function menuRows(): readonly string[] {
-  if (settings.mode === 'online') return online.active ? (online.isHost && online.phase === 'lobby' ? ['env', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'go'] : online.phase === 'lobby' ? ['lead'] : []) : ['mode', 'lead', 'host', 'join'];
+  const browser = hasRoomBrowser();
+  if (settings.mode === 'online') return online.active
+    ? (online.isHost && online.phase === 'lobby' ? [...(browser ? ['vis'] : []), 'env', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'go'] : online.phase === 'lobby' ? ['lead'] : [])
+    : ['mode', 'lead', ...(browser && openRooms.length ? ['rooms'] : []), 'join', ...(browser ? ['vis'] : []), 'host'];
   return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'go'] : ['mode', 'myDarts', 'enemyDarts', 'lead', 'go'];
 }
 let onlineNote = '';
+
+// ---------- Room browser (Cloudflare relay only): the open public rooms, refreshed while you look ----------
+let openRooms: RoomInfo[] = [];
+let roomsState: 'loading' | 'ok' | 'error' = 'loading';
+let roomSel = 0;
+let roomsTimer = 0, roomsLive = false;
+const browsing = () => mode === 'title' && settings.mode === 'online' && !online.active && hasRoomBrowser();
+async function refreshRooms() {
+  clearTimeout(roomsTimer);
+  if (!browsing()) { roomsLive = false; return; }
+  roomsLive = true;
+  try { openRooms = await listRooms(); roomsState = 'ok'; } catch { roomsState = 'error'; }
+  roomSel = Math.min(roomSel, Math.max(0, openRooms.length - 1));
+  const el = document.getElementById('roomList');
+  if (el) el.innerHTML = roomListHtml();
+  else if (browsing()) renderMenu();
+  roomsTimer = window.setTimeout(refreshRooms, document.hidden ? 15000 : 4000);
+}
+function roomListHtml() {
+  if (roomsState === 'loading') return '<p class="blurb small">Looking for open rooms…</p>';
+  if (roomsState === 'error') return '<p class="blurb small">Couldn\'t load the room list. Retrying…</p>';
+  if (!openRooms.length) return '<p class="blurb small">No public rooms right now. Host one!</p>';
+  const selRow = MENU_ROWS[menuRow] === 'rooms';
+  return openRooms.map((r, i) => {
+    const full = r.players >= r.max;
+    const where = r.phase === 'playing' ? `in a match${r.arena >= 0 && ARENAS[r.arena] ? ` · ${ARENAS[r.arena].name}` : ''}` : 'in the lobby';
+    return `<button class="room${selRow && i === roomSel ? ' sel' : ''}" data-act="joinroom:${esc(r.code)}"${full ? ' disabled' : ''}>
+      <b>${esc(r.name)}'s room</b><span>${r.players}/${r.max} players · ${where}${full ? ' · full' : ''}</span></button>`;
+  }).join('');
+}
 const esc = (s: string) => s.replace(/[<>&"]/g, '');
 const inviteLink = () => { const u = new URL(location.href); u.search = ''; u.hash = ''; u.searchParams.set('room', online.code); const sig = new URLSearchParams(location.search).get('signal'); if (sig) u.searchParams.set('signal', sig); return u.toString(); };
 function renderMenu() {
@@ -162,6 +195,10 @@ function renderMenu() {
   </div>`;
   showControls();
 }
+function visRow(sel: string) {
+  const on = online.active ? online.isPublic : settings.public;
+  return `${pickRow(sel, 'vis', 'Room', on ? 'Public' : 'Private')}<p class="blurb small">${on ? 'Listed under Open rooms for anyone to join' : 'Hidden: friends join with the code or invite link'}</p>`;
+}
 function leadRow(sel: string) { return pickRow(sel, 'lead', 'Lead marker', settings.lead ? 'On' : 'Off'); }
 function modeRow(sel: string) {
   const b = (m: GameMode, label: string) => `<button data-act="mode:${m}" class="${settings.mode === m ? 'on' : ''}">${label}</button>`;
@@ -179,18 +216,21 @@ function renderOnlineMenu() {
   let body = '';
   if (!online.active) {
     body = `${modeRow(sel('mode'))}
-    <p class="blurb">Fight in the arena with friends anywhere: different houses, Wi-Fi or phone data. One of you hosts a room and shares its code; everyone else joins with it.</p>
+    <p class="blurb">${hasRoomBrowser() ? 'Fight in the arena with other players anywhere. Join an open room, type a friend\'s code, or host your own.' : 'Fight in the arena with friends anywhere: different houses, Wi-Fi or phone data. One of you hosts a room and shares its code; everyone else joins with it.'}</p>
     <div class="row"><span class="lab">Your name</span><input id="nameIn" maxlength="16" placeholder="Bird" value="${esc(settings.name)}" autocomplete="off" spellcheck="false"></div>
     ${leadRow(sel('lead'))}
-    <div class="row${sel('host')}"><button data-act="host" class="go-btn">Host a room</button></div>
+    ${hasRoomBrowser() ? `<p class="blurb small">Open rooms</p><div class="rooms" id="roomList">${roomListHtml()}</div>` : ''}
     <div class="row${sel('join')}"><input id="codeIn" class="code" maxlength="8" placeholder="CODE" value="${esc(settings.code)}" autocomplete="off" autocapitalize="characters" spellcheck="false"><button data-act="join" class="go-btn">Join</button></div>
-    ${onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : ''}`;
+    ${onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : ''}
+    ${hasRoomBrowser() ? visRow(sel('vis')) : ''}
+    <div class="row${sel('host')}"><button data-act="host" class="go-btn">Host a room</button></div>`;
   } else if (online.phase === 'connecting') {
     body = `<p class="blurb">${online.isHost ? 'Opening a room…' : `Joining room <b>${esc(online.code)}</b>…`}</p>
     <div class="row"><button data-act="leave">Cancel</button></div>`;
   } else {
     const players = online.roster().map((p) => `<li style="color:${PLAYER_CSS[colorIndex(p.id)]}">${esc(p.name)}${p.id === online.myId ? ' (you)' : ''}${p.id === 'p0' ? ' · host' : ''}</li>`).join('');
     const hostSettings = online.isHost ? `
+      ${hasRoomBrowser() ? visRow(sel('vis')) : ''}
       ${pickRow(sel('env'), 'env', 'Arena', envName)}
       ${pickRow(sel('bots'), 'bots', 'AI birds', settings.bots ? `${settings.bots} per wave` : 'None')}
       ${pickRow(sel('allies'), 'allies', 'Players', settings.allies ? 'Team up' : 'Free for all')}
@@ -207,6 +247,7 @@ function renderOnlineMenu() {
   }
   hud.overlay.innerHTML = `<div class="menu"><h1>Glide!</h1>${body}
     <p class="hint">${isTouch ? 'Tap to choose' : online.active ? '↑↓ choose · ←→ change · Enter to start' : 'Type a name · Enter on a row to host or join'}</p></div>`;
+  if (browsing() && !roomsLive) refreshRooms();
   const nameIn = document.getElementById('nameIn') as HTMLInputElement | null;
   const codeIn = document.getElementById('codeIn') as HTMLInputElement | null;
   nameIn?.addEventListener('input', () => { settings.name = nameIn.value.slice(0, 16); saveSettings(); });
@@ -220,7 +261,7 @@ function onlineAction(act: string) {
   audio.start();
   onlineNote = '';
   const name = (settings.name || '').trim() || 'Bird';
-  if (act === 'host') { online.host(name); renderMenu(); }
+  if (act === 'host') { online.host(name, settings.public); renderMenu(); }
   else if (act === 'join') {
     if (cleanCode(settings.code).length < 4) { onlineNote = 'Type the room code your friend gave you.'; renderMenu(); (document.getElementById('codeIn') as HTMLInputElement | null)?.focus(); return; }
     online.join(settings.code, name); renderMenu();
@@ -248,6 +289,8 @@ function menuChange(row: string, d: number) {
   else if (row === 'bots') settings.bots = THREE.MathUtils.clamp(settings.bots + d, 0, 12);
   else if (row === 'allies') settings.allies = !settings.allies;
   else if (row === 'lead') settings.lead = !settings.lead;
+  else if (row === 'vis') { if (online.active) online.setPublic(!online.isPublic); else settings.public = !settings.public; }
+  else if (row === 'rooms') { if (openRooms.length) roomSel = (roomSel + d + openRooms.length) % openRooms.length; }
   else if (row === 'env') { settings.env = (settings.env + d + ARENAS.length + 1) % (ARENAS.length + 1); queuePreview(); }
   else if (row === 'myDarts') settings.myDarts = !settings.myDarts;
   else if (row === 'enemyDarts') settings.enemyDarts = !settings.enemyDarts;
@@ -260,6 +303,7 @@ hud.overlay.addEventListener('pointerdown', (e) => {
   if (!act) return;
   audio.start();
   const [k, v] = act.split(':');
+  if (k === 'joinroom') { settings.code = cleanCode(v); onlineAction('join'); return; }
   if (settings.mode === 'online' && ['host', 'join', 'leave', 'copy', 'go'].includes(k)) { onlineAction(k); return; }
   if (k === 'go') startReq = true;
   else if (k === 'menu') menuReq = true;
@@ -800,6 +844,7 @@ function frame(now: number) {
     if (settings.mode === 'online') {
       const row = MENU_ROWS[menuRow];
       if (nav.ok && rows.includes(row) && ['host', 'join', 'go'].includes(row)) onlineAction(row);
+      if (nav.ok && row === 'rooms' && openRooms[roomSel] && openRooms[roomSel].players < openRooms[roomSel].max) { settings.code = openRooms[roomSel].code; onlineAction('join'); }
       if (nav.back && online.active) onlineAction('leave');
     } else if (startReq || (nav.ok && !inp.nav.back)) {
       clearTimeout(previewTimer);
