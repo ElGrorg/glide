@@ -8,8 +8,8 @@
     "preview": "vite preview --host",
     "build:cloudflare": "tsc && tsc -p server && vite build --mode cloudflare",
     "build:itch": "tsc && vite build --mode itch",
-    "cf:dev": "npm run build:cloudflare && wrangler dev",
-    "deploy": "npm run build:cloudflare && wrangler deploy"
+    "cf:dev": "wrangler dev",
+    "deploy": "wrangler deploy"
   },
   "keywords": [],
   "author": "",

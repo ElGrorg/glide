@@ -89,9 +89,12 @@ export class Online {
   drain() { const e = this.events; this.events = []; return e; }
 
   // ---------- room setup ----------
-  async host(name: string) {
-    this.reset(); this.name = name; this.phase = 'connecting';
-    try { await this.net.host(); this.phase = 'lobby'; }
+  /** Listed in the room browser (relay servers only); private rooms are joined by code. */
+  isPublic = true;
+
+  async host(name: string, isPublic = true) {
+    this.reset(); this.name = name; this.phase = 'connecting'; this.isPublic = isPublic;
+    try { await this.net.host({ name, public: isPublic }); this.phase = 'lobby'; }
     catch (err) { this.fail((err as Error).message); return; }
     this.net.onJoin = () => { /* waits for their hello */ };
     this.events.push({ type: 'lobby' });
@@ -111,8 +114,12 @@ export class Online {
     this.rules = rules;
     this.phase = 'playing';
     this.net.send({ t: 'start', rules });
+    this.net.meta({ phase: 'playing', arena: rules.arena });
     this.events.push({ type: 'start', rules, late: false });
   }
+
+  /** Host: list or hide the room in the browser. */
+  setPublic(on: boolean) { this.isPublic = on; if (this.isHost) this.net.meta({ public: on }); }
 
   leave(reason = '') {
     if (this.phase === 'off') return;

@@ -3,6 +3,12 @@ name = "glide"
 main = "server/worker.ts"
 compatibility_date = "2026-10-01"
 
+# Always build the Cloudflare flavour of the game (online play through this Worker's relay) before
+# deploying, whatever build command the Cloudflare dashboard has. `wrangler dev` runs it too.
+[build]
+command = "npm run build:cloudflare"
+watch_dir = ["src", "server"]
+
 # The built game (npm run build:cloudflare writes it here). Static files are free and unmetered.
 [assets]
 directory = "./dist"
@@ -13,6 +19,15 @@ binding = "ASSETS"
 name = "ROOMS"
 class_name = "Room"
 
+# The public room list for the in-game browser (a single instance).
+[[durable_objects.bindings]]
+name = "LOBBY"
+class_name = "Lobby"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Lobby"]
