@@ -3,6 +3,12 @@ name = "glide"
 main = "server/worker.ts"
 compatibility_date = "2026-10-01"
 
+# Always build the Cloudflare flavour of the game (online play through this Worker's relay) before
+# deploying, whatever build command the Cloudflare dashboard has. `wrangler dev` runs it too.
+[build]
+command = "npm run build:cloudflare"
+watch_dir = ["src", "server"]
+
 # The built game (npm run build:cloudflare writes it here). Static files are free and unmetered.
 [assets]
 directory = "./dist"

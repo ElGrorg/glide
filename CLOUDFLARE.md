@@ -10,7 +10,7 @@ The game knows which mode to use from how it was built:
 | Build | Online play goes through |
 |---|---|
 | `npm run build` (old default) | PeerJS public servers, as before |
-| `npm run build:cloudflare` / `npm run deploy` | the relay on the same Worker |
+| `npm run build:cloudflare` / `npm run deploy` / any `wrangler deploy` | the relay on the same Worker |
 | `npm run build:itch` | your Cloudflare relay, from an itch.io upload |
 
 You can also override it on any build with the page URL: `?relay=wss://glide.you.workers.dev` or `?relay=peerjs`.
@@ -72,5 +72,5 @@ opens the Worker on http://localhost:8787 with a local copy of the rooms. Open i
 ## Optional extras
 
 - **Your own domain** (e.g. `glide.example.com`): if the domain is on Cloudflare, add `routes = [{ pattern = "glide.example.com", custom_domain = true }]` to `wrangler.toml` and redeploy.
-- **Auto-deploy from GitHub**: in the dashboard, **Workers & Pages > glide > Settings > Build**, connect the `ElGrorg/glide` repo with build command `npm run build:cloudflare` and deploy command `npx wrangler deploy`. Then every merge to main redeploys.
+- **Auto-deploy from GitHub**: in the dashboard, **Workers & Pages > glide > Settings > Build**, connect the `ElGrorg/glide` repo with deploy command `npx wrangler deploy` (the build command can stay empty or `npm run build`: `wrangler.toml` always runs `npm run build:cloudflare` before deploying). Then every merge to main redeploys.
 - **Usage**: **Workers & Pages > glide > Metrics** shows requests and errors; **Durable Objects** shows room usage against the free limits.
