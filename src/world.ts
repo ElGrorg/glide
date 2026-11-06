@@ -37,6 +37,18 @@ export const ARENAS: ArenaEnv[] = [
 ];
 /** Flyable radius of the arena (metres from the middle); mountains wall it in beyond. */
 export const ARENA_R = 620;
+/** Past this radius the mountain wall is at full height, so only a bird flying over the wall gets here.
+ *  An invisible barrier stands there: nothing steers you, you just can't go any further out. */
+export const ARENA_LID_R = ARENA_R + 200;
+/** Arena: keep `pos` inside the barrier above the wall. Returns how far it had to push the bird back (m). */
+export function arenaBarrier(pos: { x: number; z: number }): number {
+  if (!arena) return 0;
+  const r = Math.hypot(pos.x, pos.z);
+  if (r <= ARENA_LID_R) return 0;
+  const k = ARENA_LID_R / r;
+  pos.x *= k; pos.z *= k;
+  return r - ARENA_LID_R;
+}
 let arena: ArenaEnv | null = null;
 export function setArena(a: ArenaEnv | null) { arena = a; }
 export function getArena() { return arena; }

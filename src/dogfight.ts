@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { BirdMesh, type BirdPalette, type Glider } from './bird';
-import { terrainHeight, nearestBranch, cruiseThrust, getArena, obstaclesNear, obstacleGap, ARENA_R, CRUISE_SPEED, type Obstacle } from './world';
+import { terrainHeight, nearestBranch, cruiseThrust, getArena, obstaclesNear, obstacleGap, ARENA_R, CRUISE_SPEED, arenaBarrier, type Obstacle } from './world';
 import type { CloudPuffs } from './puffs';
 
 // Dogfights: enemy birds that either hunt you (spawn behind) or flee from you (spawn ahead).
@@ -156,12 +156,15 @@ export class Enemy {
       }
     }
     want.normalize();
-    // arena: never leave the basin
+    // arena: the basin is walled in by mountains. Nothing turns the bird for it: it reads where it'll be
+    // a couple of seconds out and banks back toward the middle before it gets there, within its own turn rate.
     if (getArena()) {
-      const r = Math.hypot(this.pos.x, this.pos.z);
+      const ahead = tmpA.copy(this.pos).addScaledVector(this.dir, this.speed * 2);
+      const r = Math.hypot(ahead.x, ahead.z) || 1;
       if (r > ARENA_R - 90) {
         const k = THREE.MathUtils.clamp((r - ARENA_R + 90) / 80, 0, 1.5);
-        want.x -= (this.pos.x / r) * k; want.z -= (this.pos.z / r) * k; want.normalize();
+        want.x -= (ahead.x / r) * k; want.z -= (ahead.z / r) * k; want.normalize();
+        if (k > 0.5) rate = Math.max(rate, 1.6);
       }
     }
     want.y = THREE.MathUtils.clamp(want.y, -0.75, 0.7); want.normalize();
@@ -201,6 +204,7 @@ export class Enemy {
     }
 
     this.pos.addScaledVector(this.dir, this.speed * dt);
+    arenaBarrier(this.pos); // the invisible barrier above the arena wall, same as yours
     const floor = terrainHeight(this.pos.x, this.pos.z) + 2.5;
     if (this.pos.y < floor) this.pos.y = floor;
   }

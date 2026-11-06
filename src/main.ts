@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, ARENAS, ARENA_R, setArena, getArena, type Obstacle } from './world';
+import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, ARENAS, ARENA_R, ARENA_LID_R, arenaBarrier, setArena, getArena, type Obstacle } from './world';
 import { route, BIOME_NAME } from './route';
 import { CloudPuffs } from './puffs';
 import { Gates, type GateEvent } from './gates';
@@ -944,19 +944,16 @@ function frame(now: number) {
     // gates
     if (!inArena) gates.check(prevPos, p, (e: GateEvent) => onGate(e));
 
-    // arena walls: past the edge the wind turns you back toward the middle
+    // arena: the mountain wall is solid ground (fly into it and you crash). Only a bird that climbs over
+    // the top meets an invisible barrier: it stops you going further out, but never touches the controls.
     outOfBounds = 0;
     if (inArena) {
-      const r = Math.hypot(p.x, p.z);
-      outOfBounds = THREE.MathUtils.clamp((r - (ARENA_R - 40)) / 140, 0, 1);
-      if (outOfBounds > 0) {
-        const k = Math.min(1, (0.4 + outOfBounds * 1.6) * dt);
-        glider.steerToward(tmp.set(-p.x / r, -0.05, -p.z / r).normalize(), k);
-        if (!glider.free) {
-          let dh = Math.atan2(p.x, p.z) - glider.heading; // heading that points at the middle
-          dh -= Math.PI * 2 * Math.floor((dh + Math.PI) / (Math.PI * 2));
-          glider.heading += dh * k;
-        }
+      const r = Math.hypot(p.x, p.z) || 1;
+      outOfBounds = THREE.MathUtils.clamp((r - (ARENA_LID_R - 80)) / 80, 0, 1);
+      if (arenaBarrier(p) > 0) {
+        // pressing into it scrubs speed, so it's no free ride round the rim
+        const into = Math.max(0, (glider.dir.x * p.x + glider.dir.z * p.z) / r);
+        glider.speed = Math.max(0, glider.speed - into * glider.speed * 0.8 * dt);
       }
     }
 
@@ -1085,7 +1082,7 @@ function frame(now: number) {
   drawDogfightHud(mode === 'flying');
   if (isTouch) { const d = mode === 'flying' ? 'flex' : 'none'; $('fire').style.display = d; $('dartBtn').style.display = myDartsOn() ? d : 'none'; }
   if (outOfBounds > 0 && mode === 'flying' && hud.warn.style.opacity === '0') {
-    hud.warn.textContent = '◀ EDGE OF THE ARENA: TURN BACK ▶';
+    hud.warn.textContent = '◀ NO WAY OVER THE WALL: TURN BACK ▶';
     hud.warn.style.opacity = String(0.5 + 0.5 * Math.sin(t * 10));
   }
   hud.skim.textContent = danger > 0 ? (waterSkim ? 'WATER SKIM' : 'SKIM') : 'CANYON RUN';
