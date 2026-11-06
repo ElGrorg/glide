@@ -15,8 +15,8 @@ const DRAG = 0.0016, BRAKE_DRAG = 0.0065, MAX_SPEED = 115;
 const STALL_SPEED = 15;
 const MAX_LIFT_G = 1.65;   // same as your hardest banked pull
 export const PEA_SPEED = 150;
-const ASSIST_CONE = 0.14;   // pea aim assist kicks in within ~8° of your nose
-const ASSIST_BEND = 0.055;  // and bends the shot at most ~3°
+const ASSIST_CONE = 0.19;   // pea aim assist kicks in when a bird's lead point is within ~11° of your nose
+const ASSIST_BEND = 0.087;  // and bends the shot at most ~5° (enemies get exactly the same bend)
 const ASSIST_RANGE = 150;      // player pea muzzle speed (m/s, on top of your own speed)
 const ENEMY_PEA_SPEED = PEA_SPEED; // same pea shooter as yours
 export const PEA_LIFE = 1.0;
@@ -584,9 +584,9 @@ export class Dogfight {
         if (isMe && behindYou && dist < 150) this.tailThreat = Math.max(this.tailThreat, Math.max(0.35, e.aimAtPlayer));
         // short bursts
         e.fireCd -= dt;
-        // it only pulls the trigger when the ~3° aim bend (same as yours) can actually put the shot on you
+        // it only pulls the trigger when the ~5° aim bend (same as yours) can actually put the shot on you
         if (active && e.fireCd <= 0 && dist < ASSIST_RANGE && aimErr < ASSIST_BEND + 0.015) {
-          const aim = e.dir.clone(); turnToward(aim, lead, ASSIST_BEND); // the same ~3° bend your aim assist gets
+          const aim = e.dir.clone(); turnToward(aim, lead, ASSIST_BEND); // the same ~5° bend your aim assist gets
           // (spread made after the bend: turnToward uses tmpC as scratch)
           const spread = tmpC.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(0.01); // a hair of wobble (your peas have none)
           const v = aim.add(spread).normalize().multiplyScalar(ENEMY_PEA_SPEED).addScaledVector(e.dir, e.speed);
@@ -638,23 +638,23 @@ export class Dogfight {
     if (active && fire && this.fireCd <= 0) {
       this.fireCd = 0.1;
       const muzzle = g.pos.clone().addScaledVector(g.dir, 1.6);
-      // light aim assist: with a bird within ~8° of your nose, the stream bends up to ~3° toward
+      // light aim assist: with a bird within ~11° of your nose, the stream bends up to ~5° toward
       // where it will be (you still have to point at it; it can't follow a hard break)
       const aim = g.dir.clone();
-      let assist: Enemy | null = null, bestErr = ASSIST_CONE;
+      // the target is the bird whose *lead point* (where the pea would meet it) sits closest to your nose,
+      // so leading a crossing bird counts as aiming at it
+      let lead: THREE.Vector3 | null = null, bestErr = ASSIST_CONE;
       for (const e of this.enemies) {
         if (!e.alive || e.friendly) continue;
-        const d = tmpA.copy(e.pos).sub(muzzle); const dist = d.length();
+        const dist = e.pos.distanceTo(muzzle);
         if (dist > ASSIST_RANGE) continue;
-        const err = g.dir.angleTo(d);
-        if (err < bestErr) { bestErr = err; assist = e; }
+        const T = dist / (PEA_SPEED + g.speed);
+        const ev = e.vel.clone(); // (vel reuses a scratch vector)
+        const l = e.pos.clone().addScaledVector(ev, T).sub(muzzle).normalize();
+        const err = Math.min(g.dir.angleTo(l), g.dir.angleTo(tmpA.copy(e.pos).sub(muzzle)));
+        if (err < bestErr) { bestErr = err; lead = l; }
       }
-      if (assist) {
-        const T = assist.pos.distanceTo(muzzle) / (PEA_SPEED + g.speed);
-        const ev = assist.vel.clone(); // (vel reuses a scratch vector)
-        const lead = assist.pos.clone().addScaledVector(ev, T).sub(muzzle).normalize();
-        turnToward(aim, lead, ASSIST_BEND);
-      }
+      if (lead) turnToward(aim, lead, ASSIST_BEND);
       const v = aim.multiplyScalar(PEA_SPEED).add(g.vel);
       this.shoot(false, muzzle, v);
       this.shotThisFrame = true;
