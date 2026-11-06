@@ -64,6 +64,23 @@
   .ret.dart span { transform: translateX(-50%) rotate(-45deg); color: #ff8a80; }
   .ret span { position: absolute; top: -19px; left: 50%; transform: translateX(-50%); font-size: 11px; font-weight: 800; white-space: nowrap; color: #fff; }
   #wave { top: calc(14px + env(safe-area-inset-top)); right: 16px; font-size: 15px; font-weight: 900; letter-spacing: 2px; color: #fff; }
+  /* online: scoreboard (top right, under the wave), kill feed (left), room menu */
+  #board { top: calc(40px + env(safe-area-inset-top)); right: 16px; font-size: 13px; font-weight: 800; min-width: 130px; display: none; }
+  #board b { display: block; font-size: 11px; letter-spacing: 2px; opacity: .8; margin-bottom: 2px; text-align: right; }
+  #board div { display: flex; gap: 8px; justify-content: flex-end; }
+  #board div.me span { text-decoration: underline; }
+  #board i { font-style: normal; min-width: 18px; text-align: right; color: #fff; }
+  #board i.d { opacity: .6; }
+  #feed { top: calc(76px + env(safe-area-inset-top)); left: 16px; font-size: 13px; font-weight: 700; line-height: 1.5; display: none; max-width: 45vw; }
+  #overlay input { font: inherit; font-weight: 800; font-size: 18px; color: #fff; background: rgba(20, 40, 60, .45); border: 2px solid rgba(255,255,255,.6);
+    border-radius: 12px; padding: 9px 12px; min-height: 44px; box-sizing: border-box; width: 190px; outline: none; -webkit-user-select: text; user-select: text; }
+  #overlay input:focus { border-color: var(--accent); }
+  #overlay input.code { width: 150px; text-align: center; letter-spacing: 4px; text-transform: uppercase; }
+  #overlay input::placeholder { color: rgba(255,255,255,.5); }
+  .menu .modes button { min-width: 0; }
+  .menu .roomcode { font-size: 46px; font-weight: 900; letter-spacing: 8px; color: var(--accent); text-shadow: 0 3px 10px var(--shadow); -webkit-user-select: text; user-select: text; }
+  .menu .players { list-style: none; padding: 0; margin: 10px auto; font-weight: 800; font-size: 17px; text-shadow: 0 2px 6px var(--shadow); }
+  .menu .note { color: var(--accent); font-weight: 700; max-width: 520px; margin: 6px auto; word-break: break-all; }
   .menu { max-width: 640px; }
   .menu .row { display: flex; gap: 10px; justify-content: center; align-items: center; margin: 8px auto; padding: 4px 10px; border-radius: 14px; border: 2px solid transparent; width: fit-content; }
   .menu .row.sel { border-color: rgba(255, 207, 90, .85); background: rgba(20, 40, 60, .25); }
@@ -92,6 +109,8 @@
   <div id="stats" class="hud"></div>
   <div id="hp" class="hud"></div>
   <div id="wave" class="hud"></div>
+  <div id="board" class="hud"></div>
+  <div id="feed" class="hud"></div>
   <div id="warn" class="hud">▼ ON YOUR TAIL ▼</div>
   <canvas id="radar"></canvas>
   <div id="darts" class="hud"></div>
