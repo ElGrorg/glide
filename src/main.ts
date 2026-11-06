@@ -6,7 +6,7 @@ import { Gates, type GateEvent } from './gates';
 import { BirdMesh, Glider } from './bird';
 import { Input } from './input';
 import { WindAudio } from './audio';
-import { Dogfight, MAX_DARTS, flapAmount, type DogfightEvent } from './dogfight';
+import { Dogfight, MAX_DARTS, PEA_SPEED, PEA_LIFE, flapAmount, type DogfightEvent } from './dogfight';
 import { setWorldSeed } from './noise';
 import { Online, PLAYER_CSS, colorIndex, type MatchRules } from './online';
 import { cleanCode } from './net';
@@ -107,7 +107,8 @@ if (isTouch) { $('fire').style.display = 'flex'; $('dartBtn').style.display = 'f
 // ---------- Game settings: endless downhill or arena ----------
 type GameMode = 'endless' | 'arena' | 'online';
 const settings = { mode: 'endless' as GameMode, env: ARENAS.length /* = random */, enemies: 3, myDarts: true, enemyDarts: true,
-  /* online */ name: '', bots: 2, allies: false, code: '' };
+  /* online */ name: '', bots: 2, allies: false, code: '',
+  /* HUD: lead marker showing where to aim your peas */ lead: true };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('glide.settings') || '{}')); } catch { /* storage unavailable */ }
 settings.env = THREE.MathUtils.clamp(Math.round(settings.env) || 0, 0, ARENAS.length);
 settings.enemies = THREE.MathUtils.clamp(Math.round(settings.enemies) || 3, 1, 12);
@@ -125,12 +126,12 @@ loadBest();
 /** The arena chosen for this match ("random" rolls one per match). */
 let arenaIdx = 0;
 
-const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'myDarts', 'enemyDarts', 'go', 'host', 'join'] as const;
+const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'go', 'host', 'join'] as const;
 const GO_ROW = MENU_ROWS.indexOf('go');
 let menuRow = inviteCode ? MENU_ROWS.indexOf('join') : GO_ROW;
 function menuRows(): readonly string[] {
-  if (settings.mode === 'online') return online.active ? (online.isHost && online.phase === 'lobby' ? ['env', 'bots', 'allies', 'myDarts', 'enemyDarts', 'go'] : []) : ['mode', 'host', 'join'];
-  return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'go'] : ['mode', 'myDarts', 'enemyDarts', 'go'];
+  if (settings.mode === 'online') return online.active ? (online.isHost && online.phase === 'lobby' ? ['env', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'go'] : online.phase === 'lobby' ? ['lead'] : []) : ['mode', 'lead', 'host', 'join'];
+  return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'go'] : ['mode', 'myDarts', 'enemyDarts', 'lead', 'go'];
 }
 let onlineNote = '';
 const esc = (s: string) => s.replace(/[<>&"]/g, '');
@@ -154,12 +155,14 @@ function renderMenu() {
     <div class="row pick${sel('enemies')}"><span class="lab">Enemies</span><button data-act="enemies:-1">◀</button><b>${settings.enemies}</b><button data-act="enemies:1">▶</button></div>` : ''}
     <div class="row pick${sel('myDarts')}"><span class="lab">Your darts</span><button data-act="myDarts:-1">◀</button><b>${settings.myDarts ? 'On' : 'Off'}</b><button data-act="myDarts:1">▶</button></div>
     <div class="row pick${sel('enemyDarts')}"><span class="lab">Enemy darts</span><button data-act="enemyDarts:-1">◀</button><b>${settings.enemyDarts ? 'On' : 'Off'}</b><button data-act="enemyDarts:1">▶</button></div>
+    ${leadRow(sel('lead'))}
     <div class="row${sel('go')}"><button data-act="go" class="go-btn">Fly!</button></div>
     <div class="controls" id="controls"></div>
     <p class="hint">${isTouch ? 'Tap to choose' : '↑↓ choose · ←→ change · Enter / A to fly'}</p>
   </div>`;
   showControls();
 }
+function leadRow(sel: string) { return pickRow(sel, 'lead', 'Lead marker', settings.lead ? 'On' : 'Off'); }
 function modeRow(sel: string) {
   const b = (m: GameMode, label: string) => `<button data-act="mode:${m}" class="${settings.mode === m ? 'on' : ''}">${label}</button>`;
   return `<div class="row modes${sel}">${b('endless', 'Endless downhill')}${b('arena', 'Arena')}${b('online', 'Online')}</div>`;
@@ -178,6 +181,7 @@ function renderOnlineMenu() {
     body = `${modeRow(sel('mode'))}
     <p class="blurb">Fight in the arena with friends anywhere: different houses, Wi-Fi or phone data. One of you hosts a room and shares its code; everyone else joins with it.</p>
     <div class="row"><span class="lab">Your name</span><input id="nameIn" maxlength="16" placeholder="Bird" value="${esc(settings.name)}" autocomplete="off" spellcheck="false"></div>
+    ${leadRow(sel('lead'))}
     <div class="row${sel('host')}"><button data-act="host" class="go-btn">Host a room</button></div>
     <div class="row${sel('join')}"><input id="codeIn" class="code" maxlength="8" placeholder="CODE" value="${esc(settings.code)}" autocomplete="off" autocapitalize="characters" spellcheck="false"><button data-act="join" class="go-btn">Join</button></div>
     ${onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : ''}`;
@@ -192,7 +196,8 @@ function renderOnlineMenu() {
       ${pickRow(sel('allies'), 'allies', 'Players', settings.allies ? 'Team up' : 'Free for all')}
       ${pickRow(sel('myDarts'), 'myDarts', 'Player darts', settings.myDarts ? 'On' : 'Off')}
       ${pickRow(sel('enemyDarts'), 'enemyDarts', 'AI darts', settings.enemyDarts ? 'On' : 'Off')}
-      <div class="row${sel('go')}"><button data-act="go" class="go-btn">Start match</button></div>` : '<p class="blurb">Waiting for the host to start…</p>';
+      ${leadRow(sel('lead'))}
+      <div class="row${sel('go')}"><button data-act="go" class="go-btn">Start match</button></div>` : `${leadRow(sel('lead'))}<p class="blurb">Waiting for the host to start…</p>`;
     body = `<p class="blurb small">Room code</p>
     <div class="roomcode">${esc(online.code)}</div>
     <div class="row"><button data-act="copy">Copy invite link</button><button data-act="leave">Leave</button></div>
@@ -242,6 +247,7 @@ function menuChange(row: string, d: number) {
   }
   else if (row === 'bots') settings.bots = THREE.MathUtils.clamp(settings.bots + d, 0, 12);
   else if (row === 'allies') settings.allies = !settings.allies;
+  else if (row === 'lead') settings.lead = !settings.lead;
   else if (row === 'env') { settings.env = (settings.env + d + ARENAS.length + 1) % (ARENAS.length + 1); queuePreview(); }
   else if (row === 'myDarts') settings.myDarts = !settings.myDarts;
   else if (row === 'enemyDarts') settings.enemyDarts = !settings.enemyDarts;
@@ -616,6 +622,7 @@ function drawDogfightHud(show: boolean) {
     (el.firstChild as HTMLElement).textContent = `DART ${Math.round(d.pos.distanceTo(glider.pos))} m`;
   }
   for (let i = n; i < rets.length; i++) rets[i].style.display = 'none';
+  drawLeads(show && settings.lead);
 }
 
 // ---------- Online HUD: scoreboard and kill feed ----------
@@ -632,6 +639,48 @@ function drawOnlineHud(dt: number) {
     `<div style="color:${PLAYER_CSS[colorIndex(p.id)]}"${p.id === online.myId ? ' class="me"' : ''}><span>${esc(p.name)}</span><i>${p.kills}</i><i class="d">${p.deaths}</i></div>`).join('');
   while (feed.length && t - feed[0].t > 6) feed.shift();
   $('feed').innerHTML = feed.map((f) => `<div>${esc(f.text)}</div>`).join('');
+}
+
+// ---------- Lead marker (optional): where to point your nose so a pea meets the bird ----------
+// Your peas leave at PEA_SPEED on top of your own velocity, so in your frame of reference the bird moves at
+// (its velocity - yours). Solve for the time a pea takes to reach where it will be, and mark that spot.
+// Put the gun cross (where your peas go) on the ring and fire.
+const LEAD_RANGE = 260;
+const leadEls: HTMLElement[] = [];
+const leadRel = new THREE.Vector3(), leadV = new THREE.Vector3(), leadP = new THREE.Vector3();
+function drawLeads(on: boolean) {
+  const cross = $('gunCross');
+  let n = 0;
+  if (on) {
+    const muzzle = tmp.copy(glider.pos).addScaledVector(glider.dir, 1.6);
+    const reach = (PEA_SPEED + glider.speed) * PEA_LIFE; // how far a pea flies
+    for (const e of dogfight.enemies) {
+      if (!e.alive || e.friendly) continue;
+      leadRel.copy(e.pos).sub(muzzle);
+      const dist = leadRel.length();
+      if (dist > LEAD_RANGE || dist < 4) continue;
+      leadV.copy(e.dir).multiplyScalar(e.speed).sub(glider.vel); // its motion relative to you
+      let tt = dist / PEA_SPEED;
+      for (let i = 0; i < 4; i++) tt = leadP.copy(leadRel).addScaledVector(leadV, tt).length() / PEA_SPEED;
+      leadP.copy(leadRel).addScaledVector(leadV, tt).add(muzzle);
+      const v = leadP.project(camera);
+      if (v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05) continue;
+      let el = leadEls[n];
+      if (!el) { el = document.createElement('div'); el.className = 'lead'; $('rets').appendChild(el); leadEls.push(el); }
+      n++;
+      el.style.display = 'block';
+      el.style.borderColor = e.remote === 'human' ? PLAYER_CSS[colorIndex(e.netId)] : e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
+      el.style.opacity = dist <= reach ? '1' : '0.4'; // faded: out of pea range for now
+      el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
+    }
+  }
+  for (let i = n; i < leadEls.length; i++) leadEls[i].style.display = 'none';
+  // the gun cross: where your peas are heading, at a typical fighting distance
+  if (on && n > 0) {
+    const v = tmp.copy(glider.pos).addScaledVector(glider.dir, 120).project(camera);
+    cross.style.display = v.z <= 1 ? 'block' : 'none';
+    cross.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
+  } else cross.style.display = 'none';
 }
 
 // ---------- Camera ----------

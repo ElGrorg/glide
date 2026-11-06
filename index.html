@@ -61,6 +61,14 @@
   .ret.mylocking { border-color: #7af0ff; border-style: dashed; }
   .ret.mylocked { border-color: #7af0ff; border-radius: 50%; border-width: 3px; }
   .ret.dart { border-color: #ff3b2e; border-width: 3px; width: 22px; height: 22px; margin: -13px 0 0 -13px; background: rgba(255,59,46,.25); }
+  /* lead marker: aim the gun cross at it */
+  .lead { position: fixed; left: 0; top: 0; width: 18px; height: 18px; margin: -11px 0 0 -11px; border: 2px solid #ff5a4a; border-radius: 50%;
+    pointer-events: none; display: none; box-shadow: 0 0 4px var(--shadow); }
+  .lead::after { content: ''; position: absolute; left: 7px; top: 7px; width: 4px; height: 4px; border-radius: 50%; background: #fff; }
+  #gunCross { position: fixed; left: 0; top: 0; width: 22px; height: 22px; margin: -11px 0 0 -11px; pointer-events: none; display: none; }
+  #gunCross::before, #gunCross::after { content: ''; position: absolute; background: rgba(255,255,255,.9); box-shadow: 0 0 3px var(--shadow); }
+  #gunCross::before { left: 10px; top: 0; width: 2px; height: 22px; }
+  #gunCross::after { top: 10px; left: 0; height: 2px; width: 22px; }
   .ret.dart span { transform: translateX(-50%) rotate(-45deg); color: #ff8a80; }
   .ret span { position: absolute; top: -19px; left: 50%; transform: translateX(-50%); font-size: 11px; font-weight: 800; white-space: nowrap; color: #fff; }
   #wave { top: calc(14px + env(safe-area-inset-top)); right: 16px; font-size: 15px; font-weight: 900; letter-spacing: 2px; color: #fff; }
@@ -117,6 +125,7 @@
   <div id="fire">FIRE</div>
   <div id="dartBtn">DART</div>
   <div id="rets"></div>
+  <div id="gunCross"></div>
   <div id="stick"><div id="knob"></div></div>
   <div id="overlay">
     <div>

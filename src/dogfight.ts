@@ -14,12 +14,12 @@ const UP = new THREE.Vector3(0, 1, 0);
 const DRAG = 0.0016, BRAKE_DRAG = 0.0065, MAX_SPEED = 115;
 const STALL_SPEED = 15;
 const MAX_LIFT_G = 1.65;   // same as your hardest banked pull
-const PEA_SPEED = 150;
+export const PEA_SPEED = 150;
 const ASSIST_CONE = 0.14;   // pea aim assist kicks in within ~8° of your nose
 const ASSIST_BEND = 0.055;  // and bends the shot at most ~3°
 const ASSIST_RANGE = 150;      // player pea muzzle speed (m/s, on top of your own speed)
 const ENEMY_PEA_SPEED = PEA_SPEED; // same pea shooter as yours
-const PEA_LIFE = 1.0;
+export const PEA_LIFE = 1.0;
 const ENEMY_HIT_R = 1.6;    // generous: these are small birds moving fast
 const PLAYER_HIT_R = ENEMY_HIT_R; // same-sized birds, same hit box
 // Hunter darts: a hunter that holds you in its sights locks on, then launches a homing dart.
