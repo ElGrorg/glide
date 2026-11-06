@@ -5,10 +5,11 @@ import { cruiseThrust } from './world';
 const G = 9.8;
 const DRAG = 0.0016;        // equilibrium glide ~36 m/s at -12°
 const BRAKE_DRAG = 0.0065;
-const NEUTRAL_PITCH = -0.26; // nose settles slightly down when you let go
+const NEUTRAL_PITCH = -0.26; // starting glide angle
 const STALL_SPEED = 15;
 const TUCK_THRUST = 0;      // tuck removed: no free speed, you only gain it by diving
 const MAX_SPEED = 115;
+const HOLD_GAIN = 2.0;      // how firmly a hands-off nose stays put (1/s)
 const X_AXIS = new THREE.Vector3(1, 0, 0), Y_AXIS = new THREE.Vector3(0, 1, 0), Z_AXIS = new THREE.Vector3(0, 0, 1);
 const _q = new THREE.Quaternion(), _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
 
@@ -105,6 +106,8 @@ export class Glider {
   trick: { type: 'roll' | 'half'; t: number; dur: number; dir: number; dodge: number } | null = null;
   spin = 0;              // visual barrel-roll angle
   overTop = false;       // passed inverted at the top of a loop
+  /** Hands off the pitch stick: the nose holds the attitude it had when it stopped moving (null = stick in use). */
+  holdPitch: number | null = null;
   pitchVel = 0;          // smoothed pitch rate (rad/s): stick moves ease in and out instead of snapping
   rollVel = 0;           // smoothed roll rate (flight layout)
   yawVel = 0;            // smoothed rudder rate
@@ -150,7 +153,7 @@ export class Glider {
     this.pos.set(x, y, z);
     this.speed = 32; this.pitch = NEUTRAL_PITCH; this.heading = heading; this.roll = 0; this.brake = 0;
     this.trick = null; this.spin = 0; this.overTop = false;
-    this.pitchVel = 0; this.rollVel = 0; this.yawVel = 0; this.slip = 0;
+    this.pitchVel = 0; this.rollVel = 0; this.yawVel = 0; this.slip = 0; this.holdPitch = null;
     this.free = false; this.loopTurn = 0; this.syncQuat();
     this.updateDir();
   }
@@ -175,6 +178,15 @@ export class Glider {
     if (Math.hypot(f.x, f.z) > 1e-3) this.heading = Math.atan2(-f.x, -f.z);
     this.roll = Math.atan2(-r.y, this.up.y);
     this.dir.copy(f);
+  }
+
+  /** Attitude hold: while the nose is still swinging after you let go, the hold point follows it, so it
+   *  stops where it naturally comes to rest instead of springing back. Returns how far off the held pitch the
+   *  nose is (0 while stalled: a stalled wing can't hold anything). */
+  private holdAttitude(pitch: number) {
+    if (this.holdPitch === null || Math.abs(this.pitchVel) > 0.12) this.holdPitch = pitch;
+    if (this.stalled) { this.holdPitch = null; return 0; }
+    return this.holdPitch - pitch;
   }
 
   /** Nudge the flight path toward `want` (wind tunnels), by fraction k. */
@@ -233,8 +245,13 @@ export class Glider {
     const rate = 1.5 + Math.max(0, this.speed - 30) * 0.02;
     this.pitchVel += (inp.pitch * rate * this.authority - this.pitchVel) * Math.min(1, 5 * dt);
     this.pitch += this.pitchVel * dt;
+    if (Math.abs(inp.pitch) >= 0.05 || !upright) this.holdPitch = null;
     if (Math.abs(inp.pitch) < 0.05) {
-      if (upright) this.pitch += (NEUTRAL_PITCH - this.pitch) * 0.9 * (1 - this.tuck) * dt; // settle into a glide (not while tucked)
+      if (upright) {
+        // let go and the nose holds where you left it (no more sagging toward a glide), so a shot stays lined up
+        const err = this.holdAttitude(this.pitch);
+        this.pitch += err * HOLD_GAIN * this.authority * (1 - this.tuck) * dt;
+      }
       // let go upside down and the bird just holds its line (near the top it eases into a shallow
       // inverted glide); it never flies the rest of the loop for you
       else if (Math.abs(this.pitch) > 2.3) this.pitch += wrap(Math.PI - NEUTRAL_PITCH - this.pitch) * 0.9 * dt;
@@ -329,11 +346,12 @@ export class Glider {
       const axis = new THREE.Vector3().crossVectors(fwd, acc).normalize();
       q.premultiply(_q.setFromAxisAngle(axis, turn));
     }
-    // wings level and hands off: ease into a gentle glide (same trim as classic)
+    // wings level and hands off: the nose holds the attitude you left it at (same as classic). Lift still
+    // has to pay for it: climbing costs speed, and once you're slow the stall takes the nose regardless.
     if (Math.abs(inp.pitch) < 0.05 && up.y > 0.6 && this.tuck < 0.5) {
-      const err = NEUTRAL_PITCH - Math.asin(THREE.MathUtils.clamp(fwd.y, -1, 1));
-      q.multiply(_q.setFromAxisAngle(X_AXIS, err * 0.7 * dt));
-    }
+      const err = this.holdAttitude(Math.asin(THREE.MathUtils.clamp(fwd.y, -1, 1)));
+      q.multiply(_q.setFromAxisAngle(X_AXIS, err * HOLD_GAIN * auth * dt));
+    } else this.holdPitch = null;
     // tucked and not pulling: the nose eases down into a dive
     if (this.tuck > 0.05 && up.y > 0.3 && inp.pitch < 0.3) {
       const err = -0.85 - Math.asin(THREE.MathUtils.clamp(fwd.y, -1, 1));

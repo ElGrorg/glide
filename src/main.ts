@@ -93,12 +93,12 @@ const PAD_HELP = {
   classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>Y</b> homing dart, <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
   wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>Y</b> homing dart · <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
 };
-const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.padScheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot &nbsp; <b>R</b> or right-click = homing dart (hold your nose on a bird for 1 s to lock)<br>hold <b>S</b> to loop &nbsp; <b>V</b> = change layout`;
-const TOUCH_HELP = () => input.padScheme === 'flight'
+const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.scheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot &nbsp; <b>R</b> or right-click = homing dart (hold your nose on a bird for 1 s to lock)<br>hold <b>S</b> to loop &nbsp; <b>V</b> = change layout`;
+const TOUCH_HELP = () => input.scheme === 'flight'
   ? 'Left thumb: drag up to dive, down to pull up<br>Right thumb: drag ←→ to roll, all the way round if you like (the bank holds when you let go)<br>Hold <b>FIRE</b> to shoot<br>Hold your nose on a bird to lock, then tap <b>DART</b><br>Keep pulling down to loop'
   : 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Hold <b>FIRE</b> to shoot<br>Hold your nose on a bird to lock, then tap <b>DART</b><br>Keep pulling down to loop';
 const showControls = () => {
-  $('controls').innerHTML = isTouch ? TOUCH_HELP() : `${KEYS_HELP()}<br>${PAD_HELP[input.padScheme]}`;
+  $('controls').innerHTML = isTouch ? TOUCH_HELP() : `${KEYS_HELP()}<br>${PAD_HELP[input.scheme]}`;
 };
 const showControlsSafe = () => { if (document.getElementById('controls')) showControls(); };
 addEventListener('gamepadconnected', showControlsSafe);
@@ -331,7 +331,7 @@ function popup(text: string, sub = '') {
 }
 
 function rumble(strength: number, ms: number) {
-  const gp = navigator.getGamepads?.()[0] as any;
+  const gp = input.activePad as any;
   gp?.vibrationActuator?.playEffect?.('dual-rumble', { duration: ms, strongMagnitude: strength, weakMagnitude: strength });
 }
 
@@ -827,6 +827,7 @@ function frame(now: number) {
   requestAnimationFrame(frame);
   let dt = Math.min(0.05, (now - last) / 1000);
   last = now;
+  input.lockScheme = online.active ? 'flight' : null; // online: everyone flies the same layout
   const inp = input.poll();
   onlineEvents();
 
