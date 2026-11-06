@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { InputState } from './input';
+import { cruiseThrust } from './world';
 
 const G = 9.8;
 const DRAG = 0.0016;        // equilibrium glide ~36 m/s at -12°
@@ -71,9 +72,10 @@ export class BirdMesh extends THREE.Group {
     this.add(this.tail);
   }
 
-  animate(t: number, brake: number, speed: number, tuck = 0) {
+  /** `flap` 0..1: wing beats (arena mode, where birds flap to hold their speed). */
+  animate(t: number, brake: number, speed: number, tuck = 0, flap = 0) {
     // gentle flutter that grows with speed, wings cup up when braking, fold back when tucked
-    const flutter = Math.sin(t * 9) * 0.015 * (speed / 30) * (1 - tuck);
+    const flutter = Math.sin(t * 9) * 0.015 * (speed / 30) * (1 - tuck) + Math.sin(t * 7.5) * 0.32 * flap;
     const dihedral = 0.08 + brake * 0.35 + flutter - tuck * 0.12;
     const tip = 0.06 + brake * 0.4 - flutter;
     this.lInner.rotation.z = -dihedral; this.rInner.rotation.z = dihedral;
@@ -277,7 +279,7 @@ export class Glider {
   /** Speed after one step: gravity along the path, drag, air-brake, and tuck thrust. */
   private energy(dt: number, climb: number) {
     const drag = (DRAG * (1 - 0.8 * this.tuck) + BRAKE_DRAG * this.brake) * this.speed * this.speed;
-    const acc = -G * climb - drag + TUCK_THRUST * this.tuck;
+    const acc = -G * climb - drag + TUCK_THRUST * this.tuck + cruiseThrust(this.pos.y);
     return THREE.MathUtils.clamp(this.speed + acc * dt, 4, MAX_SPEED);
   }
 

@@ -31,6 +31,8 @@
     100% { opacity: 0; transform: translate(-50%, -60px) scale(1); } }
   #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 16px;
     background: linear-gradient(180deg, rgba(40,80,120,.25), rgba(40,80,120,.55)); }
+  #overlay { overflow-y: auto; align-items: flex-start; }
+  #overlay > div { margin: auto 0; } /* centred when it fits, scrolls from the top when it doesn't */
   #overlay.hidden { display: none; }
   #overlay h1 { font-size: clamp(48px, 12vw, 96px); margin: 0 0 4px; letter-spacing: 2px; text-shadow: 0 4px 16px var(--shadow); }
   #overlay p { margin: 6px 0; font-size: 16px; text-shadow: 0 2px 6px var(--shadow); }
@@ -61,6 +63,20 @@
   .ret.dart { border-color: #ff3b2e; border-width: 3px; width: 22px; height: 22px; margin: -13px 0 0 -13px; background: rgba(255,59,46,.25); }
   .ret.dart span { transform: translateX(-50%) rotate(-45deg); color: #ff8a80; }
   .ret span { position: absolute; top: -19px; left: 50%; transform: translateX(-50%); font-size: 11px; font-weight: 800; white-space: nowrap; color: #fff; }
+  #wave { top: calc(14px + env(safe-area-inset-top)); right: 16px; font-size: 15px; font-weight: 900; letter-spacing: 2px; color: #fff; }
+  .menu { max-width: 640px; }
+  .menu .row { display: flex; gap: 10px; justify-content: center; align-items: center; margin: 8px auto; padding: 4px 10px; border-radius: 14px; border: 2px solid transparent; width: fit-content; }
+  .menu .row.sel { border-color: rgba(255, 207, 90, .85); background: rgba(20, 40, 60, .25); }
+  .menu .blurb { max-width: 520px; margin: 4px auto; }
+  .menu .blurb.small { font-size: 14px; opacity: .9; margin-top: -4px; }
+  .menu .lab { font-size: 14px; font-weight: 700; opacity: .85; min-width: 64px; text-align: right; }
+  .menu .pick b { font-size: 18px; min-width: 150px; text-align: center; }
+  .menu .hint { font-size: 13px; opacity: .8; }
+  #overlay button { font: inherit; font-weight: 800; font-size: 16px; color: #fff; background: rgba(20, 40, 60, .45); border: 2px solid rgba(255,255,255,.6);
+    border-radius: 12px; padding: 10px 16px; min-height: 44px; cursor: pointer; text-shadow: 0 1px 4px var(--shadow); touch-action: manipulation; }
+  #overlay button.on { background: rgba(255, 207, 90, .9); color: #2a2a2a; text-shadow: none; border-color: #fff; }
+  #overlay button.go-btn { font-size: 22px; padding: 12px 42px; background: rgba(255, 207, 90, .95); color: #2a2a2a; text-shadow: none; }
+  .menu .pick button { min-width: 44px; padding: 8px 12px; }
   #stick { position: fixed; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%; border: 2px solid rgba(255,255,255,.6);
     background: rgba(255,255,255,.12); display: none; pointer-events: none; }
   #knob { position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.7); }
@@ -75,6 +91,7 @@
   <div id="skim" class="hud">SKIM</div>
   <div id="stats" class="hud"></div>
   <div id="hp" class="hud"></div>
+  <div id="wave" class="hud"></div>
   <div id="warn" class="hud">▼ ON YOUR TAIL ▼</div>
   <canvas id="radar"></canvas>
   <div id="darts" class="hud"></div>

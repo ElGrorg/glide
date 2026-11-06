@@ -28,3 +28,12 @@ Enemy birds join the run every 7 to 13 seconds (one at a time, two once you have
 - You have three feathers (hearts). One grows back after 20 s without being hit.
 - Touch: hold the FIRE button.
 
+
+## Arena mode
+Pick **Arena** on the title screen (←→ / d-pad / tap) to fight in a walled-in basin instead of the endless mountain.
+- **Speed:** birds flap to hold a cruise speed (~120 km/h) in level flight, so you don't need a downhill. Climbing still bleeds speed, diving still builds it past cruise, the air-brake still slows you, and the flapping fades out high up (no climbing forever). Enemies fly on exactly the same rules.
+- **Enemies:** choose 1 to 12 per wave. Clear a wave for a bonus, a feather back and full darts; the next wave arrives a few seconds later. Enemies steer round trees, pillars and arches but can misjudge it and crash (it's your kill if you chased them into it).
+- **Environments:** Green Basin (hills, woods, puffy clouds), Pillar Desert (rock towers and arches), Ice Peaks (jagged peaks to hide behind), Cloud Forest (dense woods under low cloud), Autumn Canyons (a plateau cut by slot canyons), or Random. Rock arches in every arena: fly under them.
+- The mountains wall the arena in; fly past the edge and the wind turns you back.
+- **Dart switches** (both modes): turn your homing darts and the enemies' darts on or off separately before a match.
+- Esc (or Start on a controller) returns to the menu; on the crash screen, Esc / B / the Menu button does too.
