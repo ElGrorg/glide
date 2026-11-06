@@ -31,7 +31,8 @@
     100% { opacity: 0; transform: translate(-50%, -60px) scale(1); } }
   #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 16px;
     background: linear-gradient(180deg, rgba(40,80,120,.25), rgba(40,80,120,.55)); }
-  #overlay { overflow-y: auto; }
+  #overlay { overflow-y: auto; align-items: flex-start; }
+  #overlay > div { margin: auto 0; } /* centred when it fits, scrolls from the top when it doesn't */
   #overlay.hidden { display: none; }
   #overlay h1 { font-size: clamp(48px, 12vw, 96px); margin: 0 0 4px; letter-spacing: 2px; text-shadow: 0 4px 16px var(--shadow); }
   #overlay p { margin: 6px 0; font-size: 16px; text-shadow: 0 2px 6px var(--shadow); }
@@ -64,7 +65,7 @@
   .ret span { position: absolute; top: -19px; left: 50%; transform: translateX(-50%); font-size: 11px; font-weight: 800; white-space: nowrap; color: #fff; }
   #wave { top: calc(14px + env(safe-area-inset-top)); right: 16px; font-size: 15px; font-weight: 900; letter-spacing: 2px; color: #fff; }
   .menu { max-width: 640px; }
-  .menu .row { display: flex; gap: 10px; justify-content: center; align-items: center; margin: 12px auto; padding: 6px 10px; border-radius: 14px; border: 2px solid transparent; width: fit-content; }
+  .menu .row { display: flex; gap: 10px; justify-content: center; align-items: center; margin: 8px auto; padding: 4px 10px; border-radius: 14px; border: 2px solid transparent; width: fit-content; }
   .menu .row.sel { border-color: rgba(255, 207, 90, .85); background: rgba(20, 40, 60, .25); }
   .menu .blurb { max-width: 520px; margin: 4px auto; }
   .menu .blurb.small { font-size: 14px; opacity: .9; margin-top: -4px; }

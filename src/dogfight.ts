@@ -233,6 +233,9 @@ export class Dogfight {
   kills = 0;
   /** Arena mode: enemies per wave (0 = the endless mountain's trickle of one or two at a time). */
   arenaCount = 0;
+  /** Pre-match switches: can you, and can the enemies, fire homing darts? */
+  playerDarts = true;
+  enemyDarts = true;
   wave = 0;
   private waveT = 3;
   private waveLive = false;
@@ -243,6 +246,7 @@ export class Dogfight {
   dartCharge = 0;
   /** Reward for risky flying: push the next dart's recharge along (1 = a whole dart). Returns true if a dart came back. */
   chargeDart(amount: number): boolean {
+    if (!this.playerDarts) return false;
     if (this.dartsLeft >= MAX_DARTS) return false;
     this.dartCharge += amount;
     if (this.dartCharge >= 1) { this.dartCharge = 0; this.dartsLeft++; return true; }
@@ -318,7 +322,7 @@ export class Dogfight {
     for (const d of this.darts) this.removeDart(d);
     this.darts = [];
     for (const d of this.myDarts) { d.life = 0; d.mesh.visible = false; }
-    this.dartsLeft = MAX_DARTS; this.dartCharge = 0;
+    this.dartsLeft = this.playerDarts ? MAX_DARTS : 0; this.dartCharge = 0;
     this.locked = null; this.locking = null; this.lockT = 0;
     this.wave = 0; this.waveT = 3; this.waveLive = false;
     this.spawnT = 9; this.kills = 0; this.tailThreat = 0; this.dartLockProgress = 0; this.dartIncoming = Infinity;
@@ -512,7 +516,7 @@ export class Dogfight {
         // dart lock: keep you inside its cone, at range, out of the clouds, and it launches a dart
         e.dartCd -= dt;
         const inCone = e.dir.angleTo(toPlayer) < DART_CONE && dist > DART_RANGE_MIN && dist < DART_RANGE_MAX && !inCloud;
-        if (active && e.dartCd <= 0 && inCone) {
+        if (active && this.enemyDarts && e.dartCd <= 0 && inCone) {
           if (e.dartLock === 0) out.push({ type: 'dartLocking' });
           e.dartLock += dt;
           if (e.dartLock >= DART_LOCK_TIME) {

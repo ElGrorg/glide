@@ -35,4 +35,5 @@ Pick **Arena** on the title screen (←→ / d-pad / tap) to fight in a walled-i
 - **Enemies:** choose 1 to 12 per wave. Clear a wave for a bonus, a feather back and full darts; the next wave arrives a few seconds later. Enemies steer round trees, pillars and arches but can misjudge it and crash (it's your kill if you chased them into it).
 - **Environments:** Green Basin (hills, woods, puffy clouds), Pillar Desert (rock towers and arches), Ice Peaks (jagged peaks to hide behind), Cloud Forest (dense woods under low cloud), Autumn Canyons (a plateau cut by slot canyons), or Random. Rock arches in every arena: fly under them.
 - The mountains wall the arena in; fly past the edge and the wind turns you back.
+- **Dart switches** (both modes): turn your homing darts and the enemies' darts on or off separately before a match.
 - Esc (or Start on a controller) returns to the menu; on the crash screen, Esc / B / the Menu button does too.

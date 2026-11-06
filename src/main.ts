@@ -103,7 +103,7 @@ if (isTouch) { $('fire').style.display = 'flex'; $('dartBtn').style.display = 'f
 
 // ---------- Game settings: endless downhill or arena ----------
 type GameMode = 'endless' | 'arena';
-const settings = { mode: 'endless' as GameMode, env: ARENAS.length /* = random */, enemies: 3 };
+const settings = { mode: 'endless' as GameMode, env: ARENAS.length /* = random */, enemies: 3, myDarts: true, enemyDarts: true };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('glide.settings') || '{}')); } catch { /* storage unavailable */ }
 settings.env = THREE.MathUtils.clamp(Math.round(settings.env) || 0, 0, ARENAS.length);
 settings.enemies = THREE.MathUtils.clamp(Math.round(settings.enemies) || 3, 1, 12);
@@ -115,12 +115,13 @@ loadBest();
 /** The arena chosen for this match ("random" rolls one per match). */
 let arenaIdx = 0;
 
-const MENU_ROWS = ['mode', 'env', 'enemies', 'go'] as const;
-let menuRow = 3;
-function menuRows() { return settings.mode === 'arena' ? MENU_ROWS : (['mode', 'go'] as const); }
+const MENU_ROWS = ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'go'] as const;
+const GO_ROW = MENU_ROWS.indexOf('go');
+let menuRow = GO_ROW;
+function menuRows() { return settings.mode === 'arena' ? MENU_ROWS : (['mode', 'myDarts', 'enemyDarts', 'go'] as const); }
 function renderMenu() {
   const rows = menuRows() as readonly string[];
-  if (!rows.includes(MENU_ROWS[menuRow])) menuRow = 3;
+  if (!rows.includes(MENU_ROWS[menuRow])) menuRow = GO_ROW;
   const sel = (r: string) => (MENU_ROWS[menuRow] === r ? ' sel' : '');
   const envName = settings.env === ARENAS.length ? 'Random' : ARENAS[settings.env].name;
   const envBlurb = settings.env === ARENAS.length ? 'a different arena every match' : ARENAS[settings.env].blurb;
@@ -134,6 +135,8 @@ function renderMenu() {
     ${arena ? `<div class="row pick${sel('env')}"><span class="lab">Arena</span><button data-act="env:-1">◀</button><b>${envName}</b><button data-act="env:1">▶</button></div>
     <p class="blurb small">${envBlurb}</p>
     <div class="row pick${sel('enemies')}"><span class="lab">Enemies</span><button data-act="enemies:-1">◀</button><b>${settings.enemies}</b><button data-act="enemies:1">▶</button></div>` : ''}
+    <div class="row pick${sel('myDarts')}"><span class="lab">Your darts</span><button data-act="myDarts:-1">◀</button><b>${settings.myDarts ? 'On' : 'Off'}</b><button data-act="myDarts:1">▶</button></div>
+    <div class="row pick${sel('enemyDarts')}"><span class="lab">Enemy darts</span><button data-act="enemyDarts:-1">◀</button><b>${settings.enemyDarts ? 'On' : 'Off'}</b><button data-act="enemyDarts:1">▶</button></div>
     <div class="row${sel('go')}"><button data-act="go" class="go-btn">Fly!</button></div>
     <div class="controls" id="controls"></div>
     <p class="hint">${isTouch ? 'Tap to choose' : '↑↓ choose · ←→ change · Enter / A to fly'}</p>
@@ -146,6 +149,8 @@ function queuePreview() { clearTimeout(previewTimer); previewTimer = window.setT
 function menuChange(row: string, d: number) {
   if (row === 'mode') { const m: GameMode = d < 0 ? 'endless' : 'arena'; if (m !== settings.mode) { settings.mode = m; loadBest(); queuePreview(); } }
   else if (row === 'env') { settings.env = (settings.env + d + ARENAS.length + 1) % (ARENAS.length + 1); queuePreview(); }
+  else if (row === 'myDarts') settings.myDarts = !settings.myDarts;
+  else if (row === 'enemyDarts') settings.enemyDarts = !settings.enemyDarts;
   else if (row === 'enemies') settings.enemies = THREE.MathUtils.clamp(settings.enemies + d, 1, 12);
   saveSettings(); renderMenu();
 }
@@ -224,6 +229,7 @@ function spawn(fresh = true) {
   prevPos.copy(glider.pos);
   trickMinClear = 99; tunnelChain = 0; inLoop = false; wasInCloud = false;
   puffs.clear();
+  dogfight.playerDarts = settings.myDarts; dogfight.enemyDarts = settings.enemyDarts;
   dogfight.reset(); hp = 3; hpRegen = 0; hitFlash = 0;
   dogfight.arenaCount = arena ? settings.enemies : 0;
   // build the opening stretch straight away
@@ -328,7 +334,7 @@ function onDogfight(ev: DogfightEvent) {
       const pts = Math.round(500 * ev.wave * multiplier());
       score += pts; combo++; comboTimer = 4;
       hp = Math.min(3, hp + 1); hpRegen = 0;
-      dogfight.dartsLeft = MAX_DARTS; dogfight.dartCharge = 0;
+      if (settings.myDarts) { dogfight.dartsLeft = MAX_DARTS; dogfight.dartCharge = 0; }
       audio.whoosh(1); audio.beep(1400, 0.2, 0.07);
       popup(`Wave ${ev.wave} cleared! +${pts}`);
       waveClearedT = 4;
@@ -365,8 +371,8 @@ function drawDogfightHud(show: boolean) {
   radar.style.opacity = show ? '1' : '0';
   hud.hp.textContent = show ? '♥'.repeat(Math.max(0, hp)) + '♡'.repeat(Math.max(0, 3 - hp)) : '';
   // dart ammo: one pip per dart, the next one fills as it recharges
-  hud.darts.style.opacity = show ? '1' : '0';
-  if (show) {
+  hud.darts.style.opacity = show && settings.myDarts ? '1' : '0';
+  if (show && settings.myDarts) {
     const pips = Array.from({ length: MAX_DARTS }, (_, i) =>
       i < dogfight.dartsLeft ? '<i></i>' : i === dogfight.dartsLeft ? `<i class="cd" style="--p:${Math.round(dogfight.dartCharge * 100)}%"></i>` : '<i class="off"></i>').join('');
     hud.darts.innerHTML = `${pips}<b>DARTS${dogfight.locked && dogfight.dartsLeft ? ' · R' : ''}</b>`;
@@ -426,12 +432,14 @@ function drawDogfightHud(show: boolean) {
     if (!el) { el = document.createElement('div'); el.className = 'ret'; el.innerHTML = '<span></span>'; $('rets').appendChild(el); rets.push(el); }
     n++;
     const locking = e.dartLock > 0;
-    const mine = e === dogfight.locked ? ' mylocked' : e === dogfight.locking ? ' mylocking' : '';
+    // with your darts switched off there's nothing to lock with, so no lock-on markings
+    const myLock = settings.myDarts && e === dogfight.locked, myLocking = settings.myDarts && e === dogfight.locking;
+    const mine = myLock ? ' mylocked' : myLocking ? ' mylocking' : '';
     el.className = `ret ${e.role}${locking ? ' lock' : ''}${mine}`;
     el.style.display = 'block';
     el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
     const dist = Math.round(e.pos.distanceTo(glider.pos));
-    (el.firstChild as HTMLElement).textContent = locking ? `LOCKING YOU ${dist} m` : e === dogfight.locked ? `LOCKED ${dist} m` : e === dogfight.locking ? `LOCK ${Math.round(dogfight.lockT * 100)}%` : `${dist} m`;
+    (el.firstChild as HTMLElement).textContent = locking ? `LOCKING YOU ${dist} m` : myLock ? `LOCKED ${dist} m` : myLocking ? `LOCK ${Math.round(dogfight.lockT * 100)}%` : `${dist} m`;
   }
   // darts coming at you
   if (show) for (const d of dogfight.darts) {
@@ -568,7 +576,7 @@ function frame(now: number) {
       glider.steerToward(wind.dir, Math.min(1, 1.5 * dt));
     }
     const finished = glider.step(dt, inp);
-    for (const ev of dogfight.update(dt, t, glider, inp.fire, inp.dart, true, wasInCloud)) onDogfight(ev);
+    for (const ev of dogfight.update(dt, t, glider, inp.fire, inp.dart && settings.myDarts, true, wasInCloud)) onDogfight(ev);
     if (dogfight.myDartThisFrame) { audio.dart(); rumble(0.3, 80); }
     if (dogfight.locked && dogfight.locked !== wasLocked) audio.beep(1900, 0.12, 0.07);
     wasLocked = dogfight.locked;
@@ -766,7 +774,7 @@ function frame(now: number) {
   hud.edge.style.opacity = String(Math.max(danger * 0.7, hitFlash));
   hud.edge.style.boxShadow = hitFlash > danger * 0.7 ? 'inset 0 0 140px 40px rgba(255, 40, 40, .85)' : '';
   drawDogfightHud(mode === 'flying');
-  if (isTouch) { const d = mode === 'flying' ? 'flex' : 'none'; $('fire').style.display = d; $('dartBtn').style.display = d; }
+  if (isTouch) { const d = mode === 'flying' ? 'flex' : 'none'; $('fire').style.display = d; $('dartBtn').style.display = settings.myDarts ? d : 'none'; }
   if (outOfBounds > 0 && mode === 'flying' && hud.warn.style.opacity === '0') {
     hud.warn.textContent = '◀ EDGE OF THE ARENA: TURN BACK ▶';
     hud.warn.style.opacity = String(0.5 + 0.5 * Math.sin(t * 10));
