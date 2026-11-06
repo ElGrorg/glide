@@ -10,6 +10,7 @@ import { Dogfight, MAX_DARTS, PEA_SPEED, PEA_LIFE, flapAmount, type DogfightEven
 import { setWorldSeed } from './noise';
 import { Online, PLAYER_CSS, colorIndex, type MatchRules } from './online';
 import { cleanCode, hasRoomBrowser, listRooms, type RoomInfo } from './net';
+import { DownCam, type Tracked } from './downcam';
 
 // ---------- Renderer, scene, camera ----------
 const SKY = new THREE.Color(0x9fd3f0);
@@ -106,14 +107,18 @@ if (isTouch) { $('fire').style.display = 'flex'; $('dartBtn').style.display = 'f
 
 // ---------- Game settings: endless downhill or arena ----------
 type GameMode = 'endless' | 'arena' | 'online';
+type DownCamSetting = 'shot' | 'all' | 'off';
+const DOWNCAM_OPTS: DownCamSetting[] = ['shot', 'all', 'off'];
 const settings = { mode: 'endless' as GameMode, env: ARENAS.length /* = random */, enemies: 3, myDarts: true, enemyDarts: true,
   /* online */ name: '', bots: 2, allies: false, code: '', public: true,
-  /* HUD: lead marker showing where to aim your peas */ lead: true };
+  /* HUD: lead marker showing where to aim your peas */ lead: true,
+  /* replay when you go down: 'shot' = shot down (or chased into the ground), 'all' = every crash too, 'off' */ downcam: 'shot' as DownCamSetting };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('glide.settings') || '{}')); } catch { /* storage unavailable */ }
 settings.env = THREE.MathUtils.clamp(Math.round(settings.env) || 0, 0, ARENAS.length);
 settings.enemies = THREE.MathUtils.clamp(Math.round(settings.enemies) || 3, 1, 12);
 settings.bots = THREE.MathUtils.clamp(Math.round(settings.bots) || 0, 0, 12);
 if (!['endless', 'arena', 'online'].includes(settings.mode)) settings.mode = 'endless';
+if (!DOWNCAM_OPTS.includes(settings.downcam)) settings.downcam = 'shot';
 settings.name = String(settings.name || '').slice(0, 16);
 // an invite link (?room=CODE) opens straight onto the online menu, ready to join
 const inviteCode = cleanCode(new URLSearchParams(location.search).get('room') || '');
@@ -126,15 +131,15 @@ loadBest();
 /** The arena chosen for this match ("random" rolls one per match). */
 let arenaIdx = 0;
 
-const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'go', 'vis', 'host', 'join', 'rooms'] as const;
+const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go', 'vis', 'host', 'join', 'rooms'] as const;
 const GO_ROW = MENU_ROWS.indexOf('go');
 let menuRow = inviteCode ? MENU_ROWS.indexOf('join') : GO_ROW;
 function menuRows(): readonly string[] {
   const browser = hasRoomBrowser();
   if (settings.mode === 'online') return online.active
-    ? (online.isHost && online.phase === 'lobby' ? [...(browser ? ['vis'] : []), 'env', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'go'] : online.phase === 'lobby' ? ['lead'] : [])
-    : ['mode', 'lead', ...(browser && openRooms.length ? ['rooms'] : []), 'join', ...(browser ? ['vis'] : []), 'host'];
-  return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'go'] : ['mode', 'myDarts', 'enemyDarts', 'lead', 'go'];
+    ? (online.isHost && online.phase === 'lobby' ? [...(browser ? ['vis'] : []), 'env', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go'] : online.phase === 'lobby' ? ['lead', 'downcam'] : [])
+    : ['mode', 'lead', 'downcam', ...(browser && openRooms.length ? ['rooms'] : []), 'join', ...(browser ? ['vis'] : []), 'host'];
+  return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go'] : ['mode', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go'];
 }
 let onlineNote = '';
 
@@ -189,6 +194,7 @@ function renderMenu() {
     <div class="row pick${sel('myDarts')}"><span class="lab">Your darts</span><button data-act="myDarts:-1">◀</button><b>${settings.myDarts ? 'On' : 'Off'}</b><button data-act="myDarts:1">▶</button></div>
     <div class="row pick${sel('enemyDarts')}"><span class="lab">Enemy darts</span><button data-act="enemyDarts:-1">◀</button><b>${settings.enemyDarts ? 'On' : 'Off'}</b><button data-act="enemyDarts:1">▶</button></div>
     ${leadRow(sel('lead'))}
+    ${downcamRow(sel('downcam'))}
     <div class="row${sel('go')}"><button data-act="go" class="go-btn">Fly!</button></div>
     <div class="controls" id="controls"></div>
     <p class="hint">${isTouch ? 'Tap to choose' : '↑↓ choose · ←→ change · Enter / A to fly'}</p>
@@ -200,6 +206,9 @@ function visRow(sel: string) {
   return `${pickRow(sel, 'vis', 'Room', on ? 'Public' : 'Private')}<p class="blurb small">${on ? 'Listed under Open rooms for anyone to join' : 'Hidden: friends join with the code or invite link'}</p>`;
 }
 function leadRow(sel: string) { return pickRow(sel, 'lead', 'Lead marker', settings.lead ? 'On' : 'Off'); }
+function downcamRow(sel: string) {
+  return pickRow(sel, 'downcam', 'Down cam', { shot: 'When shot down', all: 'Every crash', off: 'Off' }[settings.downcam]);
+}
 function modeRow(sel: string) {
   const b = (m: GameMode, label: string) => `<button data-act="mode:${m}" class="${settings.mode === m ? 'on' : ''}">${label}</button>`;
   return `<div class="row modes${sel}">${b('endless', 'Endless downhill')}${b('arena', 'Arena')}${b('online', 'Online')}</div>`;
@@ -219,6 +228,7 @@ function renderOnlineMenu() {
     <p class="blurb">${hasRoomBrowser() ? 'Fight in the arena with other players anywhere. Join an open room, type a friend\'s code, or host your own.' : 'Fight in the arena with friends anywhere: different houses, Wi-Fi or phone data. One of you hosts a room and shares its code; everyone else joins with it.'}</p>
     <div class="row"><span class="lab">Your name</span><input id="nameIn" maxlength="16" placeholder="Bird" value="${esc(settings.name)}" autocomplete="off" spellcheck="false"></div>
     ${leadRow(sel('lead'))}
+    ${downcamRow(sel('downcam'))}
     ${hasRoomBrowser() ? `<p class="blurb small">Open rooms</p><div class="rooms" id="roomList">${roomListHtml()}</div>` : ''}
     <div class="row${sel('join')}"><input id="codeIn" class="code" maxlength="8" placeholder="CODE" value="${esc(settings.code)}" autocomplete="off" autocapitalize="characters" spellcheck="false"><button data-act="join" class="go-btn">Join</button></div>
     ${onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : ''}
@@ -237,7 +247,9 @@ function renderOnlineMenu() {
       ${pickRow(sel('myDarts'), 'myDarts', 'Player darts', settings.myDarts ? 'On' : 'Off')}
       ${pickRow(sel('enemyDarts'), 'enemyDarts', 'AI darts', settings.enemyDarts ? 'On' : 'Off')}
       ${leadRow(sel('lead'))}
-      <div class="row${sel('go')}"><button data-act="go" class="go-btn">Start match</button></div>` : `${leadRow(sel('lead'))}<p class="blurb">Waiting for the host to start…</p>`;
+    ${downcamRow(sel('downcam'))}
+      <div class="row${sel('go')}"><button data-act="go" class="go-btn">Start match</button></div>` : `${leadRow(sel('lead'))}
+    ${downcamRow(sel('downcam'))}<p class="blurb">Waiting for the host to start…</p>`;
     body = `<p class="blurb small">Room code</p>
     <div class="roomcode">${esc(online.code)}</div>
     <div class="row"><button data-act="copy">Copy invite link</button><button data-act="leave">Leave</button></div>
@@ -289,6 +301,7 @@ function menuChange(row: string, d: number) {
   else if (row === 'bots') settings.bots = THREE.MathUtils.clamp(settings.bots + d, 0, 12);
   else if (row === 'allies') settings.allies = !settings.allies;
   else if (row === 'lead') settings.lead = !settings.lead;
+  else if (row === 'downcam') settings.downcam = DOWNCAM_OPTS[(DOWNCAM_OPTS.indexOf(settings.downcam) + d + DOWNCAM_OPTS.length) % DOWNCAM_OPTS.length];
   else if (row === 'vis') { if (online.active) online.setPublic(!online.isPublic); else settings.public = !settings.public; }
   else if (row === 'rooms') { if (openRooms.length) roomSel = (roomSel + d + openRooms.length) % openRooms.length; }
   else if (row === 'env') { settings.env = (settings.env + d + ARENAS.length + 1) % (ARENAS.length + 1); queuePreview(); }
@@ -353,6 +366,71 @@ const feed: { text: string; t: number }[] = [];
 const cloudsHit = new Set<string>();
 const nearby: Obstacle[] = [];
 
+// ---------- Down cam: replay the last 3 s from the killer's chase camera when you go down ----------
+const downcam = new DownCam();
+// the dogfight's pooled pea and dart meshes (read only: for the replay recording)
+const dfPools = dogfight as unknown as { peas: { mesh: THREE.Object3D }[]; myDarts: { mesh: THREE.Object3D }[] };
+const poolMeshes = [...dfPools.peas.map((p) => p.mesh), ...dfPools.myDarts.map((d) => d.mesh)];
+const trackedNow = (): Tracked => ({
+  birds: [bird, ...dogfight.enemies.map((e) => e.mesh)],
+  shots: [...poolMeshes, ...dogfight.darts.map((d) => d.mesh)],
+  extra: [shadow],
+  puffs: puffs.mesh,
+});
+const downcamEl = $('downcam');
+/** Set by crash(): start the replay at the end of this frame, once the moment of the hit is recorded. */
+let downcamReq: { by: string; how: 'pea' | 'dart' | 'crash' } | null = null;
+/** Online: when you're back in the air (pushed back while the replay plays). Offline: when the replay ended. */
+let respawnAt = 3, downcamEndT = 0;
+
+/** Best guess at which bird got you when the shot itself can't be found: whoever had its nose on you. */
+function aimGuess(): THREE.Object3D | null {
+  let best: THREE.Object3D | null = null, bestS = 0.35;
+  for (const e of dogfight.enemies) {
+    if (e.friendly || !e.mesh.visible) continue;
+    const to = tmp.copy(glider.pos).sub(e.mesh.position);
+    const d = to.length();
+    if (d < 1 || d > 450) continue;
+    const s = new THREE.Vector3(0, 0, -1).applyQuaternion(e.mesh.quaternion).dot(to.divideScalar(d)) - d / 700;
+    if (s > bestS) { bestS = s; best = e.mesh; }
+  }
+  return best;
+}
+
+function beginDownCam(by: string, how: 'pea' | 'dart' | 'crash') {
+  if (settings.downcam === 'off' || !downcam.ready) return false;
+  let viewer: THREE.Object3D | null = null;
+  // another player: we know exactly which bird is theirs
+  if (by && by !== 'ai' && by !== 'me') viewer = dogfight.enemies.find((e) => e.remote === 'human' && e.netId === by)?.mesh ?? null;
+  // an AI bird: follow the pea or dart that hit you back to whoever fired it
+  if (!viewer && how !== 'crash') viewer = downcam.findShooter(bird) ?? aimGuess();
+  // chased into the ground by someone who hit you a moment ago
+  if (!viewer && how === 'crash' && by) viewer = aimGuess();
+  if (!viewer && settings.downcam !== 'all') return false;
+  if (!downcam.start(bird, viewer)) return false;
+  const e = viewer ? dogfight.enemies.find((x) => x.mesh === viewer) : undefined;
+  const who = !viewer ? 'Your crash'
+    : e?.remote === 'human' ? `${esc(online.nameOf(e.netId))}'s view`
+    : e?.role === 'prey' ? 'The bandit\'s view' : 'The hunter\'s view';
+  $('downcamWho').innerHTML = who;
+  if (e?.remote === 'human') $('downcamWho').style.color = PLAYER_CSS[colorIndex(e.netId)];
+  else $('downcamWho').style.color = '';
+  $('downcamSkip').textContent = isTouch ? 'Tap to skip' : 'Press any key to skip';
+  downcamEl.classList.add('on');
+  hud.overlay.classList.add('hidden');
+  if (online.phase === 'playing') respawnAt = Math.max(3, crashTimer + downcam.duration + 0.6);
+  return true;
+}
+/** The replay is over (or skipped): show the usual "downed" screen. */
+function endDownCam() {
+  downcam.stop();
+  downcamEl.classList.remove('on');
+  downcamEndT = crashTimer;
+  if (online.phase === 'playing') respawnAt = Math.max(3, crashTimer + 1);
+  if (mode === 'crashed') hud.overlay.classList.remove('hidden');
+}
+function resetDownCam() { downcam.clear(); downcamReq = null; downcamEl.classList.remove('on'); respawnAt = 3; downcamEndT = 0; }
+
 function spawn(fresh = true) {
   const arena = settings.mode !== 'endless';
   dogfight.spawning = true; dogfight.targets = [];
@@ -378,7 +456,7 @@ function spawn(fresh = true) {
   gates.reset(); gates.update(glider.pos.z, 0);
   prevPos.copy(glider.pos);
   trickMinClear = 99; tunnelChain = 0; inLoop = false; wasInCloud = false;
-  puffs.clear();
+  puffs.clear(); resetDownCam();
   dogfight.playerDarts = settings.myDarts; dogfight.enemyDarts = settings.enemyDarts;
   dogfight.reset(); hp = 3; hpRegen = 0; hitFlash = 0;
   dogfight.arenaCount = arena ? settings.enemies : 0;
@@ -413,7 +491,7 @@ function respawnOnline() {
   dogfight.locked = null; dogfight.locking = null; dogfight.lockT = 0;
   for (const d of dogfight.darts) d.tracking = false;
   for (let i = 0; i < 10 && world.update(glider.pos.x, glider.pos.z, 8) > 0; i++);
-  online.alive = true;
+  online.alive = true; resetDownCam();
   mode = 'flying'; hud.overlay.classList.add('hidden');
   placeCamera(true);
 }
@@ -471,13 +549,15 @@ function onGate(e: GateEvent) {
 function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash') {
   mode = 'crashed'; crashTimer = 0; shake = 1;
   audio.thud(); rumble(1, 300);
+  // whoever hit you in the last few seconds gets the credit (and the down cam watches from their bird)
+  const by = how !== 'crash' || t - lastHitT < 6 ? lastAttacker : '';
+  downcamReq = { by, how };
   if (online.phase === 'playing') {
-    // online: no game over. Whoever hit you in the last few seconds gets the credit, then you're straight back in.
-    const by = how !== 'crash' || t - lastHitT < 6 ? lastAttacker : '';
+    // online: no game over, you're straight back in
     online.downed(by, how);
     const who = by && by !== 'ai' ? esc(online.nameOf(by)) : by === 'ai' ? 'a wild bird' : '';
     hud.overlay.innerHTML = `<div><h1>${title}</h1>${who ? `<p>by <b>${who}</b></p>` : ''}<p>${online.kills} down · ${online.deaths} time${online.deaths === 1 ? '' : 's'} downed</p><div class="go" id="respawnIn">Back in the air in 3…</div><div class="row"><button data-act="menu">${isTouch ? 'Leave room' : 'Leave room (Esc)'}</button></div></div>`;
-    setTimeout(() => { if (mode === 'crashed') hud.overlay.classList.remove('hidden'); }, 500);
+    setTimeout(() => { if (mode === 'crashed' && !downcam.playing) hud.overlay.classList.remove('hidden'); }, 500);
     return;
   }
   const final = Math.floor(score);
@@ -488,7 +568,7 @@ function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash') {
     ? `${getArena()!.name} · wave ${Math.max(1, dogfight.wave)} · ${dogfight.kills} shot down`
     : `${dist} m downhill${dogfight.kills ? ` · ${dogfight.kills} shot down` : ''}`;
   hud.overlay.innerHTML = `<div><h1>${title}</h1><p><b>${final}</b> points · ${what}</p><p>${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div><div class="row"><button data-act="menu">${isTouch ? 'Menu' : 'Menu (Esc / B)'}</button></div></div>`;
-  setTimeout(() => { if (mode === 'crashed') hud.overlay.classList.remove('hidden'); }, 700);
+  setTimeout(() => { if (mode === 'crashed' && !downcam.playing) hud.overlay.classList.remove('hidden'); }, 700);
 }
 
 function onDogfight(ev: DogfightEvent) {
@@ -826,6 +906,7 @@ function onlineEvents() {
 function frame(now: number) {
   requestAnimationFrame(frame);
   let dt = Math.min(0.05, (now - last) / 1000);
+  const realDt = dt;
   last = now;
   input.lockScheme = online.active ? 'flight' : null; // online: everyone flies the same layout
   const inp = input.poll();
@@ -853,11 +934,12 @@ function frame(now: number) {
       mode = 'flying'; hud.overlay.classList.add('hidden');
     }
   } else if (mode === 'crashed' && (menuReq || nav.back || nav.menu)) goToMenu();
+  else if (mode === 'crashed' && downcam.playing) { if (inp.anyPress && downcam.elapsed > 0.35) endDownCam(); }
   else if (mode === 'crashed' && online.phase === 'playing') {
-    if (crashTimer > 3) respawnOnline();
-    else { const el = document.getElementById('respawnIn'); if (el) el.textContent = `Back in the air in ${Math.ceil(3 - crashTimer)}…`; }
+    if (crashTimer > respawnAt) respawnOnline();
+    else { const el = document.getElementById('respawnIn'); if (el) el.textContent = `Back in the air in ${Math.ceil(respawnAt - crashTimer)}…`; }
   }
-  else if (mode === 'crashed' && inp.anyPress && crashTimer > 0.8) { spawn(); mode = 'flying'; hud.overlay.classList.add('hidden'); }
+  else if (mode === 'crashed' && inp.anyPress && crashTimer > 0.8 && crashTimer > downcamEndT + 0.4) { spawn(); mode = 'flying'; hud.overlay.classList.add('hidden'); }
   else if (mode === 'flying' && (nav.menu || menuReq)) goToMenu();
   startReq = false; menuReq = false;
   const inArena = !!getArena();
@@ -1061,6 +1143,20 @@ function frame(now: number) {
   if (!inArena) gates.update(gp.z, t);
 
   placeCamera(false, dt, mode === 'crashed' ? Math.min(10, crashTimer * 8) : 0);
+
+  // down cam: keep recording; once you go down, show the recording instead of the live scene
+  const trk = trackedNow();
+  if (mode !== 'title') downcam.record(t, trk);
+  if (downcamReq) { if (mode === 'crashed') beginDownCam(downcamReq.by, downcamReq.how); downcamReq = null; }
+  let replaying = false;
+  if (downcam.playing) {
+    if (mode !== 'crashed' || !downcam.advance(realDt)) endDownCam();
+    else {
+      downcam.apply(scene, camera, trk, realDt, terrainHeight);
+      ($('downcamBar') as HTMLElement).style.width = `${Math.round(downcam.progress * 100)}%`;
+      replaying = true;
+    }
+  }
   sky.position.copy(camera.position);
 
   // streaks
@@ -1080,7 +1176,7 @@ function frame(now: number) {
   // HUD
   hud.mist.style.opacity = String(Math.min(0.9, mist * 2.2));
   const danger = mode === 'flying' ? THREE.MathUtils.clamp((5 - clearance) / 5, 0, 1) : 0;
-  hud.edge.style.opacity = String(Math.max(danger * 0.7, hitFlash));
+  hud.edge.style.opacity = replaying ? '0' : String(Math.max(danger * 0.7, hitFlash));
   hud.edge.style.boxShadow = hitFlash > danger * 0.7 ? 'inset 0 0 140px 40px rgba(255, 40, 40, .85)' : '';
   drawDogfightHud(mode === 'flying');
   if (isTouch) { const d = mode === 'flying' ? 'flex' : 'none'; $('fire').style.display = d; $('dartBtn').style.display = myDartsOn() ? d : 'none'; }
@@ -1090,7 +1186,7 @@ function frame(now: number) {
   }
   hud.skim.textContent = danger > 0 ? (waterSkim ? 'WATER SKIM' : 'SKIM') : 'CANYON RUN';
   hud.skim.style.opacity = String(danger > 0 ? 0.6 + danger * 0.4 : inCanyonRun && mode === 'flying' ? 0.7 : 0);
-  hud.score.textContent = mode === 'title' ? '' : String(Math.floor(score));
+  hud.score.textContent = mode === 'title' || replaying ? '' : String(Math.floor(score));
   hud.combo.style.opacity = combo > 0 && mode === 'flying' ? '1' : '0';
   hud.combo.textContent = `combo x${multiplier().toFixed(1)}`;
   hud.stats.textContent = mode === 'flying'
@@ -1108,6 +1204,7 @@ function frame(now: number) {
   drawOnlineHud(dt);
 
   renderer.render(scene, camera);
+  if (replaying) downcam.restore(trk);
 }
 requestAnimationFrame(frame);
 
