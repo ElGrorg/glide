@@ -13,6 +13,8 @@ export interface InputState {
   anyPress: boolean; // edge-triggered "start / restart"
   trick: 'rollL' | 'rollR' | null; // edge-triggered barrel-roll request
   source: 'keyboard' | 'touch' | 'gamepad';
+  /** Menu navigation, edge-triggered: x/y = -1/0/1 (d-pad, arrows, stick flick), ok = Enter/Space/A/Start, back = Esc/B. */
+  nav: { x: number; y: number; ok: boolean; back: boolean; menu: boolean };
 }
 
 const DEAD = 0.15;
@@ -24,7 +26,9 @@ export type PadScheme = 'flight' | 'classic' | 'wings';
 const SCHEMES: PadScheme[] = ['flight', 'classic', 'wings'];
 
 export class Input {
-  state: InputState = { pitch: 0, roll: 0, yaw: 0, rollRate: true, brake: 0, tuck: 0, fire: false, dart: false, aimX: 0, aimY: 0, anyPress: false, trick: null, source: 'keyboard' };
+  state: InputState = { pitch: 0, roll: 0, yaw: 0, rollRate: true, brake: 0, tuck: 0, fire: false, dart: false, aimX: 0, aimY: 0, anyPress: false, trick: null, source: 'keyboard', nav: { x: 0, y: 0, ok: false, back: false, menu: false } };
+  private nav = { x: 0, y: 0, ok: false, back: false, menu: false };
+  private stickNav = { x: 0, y: 0 };
   private trick: InputState['trick'] = null;
   private swipes = new Map<number, { x: number; y: number; t: number }>();
   private keys = new Set<string>();
@@ -62,11 +66,21 @@ export class Input {
     try { const v = localStorage.getItem('glide.layout') as PadScheme; if (SCHEMES.includes(v)) this.padScheme = v; } catch { /* ignore */ }
     this.stickEl = document.getElementById('stick')!;
     this.knobEl = document.getElementById('knob')!;
+    const typing = (e: Event) => (e.target as HTMLElement | null)?.tagName === 'INPUT';
     addEventListener('keydown', (e) => {
+      if (typing(e)) return; // typing a name or room code
       if (!e.repeat) {
         this.pressed = true;
         if (e.code === 'KeyV') this.toggleScheme();
         if (e.code === 'KeyR') this.dartReq = true;
+        const c = e.code;
+        if (c === 'ArrowLeft' || c === 'KeyA') this.nav.x = -1;
+        if (c === 'ArrowRight' || c === 'KeyD') this.nav.x = 1;
+        if (c === 'ArrowUp' || c === 'KeyW') this.nav.y = -1;
+        if (c === 'ArrowDown' || c === 'KeyS') this.nav.y = 1;
+        if (c === 'Enter' || c === 'Space') this.nav.ok = true;
+        if (c === 'Escape' || c === 'Backspace') this.nav.back = true;
+        if (c === 'Escape') this.nav.menu = true;
       }
       this.keys.add(e.code);
       this.state.source = 'keyboard';
@@ -77,6 +91,7 @@ export class Input {
 
     const opts = { passive: false } as AddEventListenerOptions;
     target.addEventListener('touchstart', (e: any) => {
+      if (typing(e)) return; // let the text box take focus
       e.preventDefault();
       this.state.source = 'touch';
       this.pressed = true;
@@ -195,6 +210,12 @@ export class Input {
       const ax = dz(gp.axes[0] ?? 0), ay = dz(gp.axes[1] ?? 0);
       const rx = dz(gp.axes[2] ?? 0), ry = dz(gp.axes[3] ?? 0);
       if (ax || ay || rx || ry) this.state.source = 'gamepad';
+      // a flick of the left stick also moves through menus
+      const fx = Math.abs(ax) > 0.6 ? Math.sign(ax) : Math.abs(ax) < 0.3 ? 0 : this.stickNav.x;
+      const fy = Math.abs(ay) > 0.6 ? Math.sign(ay) : Math.abs(ay) < 0.3 ? 0 : this.stickNav.y;
+      if (fx && fx !== this.stickNav.x) this.nav.x = fx;
+      if (fy && fy !== this.stickNav.y) this.nav.y = fy;
+      this.stickNav = { x: fx, y: fy };
       if (this.padScheme === 'flight') {
         // flight sticks: left stick ↑↓ pitches, right stick ←→ rolls (the bank holds)
         pitch += expo(ay); roll += expo(rx);
@@ -217,6 +238,13 @@ export class Input {
           this.pressed = true; this.state.source = 'gamepad';
           if (i === 8) this.toggleScheme();
           if (i === 3) this.dartReq = true;
+          if (i === 14) this.nav.x = -1;
+          if (i === 15) this.nav.x = 1;
+          if (i === 12) this.nav.y = -1;
+          if (i === 13) this.nav.y = 1;
+          if (i === 0 || i === 9) this.nav.ok = true;
+          if (i === 9) this.nav.menu = true;
+          if (i === 1) this.nav.back = true;
         }
         this.padButtonsPrev[i] = b.pressed;
       });
@@ -228,7 +256,7 @@ export class Input {
     for (const gp of pads) { if (gp) { both ||= !!(gp.buttons[4]?.pressed && gp.buttons[5]?.pressed); break; } }
     if (both) this.pendingRoll = null;
     else if (this.pendingRoll && performance.now() - this.pendingAt > 90) { this.trick = this.pendingRoll; this.pendingRoll = null; }
-    this.state.tuck = Math.max(both ? 1 : 0, tuck);
+    this.state.tuck = 0; // tuck removed: speed only comes from diving (both / tuck kept as no-ops)
 
     const clamp = (v: number) => Math.max(-1, Math.min(1, v));
     this.state.pitch = clamp(this.invertPitch ? -pitch : pitch);
@@ -239,6 +267,8 @@ export class Input {
     this.state.fire = fire;
     this.state.dart = this.dartReq; this.dartReq = false;
     this.state.aimX = clamp(aimX); this.state.aimY = clamp(aimY);
+    this.state.nav = this.nav;
+    this.nav = { x: 0, y: 0, ok: false, back: false, menu: false };
     this.state.anyPress = this.pressed;
     this.pressed = false;
     this.state.trick = this.trick;

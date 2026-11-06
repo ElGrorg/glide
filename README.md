@@ -23,7 +23,31 @@ Code map: `src/route.ts` forks and environments · `src/world.ts` terrain, canyo
 Enemy birds join the run every 7 to 13 seconds (one at a time, two once you have a couple of kills).
 - **Hunters** (dark grey) spawn behind you and fire bursts from your tail. The radar (bottom right) glows red and a warning flashes when one is on you. Hunters react to your moves about half a second late and turn wider than you. A dodge roll (roll while banking) or a hard break makes them lose sight of you ("Shook it!"), and slamming the brakes when one is close makes it overshoot.
 - **Bandits** (blue) spawn ahead and flee. Once they see you lining up they jink, fake, barrel-roll and dive.
-- Hold an enemy near your nose for a moment to **lock on**: your peas are then aimed ahead of it and curve slightly toward it.
+- The pea shooter is pure manual aim: lead your target yourself.
+- Hold an enemy near your nose for 1 s to **lock on**, then fire a **homing dart** (R or right-click, Y on the controller, DART on touch). Darts chase the locked bird hard and kill in one hit, but enemies see them coming, break hard across their path and barrel-roll to shake them off. You carry 2 and earn one back every 10 s (pips under the feathers).
 - You have three feathers (hearts). One grows back after 20 s without being hit.
 - Touch: hold the FIRE button.
 
+
+## Arena mode
+Pick **Arena** on the title screen (←→ / d-pad / tap) to fight in a walled-in basin instead of the endless mountain.
+- **Speed:** birds flap to hold a cruise speed (~120 km/h) in level flight, so you don't need a downhill. Climbing still bleeds speed, diving still builds it past cruise, the air-brake still slows you, and the flapping fades out high up (no climbing forever). Enemies fly on exactly the same rules.
+- **Enemies:** choose 1 to 12 per wave. Clear a wave for a bonus, a feather back and full darts; the next wave arrives a few seconds later. Enemies steer round trees, pillars and arches but can misjudge it and crash (it's your kill if you chased them into it).
+- **Environments:** Green Basin (hills, woods, puffy clouds), Pillar Desert (rock towers and arches), Ice Peaks (jagged peaks to hide behind), Cloud Forest (dense woods under low cloud), Autumn Canyons (a plateau cut by slot canyons), or Random. Rock arches in every arena: fly under them.
+- The mountains wall the arena in; fly past the edge and the wind turns you back.
+- **Dart switches** (both modes): turn your homing darts and the enemies' darts on or off separately before a match.
+- Esc (or Start on a controller) returns to the menu; on the crash screen, Esc / B / the Menu button does too.
+
+
+## Online arena (multiplayer)
+Pick **Online** on the title screen to fight in the arena with friends on other networks (different houses, Wi-Fi or phone data).
+- One player presses **Host a room** and gets a 5-letter room code plus a **Copy invite link** button. Everyone else types the code and presses **Join** (or just opens the invite link). Up to 8 players.
+- The host picks the arena, how many **AI birds** come in each wave (0 = players only), whether players are **free for all** or **team up** against the AI birds, and the dart switches, then presses **Start match**. Players can also join a match that's already going.
+- Everyone flies by the same rules. AI birds chase whichever player is closest. Go down and you're back in the air at the rim 3 seconds later; the scoreboard (top right) counts kills and times downed, and a kill feed runs down the left. Esc leaves the room.
+- How it works: WebRTC peer to peer (PeerJS). The host's browser runs the AI birds and relays everyone's updates; each player flies their own bird locally (no input lag) and sends its position 20 times a second, and everyone draws the others a tenth of a second in the past so they move smoothly. A pea that hits you is judged on your machine; hits on AI birds are confirmed by the host; a dart fired at you flies on your machine, so you shake it the same way as an AI bird's dart.
+- **Hosting on Cloudflare (recommended):** `npm run deploy` puts the game and a small room server on one Cloudflare Worker. Players then connect over a WebSocket to a Durable Object per room instead of WebRTC, which works on every network. Free plan is plenty for friends; see [CLOUDFLARE.md](CLOUDFLARE.md) for setup and costs. Server code: `server/worker.ts`.
+- Servers (plain `npm run build`): the free public PeerJS server introduces players to each other (nothing else goes through it), and PeerJS's free STUN/TURN relays get through strict home and mobile NATs. No accounts needed. For your own servers: `?signal=host:port` (run `npx peer --port 9000`) and `?turn=turn:host:3478&tu=user&tp=pass`.
+- `?debug` exposes the game objects as `window.glide` for testing.
+
+## Lead marker (option, every mode)
+Turn **Lead marker** on or off on the title screen (online: in the room menu or lobby). Each bird within ~260 m gets a small ring showing where to point your nose so a pea meets it: it allows for the bird's motion and your own (your peas carry your speed). A white gun cross shows where your peas are going; put the cross on the ring and fire. A faded ring means the bird is still out of pea range.

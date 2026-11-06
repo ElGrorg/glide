@@ -1,13 +1,15 @@
 import * as THREE from 'three';
-import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, type Obstacle } from './world';
+import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, ARENAS, ARENA_R, setArena, getArena, type Obstacle } from './world';
 import { route, BIOME_NAME } from './route';
 import { CloudPuffs } from './puffs';
 import { Gates, type GateEvent } from './gates';
 import { BirdMesh, Glider } from './bird';
 import { Input } from './input';
 import { WindAudio } from './audio';
-import { Dogfight, type DogfightEvent } from './dogfight';
+import { Dogfight, MAX_DARTS, PEA_SPEED, PEA_LIFE, flapAmount, type DogfightEvent } from './dogfight';
 import { setWorldSeed } from './noise';
+import { Online, PLAYER_CSS, colorIndex, type MatchRules } from './online';
+import { cleanCode } from './net';
 
 // ---------- Renderer, scene, camera ----------
 const SKY = new THREE.Color(0x9fd3f0);
@@ -50,6 +52,7 @@ const skyNow = SKY.clone();
 const skyMat = () => (sky.material as THREE.ShaderMaterial).uniforms.bottom.value as THREE.Color;
 const glider = new Glider();
 const dogfight = new Dogfight(scene, puffs);
+const online = new Online(dogfight);
 const bird = new BirdMesh();
 scene.add(bird);
 
@@ -79,33 +82,203 @@ camera.add(streaks);
 // ---------- Input, audio, HUD ----------
 const input = new Input(document);
 const LAYOUT_NAMES = { flight: ['Flight sticks', 'left stick pitches, right stick rolls'], classic: ['Classic', 'one stick steers'], wings: ['Wing sticks', 'one stick per wing'] } as const;
-input.onSchemeChange = (sc) => { showControls(); popup(LAYOUT_NAMES[sc][0], LAYOUT_NAMES[sc][1]); };
+input.onSchemeChange = (sc) => { showControlsSafe(); popup(LAYOUT_NAMES[sc][0], LAYOUT_NAMES[sc][1]); };
 const audio = new WindAudio();
 const $ = (id: string) => document.getElementById(id)!;
-const hud = { hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('stats'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
+const hud = { wave: $('wave'), hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('stats'), darts: $('darts'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
 const PAD_HELP = {
-  flight: 'Controller (<b>flight sticks</b>): left stick ↑↓ = dive / pull up · right stick ←→ = roll, both all the way round (bank holds when you let go)<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
-  classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
-  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>LT</b>/<b>A</b> brake · hold <b>LB+RB</b> = tuck dive · <b>Back</b> = next layout',
+  flight: 'Controller (<b>flight sticks</b>): left stick ↑↓ = dive / pull up · right stick ←→ = roll, both all the way round (bank holds when you let go)<br><b>RT</b>/<b>X</b> shoot · <b>Y</b> homing dart · <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
+  classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>Y</b> homing dart, <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
+  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>Y</b> homing dart · <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
 };
-const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.padScheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot<br>hold <b>Q+E</b> = tuck dive &nbsp; hold <b>S</b> to loop &nbsp; <b>V</b> = change layout`;
+const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.padScheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot &nbsp; <b>R</b> or right-click = homing dart (hold your nose on a bird for 1 s to lock)<br>hold <b>S</b> to loop &nbsp; <b>V</b> = change layout`;
 const TOUCH_HELP = () => input.padScheme === 'flight'
-  ? 'Left thumb: drag up to dive, down to pull up<br>Right thumb: drag ←→ to roll, all the way round if you like (the bank holds when you let go)<br>Hold <b>FIRE</b> to shoot<br>Keep pulling down to loop'
-  : 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Hold <b>FIRE</b> to shoot<br>Keep pulling down to loop';
+  ? 'Left thumb: drag up to dive, down to pull up<br>Right thumb: drag ←→ to roll, all the way round if you like (the bank holds when you let go)<br>Hold <b>FIRE</b> to shoot<br>Hold your nose on a bird to lock, then tap <b>DART</b><br>Keep pulling down to loop'
+  : 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Hold <b>FIRE</b> to shoot<br>Hold your nose on a bird to lock, then tap <b>DART</b><br>Keep pulling down to loop';
 const showControls = () => {
   $('controls').innerHTML = isTouch ? TOUCH_HELP() : `${KEYS_HELP()}<br>${PAD_HELP[input.padScheme]}`;
 };
-showControls();
-addEventListener('gamepadconnected', showControls);
-if (isTouch) $('fire').style.display = 'flex';
-$('go').textContent = isTouch ? 'Tap to glide' : 'Press any key or button to glide';
+const showControlsSafe = () => { if (document.getElementById('controls')) showControls(); };
+addEventListener('gamepadconnected', showControlsSafe);
+if (isTouch) { $('fire').style.display = 'flex'; $('dartBtn').style.display = 'flex'; }
 
+// ---------- Game settings: endless downhill or arena ----------
+type GameMode = 'endless' | 'arena' | 'online';
+const settings = { mode: 'endless' as GameMode, env: ARENAS.length /* = random */, enemies: 3, myDarts: true, enemyDarts: true,
+  /* online */ name: '', bots: 2, allies: false, code: '',
+  /* HUD: lead marker showing where to aim your peas */ lead: true };
+try { Object.assign(settings, JSON.parse(localStorage.getItem('glide.settings') || '{}')); } catch { /* storage unavailable */ }
+settings.env = THREE.MathUtils.clamp(Math.round(settings.env) || 0, 0, ARENAS.length);
+settings.enemies = THREE.MathUtils.clamp(Math.round(settings.enemies) || 3, 1, 12);
+settings.bots = THREE.MathUtils.clamp(Math.round(settings.bots) || 0, 0, 12);
+if (!['endless', 'arena', 'online'].includes(settings.mode)) settings.mode = 'endless';
+settings.name = String(settings.name || '').slice(0, 16);
+// an invite link (?room=CODE) opens straight onto the online menu, ready to join
+const inviteCode = cleanCode(new URLSearchParams(location.search).get('room') || '');
+if (inviteCode) { settings.mode = 'online'; settings.code = inviteCode; }
+const saveSettings = () => { try { localStorage.setItem('glide.settings', JSON.stringify(settings)); } catch { /* ignore */ } };
+const bestKey = () => (settings.mode === 'arena' ? 'glide.best.arena' : settings.mode === 'online' ? 'glide.best.online' : 'glide.best');
 let best = 0;
-try { best = Number(localStorage.getItem('glide.best') || 0); } catch { /* storage unavailable */ }
+const loadBest = () => { try { best = Number(localStorage.getItem(bestKey()) || 0); } catch { best = 0; } };
+loadBest();
+/** The arena chosen for this match ("random" rolls one per match). */
+let arenaIdx = 0;
 
+const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'go', 'host', 'join'] as const;
+const GO_ROW = MENU_ROWS.indexOf('go');
+let menuRow = inviteCode ? MENU_ROWS.indexOf('join') : GO_ROW;
+function menuRows(): readonly string[] {
+  if (settings.mode === 'online') return online.active ? (online.isHost && online.phase === 'lobby' ? ['env', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'go'] : online.phase === 'lobby' ? ['lead'] : []) : ['mode', 'lead', 'host', 'join'];
+  return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'go'] : ['mode', 'myDarts', 'enemyDarts', 'lead', 'go'];
+}
+let onlineNote = '';
+const esc = (s: string) => s.replace(/[<>&"]/g, '');
+const inviteLink = () => { const u = new URL(location.href); u.search = ''; u.hash = ''; u.searchParams.set('room', online.code); const sig = new URLSearchParams(location.search).get('signal'); if (sig) u.searchParams.set('signal', sig); return u.toString(); };
+function renderMenu() {
+  if (settings.mode === 'online') { renderOnlineMenu(); return; }
+  const rows = menuRows() as readonly string[];
+  if (!rows.includes(MENU_ROWS[menuRow])) menuRow = GO_ROW;
+  const sel = (r: string) => (MENU_ROWS[menuRow] === r ? ' sel' : '');
+  const envName = settings.env === ARENAS.length ? 'Random' : ARENAS[settings.env].name;
+  const envBlurb = settings.env === ARENAS.length ? 'a different arena every match' : ARENAS[settings.env].blurb;
+  const arena = settings.mode === 'arena';
+  hud.overlay.innerHTML = `<div class="menu">
+    <h1>Glide!</h1>
+    ${modeRow(sel('mode'))}
+    <p class="blurb">${arena
+      ? 'A walled-in basin to fight in. You flap to hold your speed, so the ground doesn\'t have to fall away: climbing still costs speed and diving still builds it. Clear a wave and the next one comes in.'
+      : 'An endless mountainside. Skim the ground, thread the trees, punch through the clouds, and shoot down the birds hunting you.'}</p>
+    ${arena ? `<div class="row pick${sel('env')}"><span class="lab">Arena</span><button data-act="env:-1">◀</button><b>${envName}</b><button data-act="env:1">▶</button></div>
+    <p class="blurb small">${envBlurb}</p>
+    <div class="row pick${sel('enemies')}"><span class="lab">Enemies</span><button data-act="enemies:-1">◀</button><b>${settings.enemies}</b><button data-act="enemies:1">▶</button></div>` : ''}
+    <div class="row pick${sel('myDarts')}"><span class="lab">Your darts</span><button data-act="myDarts:-1">◀</button><b>${settings.myDarts ? 'On' : 'Off'}</b><button data-act="myDarts:1">▶</button></div>
+    <div class="row pick${sel('enemyDarts')}"><span class="lab">Enemy darts</span><button data-act="enemyDarts:-1">◀</button><b>${settings.enemyDarts ? 'On' : 'Off'}</b><button data-act="enemyDarts:1">▶</button></div>
+    ${leadRow(sel('lead'))}
+    <div class="row${sel('go')}"><button data-act="go" class="go-btn">Fly!</button></div>
+    <div class="controls" id="controls"></div>
+    <p class="hint">${isTouch ? 'Tap to choose' : '↑↓ choose · ←→ change · Enter / A to fly'}</p>
+  </div>`;
+  showControls();
+}
+function leadRow(sel: string) { return pickRow(sel, 'lead', 'Lead marker', settings.lead ? 'On' : 'Off'); }
+function modeRow(sel: string) {
+  const b = (m: GameMode, label: string) => `<button data-act="mode:${m}" class="${settings.mode === m ? 'on' : ''}">${label}</button>`;
+  return `<div class="row modes${sel}">${b('endless', 'Endless downhill')}${b('arena', 'Arena')}${b('online', 'Online')}</div>`;
+}
+function pickRow(sel: string, key: string, label: string, value: string) {
+  return `<div class="row pick${sel}"><span class="lab">${label}</span><button data-act="${key}:-1">◀</button><b>${value}</b><button data-act="${key}:1">▶</button></div>`;
+}
+/** Online: the room menu (host or join), then the lobby once you're in a room. */
+function renderOnlineMenu() {
+  const rows = menuRows();
+  if (rows.length && !rows.includes(MENU_ROWS[menuRow])) menuRow = MENU_ROWS.indexOf(rows[rows.length - 1] as typeof MENU_ROWS[number]);
+  const sel = (r: string) => (MENU_ROWS[menuRow] === r ? ' sel' : '');
+  const envName = settings.env === ARENAS.length ? 'Random' : ARENAS[settings.env].name;
+  let body = '';
+  if (!online.active) {
+    body = `${modeRow(sel('mode'))}
+    <p class="blurb">Fight in the arena with friends anywhere: different houses, Wi-Fi or phone data. One of you hosts a room and shares its code; everyone else joins with it.</p>
+    <div class="row"><span class="lab">Your name</span><input id="nameIn" maxlength="16" placeholder="Bird" value="${esc(settings.name)}" autocomplete="off" spellcheck="false"></div>
+    ${leadRow(sel('lead'))}
+    <div class="row${sel('host')}"><button data-act="host" class="go-btn">Host a room</button></div>
+    <div class="row${sel('join')}"><input id="codeIn" class="code" maxlength="8" placeholder="CODE" value="${esc(settings.code)}" autocomplete="off" autocapitalize="characters" spellcheck="false"><button data-act="join" class="go-btn">Join</button></div>
+    ${onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : ''}`;
+  } else if (online.phase === 'connecting') {
+    body = `<p class="blurb">${online.isHost ? 'Opening a room…' : `Joining room <b>${esc(online.code)}</b>…`}</p>
+    <div class="row"><button data-act="leave">Cancel</button></div>`;
+  } else {
+    const players = online.roster().map((p) => `<li style="color:${PLAYER_CSS[colorIndex(p.id)]}">${esc(p.name)}${p.id === online.myId ? ' (you)' : ''}${p.id === 'p0' ? ' · host' : ''}</li>`).join('');
+    const hostSettings = online.isHost ? `
+      ${pickRow(sel('env'), 'env', 'Arena', envName)}
+      ${pickRow(sel('bots'), 'bots', 'AI birds', settings.bots ? `${settings.bots} per wave` : 'None')}
+      ${pickRow(sel('allies'), 'allies', 'Players', settings.allies ? 'Team up' : 'Free for all')}
+      ${pickRow(sel('myDarts'), 'myDarts', 'Player darts', settings.myDarts ? 'On' : 'Off')}
+      ${pickRow(sel('enemyDarts'), 'enemyDarts', 'AI darts', settings.enemyDarts ? 'On' : 'Off')}
+      ${leadRow(sel('lead'))}
+      <div class="row${sel('go')}"><button data-act="go" class="go-btn">Start match</button></div>` : `${leadRow(sel('lead'))}<p class="blurb">Waiting for the host to start…</p>`;
+    body = `<p class="blurb small">Room code</p>
+    <div class="roomcode">${esc(online.code)}</div>
+    <div class="row"><button data-act="copy">Copy invite link</button><button data-act="leave">Leave</button></div>
+    ${onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : ''}
+    <ul class="players">${players}</ul>
+    ${hostSettings}`;
+  }
+  hud.overlay.innerHTML = `<div class="menu"><h1>Glide!</h1>${body}
+    <p class="hint">${isTouch ? 'Tap to choose' : online.active ? '↑↓ choose · ←→ change · Enter to start' : 'Type a name · Enter on a row to host or join'}</p></div>`;
+  const nameIn = document.getElementById('nameIn') as HTMLInputElement | null;
+  const codeIn = document.getElementById('codeIn') as HTMLInputElement | null;
+  nameIn?.addEventListener('input', () => { settings.name = nameIn.value.slice(0, 16); saveSettings(); });
+  codeIn?.addEventListener('input', () => { codeIn.value = cleanCode(codeIn.value); settings.code = codeIn.value; });
+  for (const el of [nameIn, codeIn]) el?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { el.blur(); onlineAction(el === codeIn ? 'join' : 'host'); }
+    if (e.key === 'Escape') el.blur();
+  });
+}
+function onlineAction(act: string) {
+  audio.start();
+  onlineNote = '';
+  const name = (settings.name || '').trim() || 'Bird';
+  if (act === 'host') { online.host(name); renderMenu(); }
+  else if (act === 'join') {
+    if (cleanCode(settings.code).length < 4) { onlineNote = 'Type the room code your friend gave you.'; renderMenu(); (document.getElementById('codeIn') as HTMLInputElement | null)?.focus(); return; }
+    online.join(settings.code, name); renderMenu();
+  } else if (act === 'leave') { online.leave(); renderMenu(); }
+  else if (act === 'copy') {
+    const link = inviteLink();
+    navigator.clipboard?.writeText(link).then(() => { onlineNote = 'Invite link copied. Send it to your friends.'; renderMenu(); },
+      () => { onlineNote = `Invite link: ${link}`; renderMenu(); });
+    if (!navigator.clipboard) { onlineNote = `Invite link: ${link}`; renderMenu(); }
+  } else if (act === 'go' && online.isHost && online.phase === 'lobby') {
+    const rules: MatchRules = { seed: (Math.random() * 2 ** 31) | 0, arena: settings.env < ARENAS.length ? settings.env : Math.floor(Math.random() * ARENAS.length),
+      bots: settings.bots, myDarts: settings.myDarts, enemyDarts: settings.enemyDarts, allies: settings.allies };
+    online.start(rules);
+  }
+}
+let previewTimer = 0;
+/** Rebuild the world behind the title so it shows the chosen mode / arena. */
+function queuePreview() { clearTimeout(previewTimer); previewTimer = window.setTimeout(() => { if (mode === 'title') spawn(true); }, 220); }
+const MODES: GameMode[] = ['endless', 'arena', 'online'];
+function menuChange(row: string, d: number) {
+  if (row === 'mode') {
+    const m = MODES[THREE.MathUtils.clamp(MODES.indexOf(settings.mode) + d, 0, MODES.length - 1)];
+    if (m !== settings.mode) { const wasArena = settings.mode !== 'endless', nowArena = m !== 'endless'; settings.mode = m; loadBest(); if (wasArena !== nowArena) queuePreview(); }
+  }
+  else if (row === 'bots') settings.bots = THREE.MathUtils.clamp(settings.bots + d, 0, 12);
+  else if (row === 'allies') settings.allies = !settings.allies;
+  else if (row === 'lead') settings.lead = !settings.lead;
+  else if (row === 'env') { settings.env = (settings.env + d + ARENAS.length + 1) % (ARENAS.length + 1); queuePreview(); }
+  else if (row === 'myDarts') settings.myDarts = !settings.myDarts;
+  else if (row === 'enemyDarts') settings.enemyDarts = !settings.enemyDarts;
+  else if (row === 'enemies') settings.enemies = THREE.MathUtils.clamp(settings.enemies + d, 1, 12);
+  saveSettings(); renderMenu();
+}
+let startReq = false, menuReq = false;
+hud.overlay.addEventListener('pointerdown', (e) => {
+  const act = (e.target as HTMLElement).closest('[data-act]')?.getAttribute('data-act');
+  if (!act) return;
+  audio.start();
+  const [k, v] = act.split(':');
+  if (settings.mode === 'online' && ['host', 'join', 'leave', 'copy', 'go'].includes(k)) { onlineAction(k); return; }
+  if (k === 'go') startReq = true;
+  else if (k === 'menu') menuReq = true;
+  else if (k === 'mode') { menuRow = 0; menuChange('mode', MODES.indexOf(v as GameMode) - MODES.indexOf(settings.mode)); }
+  else { menuRow = MENU_ROWS.indexOf(k as typeof MENU_ROWS[number]); menuChange(k, Number(v)); }
+});
+function goToMenu() {
+  if (online.phase === 'playing') online.leave();
+  mode = 'title';
+  spawn(true);
+  renderMenu();
+  hud.overlay.classList.remove('hidden');
+}
+
+// Pop-up announcements (forks ahead, new enemy, close call +pts, ...) are switched off: the screen stays
+// clean. Lock-on reticles, the dart / stall warning bar, the score and the dart counter still show.
+const SHOW_POPUPS = false;
 function popup(text: string, sub = '') {
+  if (!SHOW_POPUPS) return;
   const el = document.createElement('div');
   el.className = 'pop';
   el.innerHTML = `${text}${sub ? `<small>${sub}</small>` : ''}`;
@@ -127,14 +300,34 @@ const near = new Map<string, { gap: number; type: string }>(); // obstacle id ->
 const prevPos = new THREE.Vector3();
 let waterSkim = false, trickMinClear = 99, loopMinClear = 99, tunnelChain = 0, inCanyonRun = false, wasInCloud = false;
 let inLoop = false;
-let hp = 3, hpRegen = 0, hitFlash = 0, dodgeCd = 0, warnBeep = 0;
+let waveClearedT = 0, outOfBounds = 0;
+let hp = 3, hpRegen = 0, hitFlash = 0, dodgeCd = 0, warnBeep = 0, dartHint = 0;
+let wasLocked: unknown = null;
+// online: who last hit you (for the kill credit if you then crash), spawn protection, kill feed
+let lastAttacker = '', lastHitT = -99, spawnShield = 0;
+const feed: { text: string; t: number }[] = [];
 const cloudsHit = new Set<string>();
 const nearby: Obstacle[] = [];
 
 function spawn(fresh = true) {
-  if (fresh) { setWorldSeed((Math.random() * 2 ** 31) | 0); route.reset(); world.reset(); }
-  const z = 0, x = route.mainCenter(z);
-  glider.reset(x, terrainHeight(x, z) + 45, z, 0);
+  const arena = settings.mode !== 'endless';
+  dogfight.spawning = true; dogfight.targets = [];
+  // "random" rolls a new arena each fresh match
+  if (arena) arenaIdx = settings.env < ARENAS.length ? settings.env : fresh || !getArena() ? Math.floor(Math.random() * ARENAS.length) : arenaIdx;
+  const arenaChanged = (arena ? ARENAS[arenaIdx] : null) !== getArena();
+  setArena(arena ? ARENAS[arenaIdx] : null);
+  if (fresh || arenaChanged) { setWorldSeed((Math.random() * 2 ** 31) | 0); route.reset(); world.reset(); }
+  if (arena) {
+    // fly in from the south side of the basin, toward the middle
+    const z = ARENA_R * 0.7;
+    let ground = 0;
+    for (let d = 0; d <= 200; d += 20) ground = Math.max(ground, terrainHeight(0, z - d));
+    glider.reset(0, ground + 50, z, 0);
+  } else {
+    const z = 0, x = route.mainCenter(z);
+    glider.reset(x, terrainHeight(x, z) + 45, z, 0);
+  }
+  const z = glider.pos.z;
   startZ = z;
   score = 0; combo = 0; comboTimer = 0; slowmo = 0; shake = 0;
   near.clear(); cloudsHit.clear();
@@ -142,21 +335,61 @@ function spawn(fresh = true) {
   prevPos.copy(glider.pos);
   trickMinClear = 99; tunnelChain = 0; inLoop = false; wasInCloud = false;
   puffs.clear();
+  dogfight.playerDarts = settings.myDarts; dogfight.enemyDarts = settings.enemyDarts;
   dogfight.reset(); hp = 3; hpRegen = 0; hitFlash = 0;
+  dogfight.arenaCount = arena ? settings.enemies : 0;
   // build the opening stretch straight away
   for (let i = 0; i < 10 && world.update(glider.pos.x, glider.pos.z - 150, 8) > 0; i++);
   placeCamera(true);
 }
 
+/** Online: the host started the match (or you joined one in progress). Everyone builds the same arena from the same seed. */
+function startOnlineMatch(rules: MatchRules) {
+  clearTimeout(previewTimer);
+  arenaIdx = THREE.MathUtils.clamp(rules.arena, 0, ARENAS.length - 1);
+  setArena(ARENAS[arenaIdx]);
+  setWorldSeed(rules.seed); route.reset(rules.seed % 1000000); world.reset();
+  puffs.clear(); gates.reset();
+  dogfight.playerDarts = rules.myDarts; dogfight.enemyDarts = rules.enemyDarts;
+  dogfight.reset();
+  dogfight.spawning = online.isHost && rules.bots > 0;
+  dogfight.arenaCount = rules.bots;
+  score = 0; combo = 0; comboTimer = 0;
+  feed.length = 0;
+  respawnOnline();
+}
+/** Online: back into the air at a random spot on the rim, with full feathers and darts. The fight carries on. */
+function respawnOnline() {
+  const sp = online.spawnPoint();
+  glider.reset(sp.x, sp.y, sp.z, sp.heading);
+  startZ = glider.pos.z; prevPos.copy(glider.pos);
+  near.clear(); trickMinClear = 99; inLoop = false; wasInCloud = false; slowmo = 0; shake = 0;
+  hp = 3; hpRegen = 0; hitFlash = 0; lastAttacker = ''; lastHitT = -99; spawnShield = 2.5;
+  dogfight.dartsLeft = online.rules?.myDarts ? MAX_DARTS : 0; dogfight.dartCharge = 0;
+  dogfight.locked = null; dogfight.locking = null; dogfight.lockT = 0;
+  for (const d of dogfight.darts) d.tracking = false;
+  for (let i = 0; i < 10 && world.update(glider.pos.x, glider.pos.z, 8) > 0; i++);
+  online.alive = true;
+  mode = 'flying'; hud.overlay.classList.add('hidden');
+  placeCamera(true);
+}
+
+function myDartsOn() { return online.phase === 'playing' ? !!online.rules?.myDarts : settings.myDarts; }
+
 function multiplier() { return 1 + Math.min(combo, 8) * 0.5; }
 
 function addCloseCall(gap: number, label: string) {
   combo++; comboTimer = 4;
-  const tucked = glider.tuck > 0.6; // threading a gap mid tuck-dive pays double
-  const pts = Math.round((60 + (3.5 - gap) * 80) * multiplier() * (tucked ? 2 : 1));
+  const pts = Math.round((60 + (3.5 - gap) * 80) * multiplier());
   score += pts;
   const veryClose = gap < 1.2;
-  popup(veryClose ? `INSANE! +${pts}` : `Close call +${pts}`, `${label} · ${gap.toFixed(1)} m${tucked ? ' · tucked x2' : ''}`);
+  // flying dangerously pays: a slipstream speed kick and a chunk of dart recharge, more the closer you cut it
+  const kick = veryClose ? 7 : 3 + (3.5 - gap) * 1.2;
+  glider.speed = Math.min(95, glider.speed + kick);
+  const refilled = dogfight.chargeDart(veryClose ? 0.5 : 0.25);
+  const perks = `+${Math.round(kick * 3.6)} km/h${refilled ? ' · DART RELOADED' : ''}`;
+  popup(veryClose ? `INSANE! +${pts}` : `Close call +${pts}`, `${label} · ${gap.toFixed(1)} m · ${perks}`);
+  if (refilled) audio.beep(1600, 0.1, 0.07);
   audio.whoosh(veryClose ? 1 : 0.6);
   rumble(veryClose ? 0.8 : 0.4, 120);
   if (veryClose) slowmo = 0.5;
@@ -191,14 +424,26 @@ function onGate(e: GateEvent) {
   }
 }
 
-function crash(title = 'Crunch!') {
+function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash') {
   mode = 'crashed'; crashTimer = 0; shake = 1;
   audio.thud(); rumble(1, 300);
+  if (online.phase === 'playing') {
+    // online: no game over. Whoever hit you in the last few seconds gets the credit, then you're straight back in.
+    const by = how !== 'crash' || t - lastHitT < 6 ? lastAttacker : '';
+    online.downed(by, how);
+    const who = by && by !== 'ai' ? esc(online.nameOf(by)) : by === 'ai' ? 'a wild bird' : '';
+    hud.overlay.innerHTML = `<div><h1>${title}</h1>${who ? `<p>by <b>${who}</b></p>` : ''}<p>${online.kills} down · ${online.deaths} time${online.deaths === 1 ? '' : 's'} downed</p><div class="go" id="respawnIn">Back in the air in 3…</div><div class="row"><button data-act="menu">${isTouch ? 'Leave room' : 'Leave room (Esc)'}</button></div></div>`;
+    setTimeout(() => { if (mode === 'crashed') hud.overlay.classList.remove('hidden'); }, 500);
+    return;
+  }
   const final = Math.floor(score);
   const isBest = final > best;
-  if (isBest) { best = final; try { localStorage.setItem('glide.best', String(best)); } catch { /* ignore */ } }
+  if (isBest) { best = final; try { localStorage.setItem(bestKey(), String(best)); } catch { /* ignore */ } }
   const dist = Math.round(startZ - glider.pos.z);
-  hud.overlay.innerHTML = `<div><h1>${title}</h1><p><b>${final}</b> points · ${dist} m downhill${dogfight.kills ? ` · ${dogfight.kills} shot down` : ''}</p><p>${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div></div>`;
+  const what = getArena()
+    ? `${getArena()!.name} · wave ${Math.max(1, dogfight.wave)} · ${dogfight.kills} shot down`
+    : `${dist} m downhill${dogfight.kills ? ` · ${dogfight.kills} shot down` : ''}`;
+  hud.overlay.innerHTML = `<div><h1>${title}</h1><p><b>${final}</b> points · ${what}</p><p>${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div><div class="row"><button data-act="menu">${isTouch ? 'Menu' : 'Menu (Esc / B)'}</button></div></div>`;
   setTimeout(() => { if (mode === 'crashed') hud.overlay.classList.remove('hidden'); }, 700);
 }
 
@@ -213,6 +458,13 @@ function onDogfight(ev: DogfightEvent) {
     case 'overshoot': popup('Overshoot!', 'it flew past: get on its tail'); audio.whoosh(0.9); break;
     case 'hitEnemy': audio.beep(1700, 0.03, 0.05); break;
     case 'kill': {
+      if (online.phase === 'playing') {
+        // online host: an AI bird went down. Credit whoever hit it last (or chased it into the ground);
+        // points arrive with the credit ('scored').
+        const e = ev.enemy;
+        if (online.isHost) online.aiKilled(e, e.lastHitBy || e.targetId, ev.ground);
+        break;
+      }
       combo++; comboTimer = 4;
       const pts = Math.round((ev.role === 'hunter' ? 600 : 450) * (ev.ground ? 1.5 : 1) * multiplier());
       score += pts;
@@ -221,18 +473,36 @@ function onDogfight(ev: DogfightEvent) {
       break;
     }
     case 'hitPlayer':
+      if (spawnShield > 0) break;
+      lastAttacker = ev.by; lastHitT = t;
+      if (online.phase === 'playing' && ev.by !== 'ai') online.net.send({ t: 'hitok', to: ev.by }); // a hit marker for them
       hp--; hpRegen = 0; hitFlash = 1; shake = Math.max(shake, 0.6);
       rumble(0.9, 180); audio.thud();
       puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.3), 3, 10, 0.5);
-      if (hp <= 0) crash('Shot down!');
+      if (hp <= 0) crash('Shot down!', 'pea');
       else popup('Hit!', `${hp} feather${hp > 1 ? 's' : ''} left`);
       break;
     case 'dodged':
       if (dodgeCd <= 0) { const pts = Math.round(50 * multiplier()); score += pts; popup(`Dodged! +${pts}`, 'rolled through the shots'); dodgeCd = 0.8; }
       break;
     case 'escaped': popup('Bandit escaped'); break;
+    case 'wave': audio.beep(700, 0.25, 0.08); popup(`Wave ${ev.wave}`, `${ev.count} bird${ev.count > 1 ? 's' : ''}`); break;
+    case 'waveCleared': {
+      // clearing a wave pays out, grows a feather back and refills your darts
+      const pts = Math.round(500 * ev.wave * multiplier());
+      score += pts; combo++; comboTimer = 4;
+      hp = Math.min(3, hp + 1); hpRegen = 0;
+      if (myDartsOn()) { dogfight.dartsLeft = MAX_DARTS; dogfight.dartCharge = 0; }
+      audio.whoosh(1); audio.beep(1400, 0.2, 0.07);
+      popup(`Wave ${ev.wave} cleared! +${pts}`);
+      waveClearedT = 4;
+      break;
+    }
+    case 'myDart': popup('Dart away!', `${dogfight.dartsLeft} left`); break;
+    case 'noLock': if (dartHint <= 0) { popup('No lock', 'hold your nose on a bird for a second first'); dartHint = 1.5; } break;
+    case 'myDartMiss': popup('Dart missed', 'it lost the target'); break;
     case 'dartLocking': audio.beep(950, 0.08, 0.06); break;
-    case 'dartLaunch': popup('DART!', 'brake hard as it closes, break hard, or hide in a cloud'); audio.whoosh(1); rumble(0.4, 120); break;
+    case 'dartLaunch': popup('DART! One hit and you\'re down', 'break hard as it closes, brake hard, or hide in a cloud'); audio.whoosh(1); rumble(0.4, 120); break;
     case 'dartShaken': {
       const pts = Math.round((ev.how === 'ground' ? 300 : 200) * multiplier());
       score += pts; combo++; comboTimer = 4;
@@ -241,12 +511,20 @@ function onDogfight(ev: DogfightEvent) {
       break;
     }
     case 'dartHit':
-      hp--; hpRegen = 0; hitFlash = 1; shake = Math.max(shake, 0.9);
+      if (spawnShield > 0) break;
+      lastAttacker = ev.by ?? 'ai'; lastHitT = t;
+      // a dart is a one-hit kill, whatever feathers you have left
+      hp = 0; hpRegen = 0; hitFlash = 1; shake = Math.max(shake, 0.9);
       rumble(1, 260); audio.thud();
       puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.3), 4, 16, 0.7);
-      if (hp <= 0) crash('Darted!');
-      else popup('Dart hit!', `${hp} feather${hp > 1 ? 's' : ''} left`);
+      crash('Darted!', 'dart');
       break;
+    case 'netHit': online.netHit(ev.enemy, ev.weapon); break;
+    case 'netDart': online.sendDart(ev.to, ev.pos, ev.dir, ev.speed, ev.ai ? 'ai' : online.myId); break;
+  }
+  if (online.isHost && online.phase === 'playing') {
+    if (ev.type === 'wave') online.waveEvent(ev.wave, ev.count, false);
+    if (ev.type === 'waveCleared') online.waveEvent(ev.wave, 0, true);
   }
 }
 
@@ -258,9 +536,19 @@ const rets: HTMLElement[] = [];
 function drawDogfightHud(show: boolean) {
   radar.style.opacity = show ? '1' : '0';
   hud.hp.textContent = show ? '♥'.repeat(Math.max(0, hp)) + '♡'.repeat(Math.max(0, 3 - hp)) : '';
+  // dart ammo: one pip per dart, the next one fills as it recharges
+  hud.darts.style.opacity = show && myDartsOn() ? '1' : '0';
+  if (show && myDartsOn()) {
+    const pips = Array.from({ length: MAX_DARTS }, (_, i) =>
+      i < dogfight.dartsLeft ? '<i></i>' : i === dogfight.dartsLeft ? `<i class="cd" style="--p:${Math.round(dogfight.dartCharge * 100)}%"></i>` : '<i class="off"></i>').join('');
+    hud.darts.innerHTML = `${pips}<b>DARTS${dogfight.locked && dogfight.dartsLeft ? ' · R' : ''}</b>`;
+    hud.darts.classList.toggle('ready', !!dogfight.locked && dogfight.dartsLeft > 0);
+    $('dartBtn').textContent = `DART ${dogfight.dartsLeft}`;
+    $('dartBtn').classList.toggle('dim', !dogfight.locked || dogfight.dartsLeft === 0);
+  }
   const threat = show ? Math.max(dogfight.tailThreat, dogfight.dartLockProgress) : 0;
-  hud.warn.style.opacity = threat > 0 ? String((0.55 + 0.45 * Math.sin(t * (8 + threat * 14))) * Math.min(1, 0.4 + threat)) : '0';
-  hud.warn.textContent = !show ? '' : dogfight.dartIncoming < Infinity ? `▲ DART ${Math.round(dogfight.dartIncoming)} m: BREAK! ▲`
+  hud.warn.style.opacity = mode === 'flying' && glider.stalled ? String(0.6 + 0.4 * Math.sin(t * 16)) : threat > 0 ? String((0.55 + 0.45 * Math.sin(t * (8 + threat * 14))) * Math.min(1, 0.4 + threat)) : '0';
+  hud.warn.textContent = mode === 'flying' && glider.stalled ? '▼ STALL: DIVE TO GAIN SPEED ▼' : !show ? '' : dogfight.dartIncoming < Infinity ? `▲ DART ${Math.round(dogfight.dartIncoming)} m: BREAK! ▲`
     : dogfight.dartLockProgress > 0 ? `▼ DART LOCK ${Math.round(dogfight.dartLockProgress * 100)}% ▼`
     : threat > 0.7 ? '▼ IN ITS SIGHTS: BREAK! ▼' : '▼ ON YOUR TAIL ▼';
 
@@ -286,7 +574,7 @@ function drawDogfightHud(show: boolean) {
       let ahead = dx * fx + dz * fz, right = dx * -fz + dz * fx;
       const d = Math.hypot(ahead, right), k = Math.min(1, d / RADAR_RANGE) * R / Math.max(d, 1e-3);
       ahead *= k; right *= k;
-      c.fillStyle = e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
+      c.fillStyle = e.remote === 'human' ? PLAYER_CSS[colorIndex(e.netId)] : e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
       c.beginPath(); c.arc(cx + right, cy - ahead, d > RADAR_RANGE ? 2.5 : 4, 0, Math.PI * 2); c.fill();
     }
     for (const d of dogfight.darts) {
@@ -310,11 +598,16 @@ function drawDogfightHud(show: boolean) {
     if (!el) { el = document.createElement('div'); el.className = 'ret'; el.innerHTML = '<span></span>'; $('rets').appendChild(el); rets.push(el); }
     n++;
     const locking = e.dartLock > 0;
-    el.className = `ret ${e.role}${locking ? ' lock' : ''}`;
+    // with your darts switched off there's nothing to lock with, so no lock-on markings
+    const myLock = myDartsOn() && e === dogfight.locked, myLocking = myDartsOn() && e === dogfight.locking;
+    const mine = myLock ? ' mylocked' : myLocking ? ' mylocking' : '';
+    el.className = `ret ${e.role}${locking ? ' lock' : ''}${mine}`;
+    el.style.borderColor = e.remote === 'human' && !mine ? PLAYER_CSS[colorIndex(e.netId)] : '';
     el.style.display = 'block';
     el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
     const dist = Math.round(e.pos.distanceTo(glider.pos));
-    (el.firstChild as HTMLElement).textContent = locking ? `LOCKING YOU ${dist} m` : `${dist} m`;
+    const who = e.remote === 'human' ? online.remotes.get(e.netId)?.name ?? '' : '';
+    (el.firstChild as HTMLElement).textContent = locking ? `LOCKING YOU ${dist} m` : myLock ? `LOCKED ${dist} m` : myLocking ? `LOCK ${Math.round(dogfight.lockT * 100)}%` : who ? `${who} · ${dist} m` : `${dist} m`;
   }
   // darts coming at you
   if (show) for (const d of dogfight.darts) {
@@ -329,6 +622,65 @@ function drawDogfightHud(show: boolean) {
     (el.firstChild as HTMLElement).textContent = `DART ${Math.round(d.pos.distanceTo(glider.pos))} m`;
   }
   for (let i = n; i < rets.length; i++) rets[i].style.display = 'none';
+  drawLeads(show && settings.lead);
+}
+
+// ---------- Online HUD: scoreboard and kill feed ----------
+let boardT = 0;
+function drawOnlineHud(dt: number) {
+  const on = online.phase === 'playing' && mode !== 'title';
+  $('board').style.display = on ? 'block' : 'none';
+  $('feed').style.display = on ? 'block' : 'none';
+  if (!on) return;
+  if ((boardT -= dt) > 0) return;
+  boardT = 0.25;
+  const rows = online.roster().sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
+  $('board').innerHTML = `<b>ROOM ${esc(online.code)}</b>` + rows.map((p) =>
+    `<div style="color:${PLAYER_CSS[colorIndex(p.id)]}"${p.id === online.myId ? ' class="me"' : ''}><span>${esc(p.name)}</span><i>${p.kills}</i><i class="d">${p.deaths}</i></div>`).join('');
+  while (feed.length && t - feed[0].t > 6) feed.shift();
+  $('feed').innerHTML = feed.map((f) => `<div>${esc(f.text)}</div>`).join('');
+}
+
+// ---------- Lead marker (optional): where to point your nose so a pea meets the bird ----------
+// Your peas leave at PEA_SPEED on top of your own velocity, so in your frame of reference the bird moves at
+// (its velocity - yours). Solve for the time a pea takes to reach where it will be, and mark that spot.
+// Put the gun cross (where your peas go) on the ring and fire.
+const LEAD_RANGE = 260;
+const leadEls: HTMLElement[] = [];
+const leadRel = new THREE.Vector3(), leadV = new THREE.Vector3(), leadP = new THREE.Vector3();
+function drawLeads(on: boolean) {
+  const cross = $('gunCross');
+  let n = 0;
+  if (on) {
+    const muzzle = tmp.copy(glider.pos).addScaledVector(glider.dir, 1.6);
+    const reach = (PEA_SPEED + glider.speed) * PEA_LIFE; // how far a pea flies
+    for (const e of dogfight.enemies) {
+      if (!e.alive || e.friendly) continue;
+      leadRel.copy(e.pos).sub(muzzle);
+      const dist = leadRel.length();
+      if (dist > LEAD_RANGE || dist < 4) continue;
+      leadV.copy(e.dir).multiplyScalar(e.speed).sub(glider.vel); // its motion relative to you
+      let tt = dist / PEA_SPEED;
+      for (let i = 0; i < 4; i++) tt = leadP.copy(leadRel).addScaledVector(leadV, tt).length() / PEA_SPEED;
+      leadP.copy(leadRel).addScaledVector(leadV, tt).add(muzzle);
+      const v = leadP.project(camera);
+      if (v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05) continue;
+      let el = leadEls[n];
+      if (!el) { el = document.createElement('div'); el.className = 'lead'; $('rets').appendChild(el); leadEls.push(el); }
+      n++;
+      el.style.display = 'block';
+      el.style.borderColor = e.remote === 'human' ? PLAYER_CSS[colorIndex(e.netId)] : e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
+      el.style.opacity = dist <= reach ? '1' : '0.4'; // faded: out of pea range for now
+      el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
+    }
+  }
+  for (let i = n; i < leadEls.length; i++) leadEls[i].style.display = 'none';
+  // the gun cross: where your peas are heading, at a typical fighting distance
+  if (on && n > 0) {
+    const v = tmp.copy(glider.pos).addScaledVector(glider.dir, 120).project(camera);
+    cross.style.display = v.z <= 1 ? 'block' : 'none';
+    cross.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
+  } else cross.style.display = 'none';
 }
 
 // ---------- Camera ----------
@@ -403,16 +755,66 @@ function placeCamera(snap = false, dt = 0.016, lift = 0) {
 let last = performance.now();
 let t = 0;
 spawn(false);
+renderMenu();
+
+function onlineEvents() {
+  for (const ev of online.drain()) {
+    switch (ev.type) {
+      case 'lobby': if (mode === 'title') renderMenu(); break;
+      case 'start': onlineNote = ''; startOnlineMatch(ev.rules); break;
+      case 'left':
+        onlineNote = ev.reason;
+        if (mode !== 'title') { settings.mode = 'online'; goToMenu(); } else renderMenu();
+        break;
+      case 'feed': feed.push({ text: ev.text, t }); if (feed.length > 5) feed.shift(); break;
+      case 'scored': { const pts = Math.round(600 * multiplier()); score += pts; combo++; comboTimer = 4; audio.thud(); audio.whoosh(0.8); rumble(0.6, 200); break; }
+      case 'hitConfirmed': audio.beep(1700, 0.03, 0.05); break;
+      case 'wave': onDogfight(ev.cleared ? { type: 'waveCleared', wave: ev.wave } : { type: 'wave', wave: ev.wave, count: ev.count }); break;
+      case 'dartIn':
+        if (mode !== 'flying' || spawnShield > 0) break;
+        dogfight.incomingDart(ev.pos, ev.dir, ev.speed, ev.by);
+        onDogfight({ type: 'dartLaunch' });
+        break;
+    }
+  }
+}
 
 function frame(now: number) {
   requestAnimationFrame(frame);
   let dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   const inp = input.poll();
+  onlineEvents();
 
   if (inp.anyPress) audio.start();
-  if (mode === 'title' && inp.anyPress) { mode = 'flying'; hud.overlay.classList.add('hidden'); }
+  const nav = inp.nav;
+  if (mode === 'title') {
+    const rows = menuRows() as readonly string[];
+    if (nav.y) {
+      let i = rows.indexOf(MENU_ROWS[menuRow]);
+      i = THREE.MathUtils.clamp(i + nav.y, 0, rows.length - 1);
+      menuRow = MENU_ROWS.indexOf(rows[i] as typeof MENU_ROWS[number]);
+      renderMenu();
+    }
+    if (nav.x && MENU_ROWS[menuRow] !== 'go' && rows.includes(MENU_ROWS[menuRow])) menuChange(MENU_ROWS[menuRow], nav.x);
+    if (settings.mode === 'online') {
+      const row = MENU_ROWS[menuRow];
+      if (nav.ok && rows.includes(row) && ['host', 'join', 'go'].includes(row)) onlineAction(row);
+      if (nav.back && online.active) onlineAction('leave');
+    } else if (startReq || (nav.ok && !inp.nav.back)) {
+      clearTimeout(previewTimer);
+      spawn(false); // keeps the world the title was showing
+      mode = 'flying'; hud.overlay.classList.add('hidden');
+    }
+  } else if (mode === 'crashed' && (menuReq || nav.back || nav.menu)) goToMenu();
+  else if (mode === 'crashed' && online.phase === 'playing') {
+    if (crashTimer > 3) respawnOnline();
+    else { const el = document.getElementById('respawnIn'); if (el) el.textContent = `Back in the air in ${Math.ceil(3 - crashTimer)}…`; }
+  }
   else if (mode === 'crashed' && inp.anyPress && crashTimer > 0.8) { spawn(); mode = 'flying'; hud.overlay.classList.add('hidden'); }
+  else if (mode === 'flying' && (nav.menu || menuReq)) goToMenu();
+  startReq = false; menuReq = false;
+  const inArena = !!getArena();
 
   if (slowmo > 0) { slowmo -= dt; dt *= 0.35; }
   t += dt;
@@ -425,14 +827,20 @@ function frame(now: number) {
       trickMinClear = 99;
     }
     // wind tunnels push you along and pull you toward the middle
-    const wind = gates.windAt(glider.pos);
+    const wind = inArena ? null : gates.windAt(glider.pos);
     if (wind) {
       glider.speed = Math.min(90, glider.speed + 22 * dt);
       glider.pos.lerp(wind.axis, Math.min(1, 1.2 * dt));
       glider.steerToward(wind.dir, Math.min(1, 1.5 * dt));
     }
     const finished = glider.step(dt, inp);
-    for (const ev of dogfight.update(dt, t, glider, inp.fire, true, wasInCloud)) onDogfight(ev);
+    online.preUpdate();
+    for (const ev of dogfight.update(dt, t, glider, inp.fire, inp.dart && myDartsOn(), true, wasInCloud)) onDogfight(ev);
+    online.postUpdate(dt, glider, bird.quaternion, wasInCloud);
+    spawnShield -= dt;
+    if (dogfight.myDartThisFrame) { audio.dart(); rumble(0.3, 80); }
+    if (dogfight.locked && dogfight.locked !== wasLocked) audio.beep(1900, 0.12, 0.07);
+    wasLocked = dogfight.locked;
     if (dogfight.shotThisFrame) audio.pew();
     if (dogfight.enemyShotThisFrame) audio.pew(true);
     warnBeep -= dt;
@@ -442,7 +850,8 @@ function frame(now: number) {
     } else if (dogfight.dartLockProgress > 0) {
       if (warnBeep <= 0) { audio.beep(1250, 0.06, 0.06); warnBeep = 0.35 - 0.25 * dogfight.dartLockProgress; }
     } else if (dogfight.tailThreat > 0 && warnBeep <= 0) { audio.beep(dogfight.tailThreat > 0.7 ? 1100 : 820, 0.07, 0.06); warnBeep = dogfight.tailThreat > 0.7 ? 0.18 : 0.6; }
-    dodgeCd -= dt; hitFlash = Math.max(0, hitFlash - dt * 2.5);
+    if (glider.stalled) shake = Math.max(shake, 0.15); // buffeting as the wings stall
+    dartHint -= dt; dodgeCd -= dt; hitFlash = Math.max(0, hitFlash - dt * 2.5);
     if (hp < 3 && (hpRegen += dt) > 20) { hp++; hpRegen = 0; popup('Feather regrown', `${hp}/3`); }
     // a loop starts when the nose comes steeply up (used for the low-loop bonus)
     if (glider.free ? Math.abs(glider.pitch) > 0.9 || glider.looping : glider.pitch > 0.9 || glider.looping) {
@@ -455,7 +864,7 @@ function frame(now: number) {
 
     // obstacles: collision + close calls
     obstaclesNear(p.x, p.z, 14, nearby);
-    gates.obstacles(nearby);
+    if (!inArena) gates.obstacles(nearby);
     const seen = new Set<string>();
     for (const o of nearby) {
       const gap = obstacleGap(o, p.x, p.y, p.z) - 0.5; // bird radius
@@ -487,7 +896,23 @@ function frame(now: number) {
     }
 
     // gates
-    gates.check(prevPos, p, (e: GateEvent) => onGate(e));
+    if (!inArena) gates.check(prevPos, p, (e: GateEvent) => onGate(e));
+
+    // arena walls: past the edge the wind turns you back toward the middle
+    outOfBounds = 0;
+    if (inArena) {
+      const r = Math.hypot(p.x, p.z);
+      outOfBounds = THREE.MathUtils.clamp((r - (ARENA_R - 40)) / 140, 0, 1);
+      if (outOfBounds > 0) {
+        const k = Math.min(1, (0.4 + outOfBounds * 1.6) * dt);
+        glider.steerToward(tmp.set(-p.x / r, -0.05, -p.z / r).normalize(), k);
+        if (!glider.free) {
+          let dh = Math.atan2(p.x, p.z) - glider.heading; // heading that points at the middle
+          dh -= Math.PI * 2 * Math.floor((dh + Math.PI) / (Math.PI * 2));
+          glider.heading += dh * k;
+        }
+      }
+    }
 
     // canyon run: stay below the rim for a steady bonus
     const c = canyonAt(p.x, p.z);
@@ -495,7 +920,7 @@ function frame(now: number) {
     if (inCanyonRun) { score += dt * 25 * multiplier(); comboTimer = Math.max(comboTimer, 1.5); }
 
     // forks: announce the choices, then lock in whichever valley you're in
-    const ev = route.update(p.x, p.z);
+    const ev = inArena ? {} as ReturnType<typeof route.update> : route.update(p.x, p.z);
     if (ev.announce) {
       const arrows = ev.announce.branches.length === 3 ? ['←', '↑', '→'] : ['←', '→'];
       popup('Fork ahead', ev.announce.branches.map((b, i) => `${arrows[i]} ${BIOME_NAME[b.biome]}${b.canyon ? ' canyon' : ''}`).join(' · '));
@@ -514,6 +939,7 @@ function frame(now: number) {
     // ground skim
     if (clearance < 5 && mode === 'flying') {
       score += dt * (5 - clearance) * glider.speed * 0.35 * multiplier();
+      if (dogfight.chargeDart(dt * 0.08 * (5 - clearance) / 5)) { popup('Dart reloaded', 'skimming the ground'); audio.beep(1600, 0.1, 0.07); }
       comboTimer = Math.max(comboTimer, 1.5);
     }
 
@@ -542,13 +968,15 @@ function frame(now: number) {
     }
 
     // distance score
-    score += Math.max(0, -glider.vel.z) * dt * 0.1;
+    if (!inArena) score += Math.max(0, -glider.vel.z) * dt * 0.1;
 
     comboTimer -= dt;
     if (comboTimer <= 0) combo = 0;
   } else if (mode === 'crashed') {
     crashTimer += dt;
-    dogfight.update(dt, t, glider, false, false);
+    online.preUpdate();
+    for (const ev of dogfight.update(dt, t, glider, false, false, false)) if (online.phase === 'playing') onDogfight(ev);
+    online.postUpdate(dt, glider, bird.quaternion, false);
     glider.speed *= Math.exp(-4 * dt);
     glider.spin += dt * 6;
   } else {
@@ -572,7 +1000,7 @@ function frame(now: number) {
   }
 
   glider.applyTo(bird);
-  bird.animate(t, glider.brake, glider.speed, glider.tuck);
+  bird.animate(t, glider.brake, glider.speed, glider.tuck, flapAmount(glider.speed, glider.brake));
 
   // shadow
   const gp = glider.pos;
@@ -584,7 +1012,7 @@ function frame(now: number) {
 
   // stream terrain ahead of the bird
   world.update(gp.x + glider.dir.x * 180, gp.z + glider.dir.z * 180, 2);
-  gates.update(gp.z, t);
+  if (!inArena) gates.update(gp.z, t);
 
   placeCamera(false, dt, mode === 'crashed' ? Math.min(10, crashTimer * 8) : 0);
   sky.position.copy(camera.position);
@@ -609,15 +1037,29 @@ function frame(now: number) {
   hud.edge.style.opacity = String(Math.max(danger * 0.7, hitFlash));
   hud.edge.style.boxShadow = hitFlash > danger * 0.7 ? 'inset 0 0 140px 40px rgba(255, 40, 40, .85)' : '';
   drawDogfightHud(mode === 'flying');
+  if (isTouch) { const d = mode === 'flying' ? 'flex' : 'none'; $('fire').style.display = d; $('dartBtn').style.display = myDartsOn() ? d : 'none'; }
+  if (outOfBounds > 0 && mode === 'flying' && hud.warn.style.opacity === '0') {
+    hud.warn.textContent = '◀ EDGE OF THE ARENA: TURN BACK ▶';
+    hud.warn.style.opacity = String(0.5 + 0.5 * Math.sin(t * 10));
+  }
   hud.skim.textContent = danger > 0 ? (waterSkim ? 'WATER SKIM' : 'SKIM') : 'CANYON RUN';
   hud.skim.style.opacity = String(danger > 0 ? 0.6 + danger * 0.4 : inCanyonRun && mode === 'flying' ? 0.7 : 0);
   hud.score.textContent = mode === 'title' ? '' : String(Math.floor(score));
   hud.combo.style.opacity = combo > 0 && mode === 'flying' ? '1' : '0';
   hud.combo.textContent = `combo x${multiplier().toFixed(1)}`;
   hud.stats.textContent = mode === 'flying'
-    ? `${Math.round(glider.speed * 3.6)} km/h · ${Math.max(0, Math.round(clearance))} m up · ${Math.round(startZ - gp.z)} m`
+    ? `${Math.round(glider.speed * 3.6)} km/h · ${Math.max(0, Math.round(clearance))} m up · ${inArena ? getArena()!.name : `${Math.round(startZ - gp.z)} m`}`
+    : '';
+  waveClearedT -= dt;
+  const alive = dogfight.enemies.filter((e) => e.alive && e.remote !== 'human').length;
+  const rules = online.phase === 'playing' ? online.rules : null;
+  hud.wave.textContent = rules && mode !== 'title'
+    ? rules.bots === 0 ? (rules.allies ? 'TEAM UP' : 'FREE FOR ALL') : dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`
+    : inArena && mode === 'flying'
+    ? dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`
     : '';
   audio.update(glider.speed, mist, mode === 'flying');
+  drawOnlineHud(dt);
 
   renderer.render(scene, camera);
 }
@@ -628,4 +1070,9 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
-(window as any).__glide = { glider, dogfight, world, gates, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
+(window as any).__glide = { settings, glider, dogfight, world, gates, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
+
+// ?debug exposes the game objects to the console (used for the two-browser online tests)
+if (new URLSearchParams(location.search).has('debug')) {
+  (window as any).glide = { online, dogfight, glider, get hp() { return hp; }, get shield() { return spawnShield; }, get t() { return t; }, get mode() { return mode; }, get score() { return score; } };
+}

@@ -68,6 +68,16 @@ export class WindAudio {
     o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.09);
   }
 
+  /** Dart launch: a rising whoosh-chirp. */
+  dart() {
+    if (!this.ctx || this.muted) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(300, t); o.frequency.exponentialRampToValueAtTime(1100, t + 0.25);
+    const g = ctx.createGain(); g.gain.setValueAtTime(0.06, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.32);
+  }
+
   /** Radar / lock beep. */
   beep(freq = 1200, len = 0.06, vol = 0.07) {
     if (!this.ctx || this.muted) return;
