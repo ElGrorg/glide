@@ -18,11 +18,88 @@ const { smoothstep, clamp, lerp } = THREE.MathUtils;
  * along the run (some stretches have none at all).
  */
 const STEP = 380;
+
+// ---------- Arena mode: a bounded basin ringed by mountains, flat on average (no downhill) ----------
+export type ArenaId = 'meadow' | 'pillars' | 'peaks' | 'cloudforest' | 'canyons';
+export interface ArenaEnv {
+  id: ArenaId; name: string; blurb: string; biome: Biome;
+  /** obstacle densities (multipliers / probabilities) */
+  trees: number; spires: number; boulders: number; spireH: number; arches: number;
+  /** chance a cloud cell has a cloud, and whether clouds hang low in the trees */
+  clouds: number; lowClouds: boolean;
+}
+export const ARENAS: ArenaEnv[] = [
+  { id: 'meadow', name: 'Green Basin', blurb: 'rolling hills, woods and big puffy clouds', biome: 'meadow', trees: 0.9, spires: 0.05, boulders: 0.15, spireH: 1, arches: 0.25, clouds: 0.6, lowClouds: false },
+  { id: 'pillars', name: 'Pillar Desert', blurb: 'a forest of rock towers and arches to weave through', biome: 'desert', trees: 0.1, spires: 0.42, boulders: 0.2, spireH: 1.5, arches: 0.6, clouds: 0.35, lowClouds: false },
+  { id: 'peaks', name: 'Ice Peaks', blurb: 'jagged peaks to hide behind, ice needles up high', biome: 'alpine', trees: 0.55, spires: 0.12, boulders: 0.14, spireH: 1.2, arches: 0.3, clouds: 0.55, lowClouds: false },
+  { id: 'cloudforest', name: 'Cloud Forest', blurb: 'dense woods under thick low cloud: lose them in the mist', biome: 'misty', trees: 1.25, spires: 0.12, boulders: 0.15, spireH: 1, arches: 0.3, clouds: 0.92, lowClouds: true },
+  { id: 'canyons', name: 'Autumn Canyons', blurb: 'a plateau cut by winding slot canyons', biome: 'autumn', trees: 0.5, spires: 0.08, boulders: 0.2, spireH: 0.9, arches: 0.35, clouds: 0.45, lowClouds: false },
+];
+/** Flyable radius of the arena (metres from the middle); mountains wall it in beyond. */
+export const ARENA_R = 620;
+let arena: ArenaEnv | null = null;
+export function setArena(a: ArenaEnv | null) { arena = a; }
+export function getArena() { return arena; }
+/** Level-flight cruise speed the arena's flapping holds (m/s). Climbing still costs speed, diving still adds it. */
+export const CRUISE_SPEED = 34;
+const CRUISE_DRAG = 0.0016; // same drag as the glide model
+/** Forward push from flapping (m/s^2): zero on the endless mountain, enough in the arena to hold cruise
+ *  speed in level flight. It fades out high up, so you can't just climb forever. */
+export function cruiseThrust(y: number): number {
+  if (!arena) return 0;
+  return CRUISE_DRAG * CRUISE_SPEED * CRUISE_SPEED * (1 - smoothstep(y, 230, 380));
+}
+
+function arenaCanyon(x: number, z: number): number {
+  // winding channels where a ridged noise crosses zero
+  const v = Math.abs(n2(x / 330, z / 330));
+  return 1 - smoothstep(v, 0.06, 0.13);
+}
+
+function arenaHeight(x: number, z: number): number {
+  const a = arena!;
+  const r = Math.hypot(x, z);
+  let h: number;
+  switch (a.id) {
+    case 'pillars': {
+      const dunes = n1(x / 260, z / 260) * 14 + n3(x / 60, z / 60) * 3;
+      const mesa = Math.round(Math.max(0, n2(x / 220 + 7, z / 220) * 60) / 14) * 14;
+      h = dunes + mesa;
+      break;
+    }
+    case 'peaks': {
+      const ridge = (1 - Math.abs(n1(x / 210, z / 210))) ** 3;
+      h = n2(x / 300, z / 300) * 20 + ridge * 150 + n3(x / 50, z / 50) * 4;
+      break;
+    }
+    case 'cloudforest':
+      h = n1(x / 280, z / 280) * 28 + n2(x / 90, z / 90) * 8 + n3(x / 30, z / 30) * 2;
+      break;
+    case 'canyons': {
+      const c = arenaCanyon(x, z);
+      h = 62 + n1(x / 200, z / 200) * 6 - c * 70 + n3(x / 40, z / 40) * 2.5 * (1 - c);
+      break;
+    }
+    default:
+      h = n1(x / 320, z / 320) * 34 + Math.max(0, n2(x / 150, z / 150)) ** 2 * 60 + n3(x / 35, z / 35) * 2.5;
+  }
+  // the starting run in from the south stays clear of big terrain
+  const lane = (1 - smoothstep(Math.abs(x), 40, 120)) * smoothstep(z, 250, 420);
+  if (a.id !== 'canyons') h = lerp(h, Math.min(h, 10), lane);
+  // mountain wall all the way round
+  const wall = smoothstep(r, ARENA_R - 40, ARENA_R + 220);
+  const ringH = 250 + n1(x / 260 + 31, z / 260) * 90 + (1 - Math.abs(n2(x / 120, z / 120 + 9))) * 40;
+  return h + wall * wall * ringH;
+}
+
+const ARENA_BRANCH: LiveBranch = { c: 0, open: 1, biome: 'meadow', parent: 'meadow', t: 0, canyon: 0, index: 0 };
+
 export function cliffHeight(z: number): number {
   const a = clamp(n1(z / 3000, 9.3) * 1.3 + 0.35, 0, 1);
   return a * 55 * smoothstep(-z, 400, 900);
 }
 export function basePlane(z: number): number {
+  if (arena) return 0;
   const s = (-z / STEP) - Math.floor(-z / STEP); // 0..1 through each stretch
   const saw = s < 0.95 ? s / 0.95 : 1 - smoothstep(s, 0.95, 1);
   return SLOPE * z + cliffHeight(z) * saw;
@@ -39,7 +116,9 @@ const liveTmp: LiveBranch[] = [];
 const liveTmp2: LiveBranch[] = [];
 
 /** The valley (route branch) nearest to x at depth z. */
-export function nearestBranch(x: number, z: number, lv = route.live(z, liveTmp2)): LiveBranch {
+export function nearestBranch(x: number, z: number, lv?: LiveBranch[]): LiveBranch {
+  if (arena) { ARENA_BRANCH.biome = ARENA_BRANCH.parent = arena.biome; return ARENA_BRANCH; }
+  lv ??= route.live(z, liveTmp2);
   let best = lv[0], bd = Infinity;
   for (const b of lv) {
     const d = Math.abs(x - b.c) + (1 - b.open) * 400;
@@ -58,7 +137,9 @@ function riverAmount(z: number): number {
   return smoothstep(n1(z / 1200, 21.7), -0.1, 0.25) * smoothstep(-z, 300, 600);
 }
 /** 0..1: how much (x, z) is river water. */
-export function riverAt(x: number, z: number, nb = nearestBranch(x, z)): number {
+export function riverAt(x: number, z: number, nb?: LiveBranch): number {
+  if (arena) return 0;
+  nb ??= nearestBranch(x, z);
   if (nb.canyon > 0.2) return 0;
   const wet = riverAmount(z) * (1 - biomeWeight(nb, 'desert'));
   if (wet <= 0) return 0;
@@ -67,6 +148,7 @@ export function riverAt(x: number, z: number, nb = nearestBranch(x, z)): number 
 }
 
 export function terrainHeight(x: number, z: number): number {
+  if (arena) return arenaHeight(x, z);
   const lv = route.live(z, liveTmp);
   // valleys: the nearest open valley wins; closed valleys rise back into the mountainside.
   // Valleys narrow into gorges and open into wide plains along the run.
@@ -121,6 +203,7 @@ export function terrainHeight(x: number, z: number): number {
 
 /** How deep in a canyon slot (x, z) is, 0..1. */
 export function canyonAt(x: number, z: number): number {
+  if (arena) return arena.id === 'canyons' ? smoothstep(arenaCanyon(x, z), 0.4, 0.9) : 0;
   let best = 0;
   for (const b of route.live(z, liveTmp2)) {
     if (b.canyon <= 0) continue;
@@ -136,6 +219,7 @@ export function gateZ(k: number) { return -GATE_START - k * GATE_SPACING; }
 export function nearestGateIndex(z: number) { return Math.round((-z - GATE_START) / GATE_SPACING); }
 /** Keep trees and rocks off the flight line around each gate. */
 function nearGateLine(x: number, z: number): boolean {
+  if (arena) return false;
   const k = nearestGateIndex(z);
   if (k < 0) return false;
   const dz = gateZ(k) - z; // positive once past the gate
@@ -196,7 +280,8 @@ export function treeAt(ix: number, iz: number): Obstacle | null {
   const z = (iz + 0.15 + hash2(ix, iz, 2) * 0.7) * TREE_CELL;
   const biome = biomeAt(x, z, hash2(ix, iz, 6));
   const dens = biome === 'desert' ? 0.3 : forestDensity(x, z);
-  if (hash2(ix, iz, 3) > dens * TREE_DENSITY[biome]) return null;
+  if (hash2(ix, iz, 3) > dens * (arena ? arena.trees : TREE_DENSITY[biome])) return null;
+  if (arena && arena.id === 'canyons' && arenaCanyon(x, z) > 0.3) return null; // keep the slots flyable
   if (nearGateLine(x, z) || riverAt(x, z) > 0.05) return null;
   // avoid steep faces
   const y0 = terrainHeight(x, z);
@@ -215,14 +300,14 @@ export function rockAt(ix: number, iz: number): Obstacle | null {
   const x = (ix + 0.2 + hash2(ix, iz, 12) * 0.6) * ROCK_CELL;
   const z = (iz + 0.2 + hash2(ix, iz, 13) * 0.6) * ROCK_CELL;
   const biome = biomeAt(x, z, hash2(ix, iz, 19));
-  const sp = SPIRE_P[biome], bp = sp + BOULDER_P[biome];
+  const sp = arena ? arena.spires : SPIRE_P[biome], bp = sp + (arena ? arena.boulders : BOULDER_P[biome]);
   if (roll >= bp) return null;
   if (nearGateLine(x, z) || riverAt(x, z) > 0.05) return null;
   const y0 = terrainHeight(x, z);
   if (roll < sp) {
     // tall spire: something to thread between (pillar fields in the desert, ice needles up high)
     const scale = 0.7 + hash2(ix, iz, 14) * 0.9;
-    const h = 30 + hash2(ix, iz, 15) * 45;
+    const h = (30 + hash2(ix, iz, 15) * 45) * (arena ? arena.spireH : 1);
     return { id: `s${ix},${iz}`, type: 'spire', x, z, y0: y0 - 3, top: y0 + h, r: 6 * scale, scale, tint: hash2(ix, iz, 16), biome };
   }
   const scale = 2 + hash2(ix, iz, 17) * 5;
@@ -232,6 +317,7 @@ export function rockAt(ix: number, iz: number): Obstacle | null {
 // Rock bridges spanning canyon slots: fly under, or over, but not through.
 export const BRIDGE_CELL = 95;
 export function bridgesAt(iz: number, out: Obstacle[]) {
+  if (arena) return;
   const z = (iz + 0.5) * BRIDGE_CELL;
   // keep bridges clear of gates and wind tunnels
   const gd = gateZ(nearestGateIndex(z)) - z;
@@ -249,6 +335,30 @@ export function bridgesAt(iz: number, out: Obstacle[]) {
   }
 }
 
+// Arena arches: two rock pillars joined by a span of boulders. Fly under, or over, but not through.
+export const ARCH_CELL = 170;
+export function archAt(ix: number, iz: number, out: Obstacle[]) {
+  if (!arena || hash2(ix, iz, 71) > arena.arches) return;
+  const cx = (ix + 0.3 + hash2(ix, iz, 72) * 0.4) * ARCH_CELL, cz = (iz + 0.3 + hash2(ix, iz, 73) * 0.4) * ARCH_CELL;
+  if (Math.hypot(cx, cz) > ARENA_R - 60) return;
+  const ang = hash2(ix, iz, 74) * Math.PI;
+  const half = 14 + hash2(ix, iz, 75) * 12;
+  const ax = Math.cos(ang), az = Math.sin(ang);
+  const g1 = terrainHeight(cx - ax * half, cz - az * half), g2 = terrainHeight(cx + ax * half, cz + az * half);
+  const top = Math.max(g1, g2, terrainHeight(cx, cz)) + 22 + hash2(ix, iz, 76) * 26;
+  const id = `a${ix},${iz}`;
+  for (const s of [-1, 1]) {
+    const px = cx + ax * half * s, pz = cz + az * half * s;
+    out.push({ id: `${id}p${s}`, type: 'spire', x: px, z: pz, y0: terrainHeight(px, pz) - 3, top: top + 2, r: 4.5, scale: 1, tint: hash2(ix, iz, 77), biome: arena.biome });
+  }
+  const n = Math.ceil((2 * half) / 5.5);
+  for (let j = 1; j < n; j++) {
+    const f = j / n, x = cx + ax * half * (2 * f - 1), z = cz + az * half * (2 * f - 1);
+    const r = 3.2 + hash2(ix * 7 + j, iz, 78) * 0.8;
+    out.push({ id: `${id}.${j}`, type: 'rock', x, z, y0: top + Math.sin(f * Math.PI) * 3, top: top + r, r, scale: r, tint: hash2(ix, j, 79), biome: arena.biome });
+  }
+}
+
 /** All obstacles whose cells touch the circle around (x, z). */
 export function obstaclesNear(x: number, z: number, radius: number, out: Obstacle[] = []): Obstacle[] {
   out.length = 0;
@@ -259,6 +369,16 @@ export function obstaclesNear(x: number, z: number, radius: number, out: Obstacl
   const r0z = Math.floor((z - radius - 30) / ROCK_CELL), r1z = Math.floor((z + radius + 30) / ROCK_CELL);
   for (let ix = r0x; ix <= r1x; ix++) for (let iz = r0z; iz <= r1z; iz++) { const o = rockAt(ix, iz); if (o) out.push(o); }
   for (let iz = Math.floor((z - radius - 5) / BRIDGE_CELL); iz <= Math.floor((z + radius + 5) / BRIDGE_CELL); iz++) bridgesAt(iz, out);
+  if (arena) {
+    const m = 40; // arches reach this far from their cell's anchor
+    for (let ix = Math.floor((x - radius - m) / ARCH_CELL); ix <= Math.floor((x + radius + m) / ARCH_CELL); ix++)
+      for (let iz = Math.floor((z - radius - m) / ARCH_CELL); iz <= Math.floor((z + radius + m) / ARCH_CELL); iz++) {
+        const before = out.length;
+        archAt(ix, iz, out);
+        // keep only the parts near the query (cheap filter)
+        for (let i = out.length - 1; i >= before; i--) if (Math.abs(out[i].x - x) > radius + 8 || Math.abs(out[i].z - z) > radius + 8) out.splice(i, 1);
+      }
+  }
   return out;
 }
 
@@ -285,14 +405,18 @@ export interface Cloud { id: string; puffs: { x: number; y: number; z: number; r
 export const CLOUD_CELL = 150;
 export function cloudAt(ix: number, iz: number): Cloud | null {
   const cx0 = (ix + 0.5) * CLOUD_CELL, cz0 = (iz + 0.5) * CLOUD_CELL;
-  const misty = biomeWeight(nearestBranch(cx0, cz0), 'misty');
-  if (hash2(ix, iz, 31) > 0.6 + misty * 0.35) return null;
+  if (arena && Math.hypot(cx0, cz0) > ARENA_R + 150) return null;
+  const misty = arena ? (arena.lowClouds ? 1 : 0) : biomeWeight(nearestBranch(cx0, cz0), 'misty');
+  if (hash2(ix, iz, 31) > (arena ? arena.clouds : 0.6 + misty * 0.35)) return null;
   const cx = cx0 + (hash2(ix, iz, 32) - 0.5) * 80;
   const cz = cz0 + (hash2(ix, iz, 33) - 0.5) * 80;
   const ground = terrainHeight(cx, cz);
   // misty valleys hang their clouds low, right in the flight path
-  const cy = misty > 0.5 ? ground + 8 + hash2(ix, iz, 34) * 22 : Math.max(ground + 22, basePlane(cz) + 15 + hash2(ix, iz, 34) * 90);
-  const count = 5 + Math.floor(hash2(ix, iz, 35) * 7) + (misty > 0.5 ? 4 : 0);
+  const low = misty > 0.5 && (!arena || hash2(ix, iz, 40) < 0.65);
+  const cy = low ? ground + 8 + hash2(ix, iz, 34) * 22
+    : arena ? Math.max(ground + 22, 30 + hash2(ix, iz, 34) * 120)
+    : Math.max(ground + 22, basePlane(cz) + 15 + hash2(ix, iz, 34) * 90);
+  const count = 5 + Math.floor(hash2(ix, iz, 35) * 7) + (low ? 4 : 0);
   const puffs = [];
   for (let i = 0; i < count; i++) {
     const r = 9 + hash2(ix * 7 + i, iz, 36) * 14;
@@ -446,7 +570,10 @@ export class Chunk {
       }
     const bridgeParts: Obstacle[] = [];
     for (let iz = Math.floor(z0 / BRIDGE_CELL); iz <= Math.floor((z0 + CHUNK) / BRIDGE_CELL); iz++) bridgesAt(iz, bridgeParts);
-    for (const o of bridgeParts) if (o.x >= x0 && o.x < x0 + CHUNK && o.z >= z0 && o.z < z0 + CHUNK) rocks.push(o);
+    if (arena) for (let ix = Math.floor((x0 - 40) / ARCH_CELL); ix <= Math.floor((x0 + CHUNK + 40) / ARCH_CELL); ix++)
+      for (let iz = Math.floor((z0 - 40) / ARCH_CELL); iz <= Math.floor((z0 + CHUNK + 40) / ARCH_CELL); iz++) archAt(ix, iz, bridgeParts);
+    for (const o of bridgeParts) if (o.type === 'spire' && o.x >= x0 && o.x < x0 + CHUNK && o.z >= z0 && o.z < z0 + CHUNK) spires.push(o);
+    for (const o of bridgeParts) if (o.type === 'rock' && o.x >= x0 && o.x < x0 + CHUNK && o.z >= z0 && o.z < z0 + CHUNK) rocks.push(o);
 
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), pv = new THREE.Vector3();
     const c = new THREE.Color();

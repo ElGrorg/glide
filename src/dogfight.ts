@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { BirdMesh, type BirdPalette, type Glider } from './bird';
-import { terrainHeight, nearestBranch } from './world';
+import { terrainHeight, nearestBranch, cruiseThrust, getArena, obstaclesNear, obstacleGap, ARENA_R, CRUISE_SPEED, type Obstacle } from './world';
 import type { CloudPuffs } from './puffs';
 
 // Dogfights: enemy birds that either hunt you (spawn behind) or flee from you (spawn ahead).
@@ -45,6 +45,17 @@ const MY_DART_HIT_R = 2.4;
 
 const HUNTER_COLORS: BirdPalette = { body: 0x3a3f4a, belly: 0x9aa0aa, wing: 0x2b2f38, tip: 0x121418 };
 const PREY_COLORS: BirdPalette = { body: 0x4f93c4, belly: 0xe8eef2, wing: 0x3a6c98, tip: 0x1d3350 };
+
+const nearObs: Obstacle[] = [];
+/** Arena flapping (0..1) for the wing animation: harder when slow, none when braking or on the mountain. */
+export function flapAmount(speed: number, brake = 0) {
+  return getArena() ? THREE.MathUtils.clamp(0.25 + (CRUISE_SPEED - speed) / 12, 0, 1) * (1 - brake) : 0;
+}
+/** True if the point is inside a tree, rock or spire. */
+export function hitsObstacle(p: THREE.Vector3, pad = 0.3) {
+  for (const o of obstaclesNear(p.x, p.z, 5, nearObs)) if (obstacleGap(o, p.x, p.y, p.z) < pad) return true;
+  return false;
+}
 
 const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpC = new THREE.Vector3();
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
@@ -108,6 +119,30 @@ export class Enemy {
     const h = Math.max(terrainHeight(this.pos.x, this.pos.z), terrainHeight(la.x, la.z));
     const short = h + minClear - this.pos.y;
     if (short > 0) { want.y = Math.max(want.y, Math.min(0.7, short * 0.06)); want.normalize(); }
+    // trees, rocks, pillars and arches: look ahead and go over or round them (they can still misjudge it)
+    let avoiding = false;
+    for (const ahead of [0.6, 1.4]) {
+      const look = tmpA.copy(this.pos).addScaledVector(this.dir, Math.max(12, this.speed * ahead));
+      for (const o of obstaclesNear(look.x, look.z, 10, nearObs)) {
+        if (o.top < look.y - 4 || o.y0 > look.y + 6) continue;
+        if (obstacleGap(o, look.x, look.y, look.z) > 8) continue;
+        avoiding = true;
+        if (o.top - this.pos.y < 12) { want.y = Math.max(want.y, 0.5); continue; } // hop over
+        // swerve round it, to whichever side the bird is already on
+        const ax = look.x - o.x, az = look.z - o.z, l = Math.hypot(ax, az) || 1;
+        const k = ahead < 1 ? 2.5 : 1.2;
+        want.x += (ax / l) * k; want.z += (az / l) * k;
+      }
+    }
+    want.normalize();
+    // arena: never leave the basin
+    if (getArena()) {
+      const r = Math.hypot(this.pos.x, this.pos.z);
+      if (r > ARENA_R - 90) {
+        const k = THREE.MathUtils.clamp((r - ARENA_R + 90) / 80, 0, 1.5);
+        want.x -= (this.pos.x / r) * k; want.z -= (this.pos.z / r) * k; want.normalize();
+      }
+    }
     want.y = THREE.MathUtils.clamp(want.y, -0.75, 0.7); want.normalize();
 
     // stalled: no lift, the nose drops whatever it wants
@@ -115,6 +150,7 @@ export class Enemy {
     if (stall > 0) { want.lerp(tmpA.set(this.dir.x, -1, this.dir.z), stall).normalize(); }
     // turn rate is limited by lift, which needs speed (same numbers as yours): slow birds turn wide
     const liftG = MAX_LIFT_G * Math.min(1, (this.speed / 26) ** 2);
+    if (avoiding) rate = Math.max(rate, 2); // pull as hard as its wings allow
     rate = Math.min(rate, (liftG * G) / Math.max(this.speed, 12));
     const before = Math.atan2(-this.dir.x, -this.dir.z);
     turnToward(this.dir, want, rate * dt);
@@ -130,7 +166,7 @@ export class Enemy {
     // and can flare its wings to slow down
     const brake = wantSpeed < this.speed - 6 ? Math.min(1, (this.speed - wantSpeed) / 15) : 0;
     const drag = (DRAG + BRAKE_DRAG * brake) * this.speed * this.speed;
-    this.speed += (-G * this.dir.y - drag) * dt;
+    this.speed += (-G * this.dir.y - drag + cruiseThrust(this.pos.y)) * dt; // + arena flapping, same as yours
     this.speed = THREE.MathUtils.clamp(this.speed, 4, MAX_SPEED);
 
     // barrel roll: a quick sideways juke
@@ -151,7 +187,7 @@ export class Enemy {
   render(t: number) {
     this.mesh.position.copy(this.pos);
     this.mesh.rotation.set(Math.asin(THREE.MathUtils.clamp(this.dir.y, -1, 1)), this.heading, -(this.roll + this.spin), 'YXZ');
-    this.mesh.animate(t + this.id, this.state === 'evade' ? 0 : 0.1, this.speed, this.alive ? 0 : 0.6);
+    this.mesh.animate(t + this.id, this.state === 'evade' ? 0 : 0.1, this.speed, this.alive ? 0 : 0.6, this.alive ? flapAmount(this.speed) : 0);
     this.mesh.scale.setScalar(this.flash > 0 ? 1.25 : 1);
   }
 
@@ -183,7 +219,9 @@ export type DogfightEvent =
   | { type: 'myDartMiss' }
   | { type: 'hitPlayer' }
   | { type: 'dodged' }
-  | { type: 'escaped' };
+  | { type: 'escaped' }
+  | { type: 'wave'; wave: number; count: number }
+  | { type: 'waveCleared'; wave: number };
 
 export class Dogfight {
   enemies: Enemy[] = [];
@@ -193,6 +231,11 @@ export class Dogfight {
   private spawnT = 9;
   private lastRole: Role = 'prey';
   kills = 0;
+  /** Arena mode: enemies per wave (0 = the endless mountain's trickle of one or two at a time). */
+  arenaCount = 0;
+  wave = 0;
+  private waveT = 3;
+  private waveLive = false;
   darts: Dart[] = [];
   private myDarts: MyDart[] = [];
   /** Your darts left, and 0..1 recharge progress toward the next one. */
@@ -277,6 +320,7 @@ export class Dogfight {
     for (const d of this.myDarts) { d.life = 0; d.mesh.visible = false; }
     this.dartsLeft = MAX_DARTS; this.dartCharge = 0;
     this.locked = null; this.locking = null; this.lockT = 0;
+    this.wave = 0; this.waveT = 3; this.waveLive = false;
     this.spawnT = 9; this.kills = 0; this.tailThreat = 0; this.dartLockProgress = 0; this.dartIncoming = Infinity;
   }
 
@@ -306,6 +350,28 @@ export class Dogfight {
     this.enemies.push(e);
   }
 
+  /** Arena: drop a bird somewhere in the basin, well away from you, heading your way. */
+  private spawnArena(g: Glider, role: Role) {
+    const e = new Enemy(role, this.scene);
+    for (let i = 0; i < 20; i++) {
+      const a = Math.random() * Math.PI * 2, r = rand(150, ARENA_R - 140);
+      e.pos.set(Math.cos(a) * r, 0, Math.sin(a) * r);
+      let ground = terrainHeight(e.pos.x, e.pos.z);
+      for (let k = 0; k < 6; k++) ground = Math.max(ground, terrainHeight(e.pos.x + rand(-40, 40), e.pos.z + rand(-40, 40)));
+      e.pos.y = Math.max(ground + rand(35, 70), g.pos.y + rand(-20, 30));
+      // well away from you, and not inside (or right next to) a pillar
+      const clear = obstaclesNear(e.pos.x, e.pos.z, 25, nearObs).every((o) => obstacleGap(o, e.pos.x, e.pos.y, e.pos.z) > 15);
+      if (clear && Math.hypot(e.pos.x - g.pos.x, e.pos.z - g.pos.z) > 260) break;
+    }
+    e.dir.set(g.pos.x - e.pos.x, 0, g.pos.z - e.pos.z).normalize();
+    e.dir.x += rand(-0.4, 0.4); e.dir.normalize();
+    e.heading = Math.atan2(-e.dir.x, -e.dir.z);
+    e.speed = CRUISE_SPEED;
+    e.state = role === 'hunter' ? 'attack' : 'cruise';
+    e.dartCd = rand(5, 10);
+    this.enemies.push(e);
+  }
+
   /** Advance everything. `active` is false on the crash screen: enemies keep flying but hold fire.
    *  `inCloud`: you're inside a cloud, which breaks dart locks. */
   update(dt: number, t: number, g: Glider, fire: boolean, dart: boolean, active: boolean, inCloud = false): DogfightEvent[] {
@@ -317,7 +383,20 @@ export class Dogfight {
 
     // ---- spawning: one at a time to start, two once you've got a couple of kills
     const max = this.kills >= 2 ? 2 : 1;
-    if (active && this.enemies.filter((e) => e.alive).length < max) {
+    const aliveN = this.enemies.filter((e) => e.alive).length;
+    if (this.arenaCount > 0) {
+      // arena: waves. Clear one and the next comes in a few seconds later.
+      if (this.waveLive && aliveN === 0) { this.waveLive = false; this.waveT = 5; out.push({ type: 'waveCleared', wave: this.wave }); }
+      if (active && !this.waveLive) {
+        this.waveT -= dt;
+        if (this.waveT <= 0) {
+          this.wave++; this.waveLive = true;
+          // roughly 60% hunters; a lone bird is always a hunter
+          for (let i = 0; i < this.arenaCount; i++) this.spawnArena(g, i === 0 || Math.random() < 0.6 ? 'hunter' : 'prey');
+          out.push({ type: 'wave', wave: this.wave, count: this.arenaCount });
+        }
+      }
+    } else if (active && aliveN < max) {
       this.spawnT -= dt;
       if (this.spawnT <= 0) {
         const role: Role = Math.random() < 0.6 ? (this.lastRole === 'hunter' ? 'prey' : 'hunter') : this.lastRole;
@@ -442,6 +521,14 @@ export class Dogfight {
           }
         } else e.dartLock = Math.max(0, e.dartLock - dt * 2); // lose it and the lock unwinds
         this.dartLockProgress = Math.max(this.dartLockProgress, e.dartLock / DART_LOCK_TIME);
+      } else if (getArena()) {
+        // arena bandit: circle the basin low, keeping its distance from you
+        const r = Math.hypot(e.pos.x, e.pos.z) || 1;
+        const side = e.id % 2 ? 1 : -1;
+        want.set((-e.pos.z / r) * side, 0, (e.pos.x / r) * side).addScaledVector(tmpC.set(e.pos.x / r, 0, e.pos.z / r), (320 - r) / 200);
+        want.y = (terrainHeight(e.pos.x, e.pos.z) + 35 - e.pos.y) * 0.01;
+        want.normalize();
+        wantSpeed = CRUISE_SPEED; rate = 0.9;
       } else {
         // cruising bandit: fly the valley downhill, not too far ahead of you
         const ahead = e.pos.z - 140;
@@ -454,7 +541,7 @@ export class Dogfight {
       if (dist > 320) want.lerp(toPlayer.clone().normalize(), 0.5).normalize();
       e.fly(dt, want, wantSpeed, rate, e.state === 'evade' ? 9 : 16);
 
-      if (dist > 520) { e.alive = false; e.dying = 99; out.push({ type: 'escaped' }); }
+      if (dist > 520 && !getArena()) { e.alive = false; e.dying = 99; out.push({ type: 'escaped' }); }
     }
 
     // ---- your pea shooter
@@ -643,6 +730,10 @@ export class Dogfight {
       if (e.alive && e.pos.y <= terrainHeight(e.pos.x, e.pos.z) + 2.6 && e.state === 'evade' && e.dir.y < -0.3) {
         // chased into the ground
         this.kill(e, out, true);
+      } else if (e.alive && hitsObstacle(e.pos)) {
+        // flew into a tree, rock or pillar: same rules as you. It only counts as your kill if you chased it there.
+        if (e.state === 'evade' || e.pos.distanceTo(g.pos) < 120) this.kill(e, out, true);
+        else { e.alive = false; e.dying = 0.001; this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.3), 8, 22, 0.9); }
       }
       if (!e.alive && e.dying < 90 && e.pos.y < terrainHeight(e.pos.x, e.pos.z) + 0.5) {
         this.puffs.burst(e.pos, tmpA.set(0, 6, 0), 6, 14, 1.0);
