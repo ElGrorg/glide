@@ -66,7 +66,9 @@ export class Input {
     try { const v = localStorage.getItem('glide.layout') as PadScheme; if (SCHEMES.includes(v)) this.padScheme = v; } catch { /* ignore */ }
     this.stickEl = document.getElementById('stick')!;
     this.knobEl = document.getElementById('knob')!;
+    const typing = (e: Event) => (e.target as HTMLElement | null)?.tagName === 'INPUT';
     addEventListener('keydown', (e) => {
+      if (typing(e)) return; // typing a name or room code
       if (!e.repeat) {
         this.pressed = true;
         if (e.code === 'KeyV') this.toggleScheme();
@@ -89,6 +91,7 @@ export class Input {
 
     const opts = { passive: false } as AddEventListenerOptions;
     target.addEventListener('touchstart', (e: any) => {
+      if (typing(e)) return; // let the text box take focus
       e.preventDefault();
       this.state.source = 'touch';
       this.pressed = true;
