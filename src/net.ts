@@ -144,7 +144,9 @@ export class Net {
 
 function describe(err: any): string {
   switch (err?.type) {
-    case 'browser-incompatible': return 'This browser can\'t do online play (no WebRTC).';
+    case 'browser-incompatible': return window.top !== window.self
+      ? 'Online play is blocked inside this embedded preview. Open the game on its own web page to play online.'
+      : 'This browser can\'t do online play (no WebRTC).';
     case 'network': case 'server-error': case 'socket-error': case 'socket-closed':
       return 'Couldn\'t reach the matchmaking server. Check your connection, or this page may be blocking it.';
     case 'webrtc': return 'The connection between players failed (a strict firewall can do this).';
