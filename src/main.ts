@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { World, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, type Obstacle } from './world';
+import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, type Obstacle } from './world';
 import { route, BIOME_NAME } from './route';
 import { CloudPuffs } from './puffs';
 import { Gates, type GateEvent } from './gates';
@@ -108,7 +108,7 @@ let score = 0, combo = 0, comboTimer = 0, slowmo = 0, crashTimer = 0, shake = 0;
 let startZ = 0;
 const near = new Map<string, { gap: number; type: string }>(); // obstacle id -> closest gap while passing
 const prevPos = new THREE.Vector3();
-let trickMinClear = 99, loopMinClear = 99, tunnelChain = 0, inCanyonRun = false, wasInCloud = false;
+let waterSkim = false, trickMinClear = 99, loopMinClear = 99, tunnelChain = 0, inCanyonRun = false, wasInCloud = false;
 let loopBack: THREE.Vector3 | null = null;
 const cloudsHit = new Set<string>();
 const nearby: Obstacle[] = [];
@@ -299,6 +299,15 @@ function frame(now: number) {
     }
     if (ev.committed) { score += Math.round(100 * multiplier()); popup(BIOME_NAME[ev.committed.biome], ev.committed.canyon ? 'canyon run ahead: stay below the rim' : 'new territory +100'); }
 
+    // skimming a river throws up spray and pays extra
+    const onWater = riverAt(p.x, p.z) > 0.5 && clearance < 5 && mode === 'flying';
+    if (onWater) {
+      score += dt * (5 - clearance) * glider.speed * 0.25 * multiplier();
+      const n = Math.ceil(50 * dt * (5 - clearance));
+      const wp = new THREE.Vector3(p.x, terrainHeight(p.x, p.z) + 0.3, p.z);
+      for (let i = 0; i < n; i++) puffs.burst(wp, glider.vel.clone().multiplyScalar(0.15).setY(4), 3, 1, 0.5);
+    }
+    waterSkim = onWater;
     // ground skim
     if (clearance < 5 && mode === 'flying') {
       score += dt * (5 - clearance) * glider.speed * 0.35 * multiplier();
@@ -394,7 +403,7 @@ function frame(now: number) {
   hud.mist.style.opacity = String(Math.min(0.9, mist * 2.2));
   const danger = mode === 'flying' ? THREE.MathUtils.clamp((5 - clearance) / 5, 0, 1) : 0;
   hud.edge.style.opacity = String(danger * 0.7);
-  hud.skim.textContent = danger > 0 ? 'SKIM' : 'CANYON RUN';
+  hud.skim.textContent = danger > 0 ? (waterSkim ? 'WATER SKIM' : 'SKIM') : 'CANYON RUN';
   hud.skim.style.opacity = String(danger > 0 ? 0.6 + danger * 0.4 : inCanyonRun && mode === 'flying' ? 0.7 : 0);
   hud.score.textContent = mode === 'title' ? '' : String(Math.floor(score));
   hud.combo.style.opacity = combo > 0 && mode === 'flying' ? '1' : '0';
@@ -413,4 +422,4 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
-(window as any).__glide = { glider, world, gates, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route };
+(window as any).__glide = { glider, world, gates, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };

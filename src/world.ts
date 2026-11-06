@@ -12,9 +12,20 @@ const n2 = makeNoise2D(SEED + 1);
 const n3 = makeNoise2D(SEED + 2);
 const { smoothstep, clamp, lerp } = THREE.MathUtils;
 
-/** Height of the downhill plane (no detail) at depth z. */
+/**
+ * Height of the downhill plane (no detail) at depth z. The slope comes in steps:
+ * gentler stretches that end in a sudden cliff drop, with the cliff height varying
+ * along the run (some stretches have none at all).
+ */
+const STEP = 380;
+export function cliffHeight(z: number): number {
+  const a = clamp(n1(z / 3000, 9.3) * 1.3 + 0.35, 0, 1);
+  return a * 55 * smoothstep(-z, 400, 900);
+}
 export function basePlane(z: number): number {
-  return SLOPE * z; // z is negative ahead, so this drops forever
+  const s = (-z / STEP) - Math.floor(-z / STEP); // 0..1 through each stretch
+  const saw = s < 0.95 ? s / 0.95 : 1 - smoothstep(s, 0.95, 1);
+  return SLOPE * z + cliffHeight(z) * saw;
 }
 
 /** Half-width of a canyon slot at depth z (metres). */
@@ -42,13 +53,28 @@ export function biomeWeight(b: LiveBranch, biome: Biome): number {
   return (b.parent === biome ? 1 - b.t : 0) + (b.biome === biome ? b.t : 0);
 }
 
+/** River strength along the valley floor at depth z (0 = dry). */
+function riverAmount(z: number): number {
+  return smoothstep(n1(z / 1200, 21.7), -0.1, 0.25) * smoothstep(-z, 300, 600);
+}
+/** 0..1: how much (x, z) is river water. */
+export function riverAt(x: number, z: number, nb = nearestBranch(x, z)): number {
+  if (nb.canyon > 0.2) return 0;
+  const wet = riverAmount(z) * (1 - biomeWeight(nb, 'desert'));
+  if (wet <= 0) return 0;
+  const half = 5 + n3(z / 90, 4.4) * 2.5;
+  return wet * (1 - smoothstep(Math.abs(x - nb.c), half, half + 2));
+}
+
 export function terrainHeight(x: number, z: number): number {
   const lv = route.live(z, liveTmp);
-  // valleys: the nearest open valley wins; closed valleys rise back into the mountainside
+  // valleys: the nearest open valley wins; closed valleys rise back into the mountainside.
+  // Valleys narrow into gorges and open into wide plains along the run.
+  const vk = lerp(0.0006, 0.0055, smoothstep(n2(z / 1800, 3.1), -0.4, 0.6));
   let valley = 1e9, nb = lv[0];
   for (const b of lv) {
     const dx = x - b.c;
-    const v = 260 + (Math.min(dx * dx * 0.0016, 260) - 260) * b.open;
+    const v = 260 + (Math.min(dx * dx * vk, 260) - 260) * b.open;
     if (v < valley) { valley = v; nb = b; }
   }
   // ridge spines between neighbouring valleys
@@ -61,14 +87,16 @@ export function terrainHeight(x: number, z: number): number {
   }
   const desert = biomeWeight(nb, 'desert');
   const alpine = biomeWeight(nb, 'alpine');
+  const rough = n3(z / 1500, 11.1) * 0.5 + 0.5; // smooth rolling stretches vs broken ground
   let big = n1(x / 420, z / 420) * 45 * (1 + alpine * 0.6);
-  let mid = n2(x / 110, z / 110) * 14;
+  if (alpine > 0) big = lerp(big, ((1 - Math.abs(n1(x / 260, z / 260))) * 2 - 1) * 70, alpine * 0.7); // jagged ridges
+  let mid = n2(x / 110, z / 110) * 14 * (0.45 + rough * 1.2);
   if (desert > 0) {
     // desert: stepped mesas
     const stepped = Math.round((big + mid) / 11) * 11;
     big = lerp(big + mid, stepped, desert * 0.85); mid = 0;
   }
-  const small = n3(x / 28, z / 28) * 2.5;
+  const small = n3(x / 28, z / 28) * 2.5 * (0.5 + rough);
   const ridge = Math.max(0, n2(x / 260 + 40, z / 90)) ** 2 * 40;
   let rel = valley + spine + big + mid + ridge;
   // canyon valleys: a narrow slot with near-vertical walls cut into a raised plateau
@@ -81,6 +109,12 @@ export function terrainHeight(x: number, z: number): number {
     const profile = CANYON_FLOOR + (CANYON_RIM - CANYON_FLOOR) * wall + n2(x / 110, z / 110) * 7;
     const k = b.canyon * (1 - smoothstep(adx, w + 22, w + 70));
     rel = lerp(rel, profile, k);
+  }
+  // rivers cut a shallow channel down the valley floor
+  const dxr = Math.abs(x - nb.c);
+  if (dxr < 14 && nb.canyon <= 0.2) {
+    const wet = riverAmount(z) * (1 - desert);
+    if (wet > 0) rel -= wet * 2.5 * (1 - smoothstep(dxr, 4, 11));
   }
   return basePlane(z) + rel + small;
 }
@@ -128,7 +162,7 @@ export const SKY_COLOR: Record<Biome, THREE.Color> = {
 };
 export const FOG_FAR: Record<Biome, number> = { meadow: 640, autumn: 600, desert: 700, alpine: 640, misty: 380 };
 const TREE_DENSITY: Record<Biome, number> = { meadow: 1, autumn: 1.4, desert: 0.12, alpine: 0.6, misty: 1.05 };
-const SPIRE_P: Record<Biome, number> = { meadow: 0.06, autumn: 0.05, desert: 0.2, alpine: 0.13, misty: 0.08 };
+const SPIRE_P: Record<Biome, number> = { meadow: 0.06, autumn: 0.05, desert: 0.2, alpine: 0.13, misty: 0.17 };
 const BOULDER_P: Record<Biome, number> = { meadow: 0.15, autumn: 0.12, desert: 0.22, alpine: 0.14, misty: 0.15 };
 
 /** Pick one environment at (x, z), dithered across the blend so borders look natural. */
@@ -163,7 +197,7 @@ export function treeAt(ix: number, iz: number): Obstacle | null {
   const biome = biomeAt(x, z, hash2(ix, iz, 6));
   const dens = biome === 'desert' ? 0.3 : forestDensity(x, z);
   if (hash2(ix, iz, 3) > dens * TREE_DENSITY[biome]) return null;
-  if (nearGateLine(x, z)) return null;
+  if (nearGateLine(x, z) || riverAt(x, z) > 0.05) return null;
   // avoid steep faces
   const y0 = terrainHeight(x, z);
   const gx = terrainHeight(x + 2, z) - terrainHeight(x - 2, z);
@@ -183,7 +217,7 @@ export function rockAt(ix: number, iz: number): Obstacle | null {
   const biome = biomeAt(x, z, hash2(ix, iz, 19));
   const sp = SPIRE_P[biome], bp = sp + BOULDER_P[biome];
   if (roll >= bp) return null;
-  if (nearGateLine(x, z)) return null;
+  if (nearGateLine(x, z) || riverAt(x, z) > 0.05) return null;
   const y0 = terrainHeight(x, z);
   if (roll < sp) {
     // tall spire: something to thread between (pillar fields in the desert, ice needles up high)
@@ -314,7 +348,7 @@ const spireGeo = colorize(new THREE.CylinderGeometry(0.55, 1, 1, 6, 3).translate
 const cloudGeo = new THREE.IcosahedronGeometry(1, 1);
 const ROCK_TINT: Record<Biome, THREE.Color> = {
   meadow: new THREE.Color(1, 1, 1), autumn: new THREE.Color(1.02, 0.97, 0.9), desert: new THREE.Color(1.3, 0.82, 0.62),
-  alpine: new THREE.Color(0.95, 1.08, 1.22), misty: new THREE.Color(0.85, 0.92, 0.9),
+  alpine: new THREE.Color(0.95, 1.08, 1.22), misty: new THREE.Color(0.72, 0.95, 0.8),
 };
 
 export const solidMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
@@ -326,6 +360,7 @@ export const cloudMat = new THREE.MeshLambertMaterial({
 export const CHUNK = 120;
 const SEG = 30;
 const tmpC = new THREE.Color(), tmpC2 = new THREE.Color();
+const WATER = new THREE.Color(0x4f9fd1), FOAM = new THREE.Color(0xeaf6fb);
 
 function paletteColor(p: Palette, cz: number, ny: number, h: number, v: number, out: THREE.Color) {
   const rel = h - basePlane(cz); // height above the downhill plane
@@ -342,6 +377,12 @@ function faceColor(cx: number, cz: number, ny: number, h: number, out: THREE.Col
   if (b.t > 0 && b.biome !== b.parent) {
     paletteColor(PALETTES[b.biome], cz, ny, h, v, tmpC2);
     out.lerp(tmpC2, b.t);
+  }
+  const river = riverAt(cx, cz, b);
+  if (river > 0.5) {
+    // water: blue, with white water where it tumbles over a cliff
+    const fall = ny < 0.8 ? 1 : 0;
+    out.copy(WATER).lerp(FOAM, fall * 0.8 + (hash2(Math.floor(cx), Math.floor(cz), 8) < 0.12 ? 0.35 : 0));
   }
   // tiny per-face jitter sells the low-poly look
   out.offsetHSL(0, 0, (hash2(Math.floor(cx * 3), Math.floor(cz * 3), 9) - 0.5) * 0.04);
