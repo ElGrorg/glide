@@ -37,3 +37,13 @@ Pick **Arena** on the title screen (←→ / d-pad / tap) to fight in a walled-i
 - The mountains wall the arena in; fly past the edge and the wind turns you back.
 - **Dart switches** (both modes): turn your homing darts and the enemies' darts on or off separately before a match.
 - Esc (or Start on a controller) returns to the menu; on the crash screen, Esc / B / the Menu button does too.
+
+
+## Online arena (multiplayer)
+Pick **Online** on the title screen to fight in the arena with friends on other networks (different houses, Wi-Fi or phone data).
+- One player presses **Host a room** and gets a 5-letter room code plus a **Copy invite link** button. Everyone else types the code and presses **Join** (or just opens the invite link). Up to 8 players.
+- The host picks the arena, how many **AI birds** come in each wave (0 = players only), whether players are **free for all** or **team up** against the AI birds, and the dart switches, then presses **Start match**. Players can also join a match that's already going.
+- Everyone flies by the same rules. AI birds chase whichever player is closest. Go down and you're back in the air at the rim 3 seconds later; the scoreboard (top right) counts kills and times downed, and a kill feed runs down the left. Esc leaves the room.
+- How it works: WebRTC peer to peer (PeerJS). The host's browser runs the AI birds and relays everyone's updates; each player flies their own bird locally (no input lag) and sends its position 20 times a second, and everyone draws the others a tenth of a second in the past so they move smoothly. A pea that hits you is judged on your machine; hits on AI birds are confirmed by the host; a dart fired at you flies on your machine, so you shake it the same way as an AI bird's dart.
+- Servers: the free public PeerJS server introduces players to each other (nothing else goes through it), and PeerJS's free STUN/TURN relays get through strict home and mobile NATs. No accounts needed. For your own servers: `?signal=host:port` (run `npx peer --port 9000`) and `?turn=turn:host:3478&tu=user&tp=pass`.
+- `?debug` exposes the game objects as `window.glide` for testing.
