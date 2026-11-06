@@ -1,0 +1,18 @@
+# Cloudflare deploy for Glide!: `npm run deploy` (see CLOUDFLARE.md)
+name = "glide"
+main = "server/worker.ts"
+compatibility_date = "2026-10-01"
+
+# The built game (npm run build:cloudflare writes it here). Static files are free and unmetered.
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+
+# One Durable Object per room code. SQLite-backed so it runs on the Workers Free plan.
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]

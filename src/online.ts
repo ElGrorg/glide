@@ -145,6 +145,7 @@ export class Online {
   }
 
   private playerLeft(id: string) {
+    if (id === 'self') { this.leave(); this.events.push({ type: 'left', reason: 'Lost the connection to the game server.' }); return; }
     if (id === 'p0' && !this.isHost) { this.leave(); this.events.push({ type: 'left', reason: 'The host left the room.' }); return; }
     const r = this.remotes.get(id);
     if (!r) return;
