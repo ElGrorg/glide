@@ -21,7 +21,7 @@ const ASSIST_RANGE = 150;      // player pea muzzle speed (m/s, on top of your o
 const ENEMY_PEA_SPEED = PEA_SPEED; // same pea shooter as yours
 const PEA_LIFE = 1.0;
 const ENEMY_HIT_R = 1.6;    // generous: these are small birds moving fast
-const PLAYER_HIT_R = 0.85;
+const PLAYER_HIT_R = ENEMY_HIT_R; // same-sized birds, same hit box
 // Hunter darts: a hunter that holds you in its sights locks on, then launches a homing dart.
 const DART_LOCK_TIME = 1.6;  // seconds it must keep you in its cone
 const DART_CONE = 0.45;      // ~25° either side of its nose
@@ -505,8 +505,9 @@ export class Dogfight {
         // short bursts
         e.fireCd -= dt;
         if (active && e.fireCd <= 0 && dist < 130 && aimErr < 0.1) {
-          const spread = tmpC.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(0.035);
           const aim = e.dir.clone(); turnToward(aim, want, ASSIST_BEND); // the same ~3° bend your aim assist gets
+          // (spread made after the bend: turnToward uses tmpC as scratch)
+          const spread = tmpC.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(0.035);
           const v = aim.add(spread).normalize().multiplyScalar(ENEMY_PEA_SPEED).addScaledVector(e.dir, e.speed);
           this.shoot(true, e.pos.clone().addScaledVector(e.dir, 1.5), v);
           this.enemyShotThisFrame = true;
