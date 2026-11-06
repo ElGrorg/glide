@@ -18,7 +18,7 @@ const PEA_SPEED = 150;
 const ASSIST_CONE = 0.14;   // pea aim assist kicks in within ~8° of your nose
 const ASSIST_BEND = 0.055;  // and bends the shot at most ~3°
 const ASSIST_RANGE = 150;      // player pea muzzle speed (m/s, on top of your own speed)
-const ENEMY_PEA_SPEED = 120;
+const ENEMY_PEA_SPEED = PEA_SPEED; // same pea shooter as yours
 const PEA_LIFE = 1.0;
 const ENEMY_HIT_R = 1.6;    // generous: these are small birds moving fast
 const PLAYER_HIT_R = 0.85;
@@ -438,7 +438,7 @@ export class Dogfight {
 
       // perception lags your real movement by roughly half a second
       if (!e.seenInit) { e.seenPos.copy(g.pos); e.seenVel.copy(g.vel); e.seenInit = true; }
-      const k = Math.min(1, dt / 0.45);
+      const k = Math.min(1, dt / 0.3); // reacts to your moves about 0.3 s late
       e.seenPos.addScaledVector(e.seenVel, dt).lerp(g.pos, k);
       e.seenVel.lerp(g.vel, k);
       e.lostT = Math.max(0, e.lostT - dt);
@@ -492,11 +492,11 @@ export class Dogfight {
       } else if (e.state === 'attack') {
         // chases where it *saw* you: lag pursuit from range, lead pursuit when close enough to shoot
         const seenDir = tmpC.copy(e.seenVel).normalize();
-        if (dist > 75) want.copy(e.seenPos).addScaledVector(seenDir, -22).addScaledVector(e.seenVel, 0.6).sub(e.pos).normalize();
+        if (dist > 110) want.copy(e.seenPos).addScaledVector(seenDir, -22).addScaledVector(e.seenVel, 0.6).sub(e.pos).normalize();
         else want.copy(e.seenPos).addScaledVector(e.seenVel, dist / (ENEMY_PEA_SPEED + e.speed)).sub(e.pos).normalize();
         wantSpeed = g.speed + THREE.MathUtils.clamp((dist - 30) * 0.5, -14, 30);
         // wider than your best turn, and wider still when it's fast: a hard break gains you angle
-        rate = 0.85 - Math.max(0, e.speed - 42) * 0.01;
+        rate = 0.85 - Math.max(0, e.speed - 42) * 0.01; // (the lift limit in fly() is the real cap, same as yours)
         const aimErr = e.dir.angleTo(want);
         // break hard enough that you slide out of its view and it loses you
         if (dist < 120 && e.dir.angleTo(toPlayer) > 0.55) { e.lostT = 2.5; out.push({ type: 'shaken' }); }
@@ -504,14 +504,15 @@ export class Dogfight {
         if (behindYou && dist < 150) this.tailThreat = Math.max(this.tailThreat, Math.max(0.35, e.aimAtPlayer));
         // short bursts
         e.fireCd -= dt;
-        if (active && e.fireCd <= 0 && dist < 100 && aimErr < 0.08) {
-          const spread = tmpC.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(0.06);
-          const v = e.dir.clone().add(spread).normalize().multiplyScalar(ENEMY_PEA_SPEED).addScaledVector(e.dir, e.speed);
+        if (active && e.fireCd <= 0 && dist < 130 && aimErr < 0.1) {
+          const spread = tmpC.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(0.035);
+          const aim = e.dir.clone(); turnToward(aim, want, ASSIST_BEND); // the same ~3° bend your aim assist gets
+          const v = aim.add(spread).normalize().multiplyScalar(ENEMY_PEA_SPEED).addScaledVector(e.dir, e.speed);
           this.shoot(true, e.pos.clone().addScaledVector(e.dir, 1.5), v);
           this.enemyShotThisFrame = true;
           e.burst++;
-          e.fireCd = e.burst >= 4 ? rand(1.1, 2.0) : 0.15;
-          if (e.burst >= 4) e.burst = 0;
+          e.fireCd = e.burst >= 5 ? rand(0.9, 1.6) : 0.1; // same fire rate as yours, in bursts
+          if (e.burst >= 5) e.burst = 0;
         }
         // dart lock: keep you inside its cone, at range, out of the clouds, and it launches a dart
         e.dartCd -= dt;
