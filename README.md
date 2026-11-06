@@ -52,3 +52,6 @@ Pick **Online** on the title screen to fight in the arena with friends on other 
 
 ## Lead marker (option, every mode)
 Turn **Lead marker** on or off on the title screen (online: in the room menu or lobby). Each bird within ~260 m gets a small ring showing where to point your nose so a pea meets it: it allows for the bird's motion and your own (your peas carry your speed). A white gun cross shows where your peas are going; put the cross on the ring and fire. A faded ring means the bird is still out of pea range.
+
+## Down cam (option, every mode)
+When you're shot down, the last 3 seconds replay from the chase camera of whoever got you: another player online, or the AI bird whose pea or dart hit you (found by tracing the shot back to the bird that fired it). The final moments play in slow motion, then the usual "downed" screen appears; press any key or tap to skip. Online, respawn waits for the replay to finish. Being chased into the ground by a bird that hit you in the last few seconds also counts. The title screen / lobby has a **Down cam** row: *When shot down* (default), *Every crash* (plain crashes replay from beside your own bird) or *Off*. It only records what's on screen, so the game keeps running underneath while it plays.
