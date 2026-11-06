@@ -56,7 +56,17 @@ export class Input {
   /** Control layout: 'flight' (two sticks, flight-sim style, default), 'classic' (one stick) or 'wings' (one stick per wing). */
   padScheme: PadScheme = 'flight';
   onSchemeChange: ((s: PadScheme) => void) | null = null;
+  /** Online matches pin everyone to the same layout (the default flight sticks), so nobody's saved
+   *  layout or a stray press of Back / Share / Create gives them different controls. */
+  lockScheme: PadScheme | null = null;
+  get scheme(): PadScheme { return this.lockScheme ?? this.padScheme; }
+  /** The pad we're reading (the one last used), for rumble. */
+  activePad: Gamepad | null = null;
+  private padIndex = -1;
+  /** Per pad: each axis's resting value when we first saw it (trigger axes on non-standard pads rest at -1). */
+  private padRest = new Map<string, number[]>();
   toggleScheme() {
+    if (this.lockScheme) return;
     this.padScheme = SCHEMES[(SCHEMES.indexOf(this.padScheme) + 1) % SCHEMES.length];
     try { localStorage.setItem('glide.layout', this.padScheme); } catch { /* storage unavailable */ }
     this.onSchemeChange?.(this.padScheme);
@@ -109,7 +119,7 @@ export class Input {
           this.stickVec = { x: 0, y: 0 };
           this.showStick(true);
         } else {
-          if (this.padScheme === 'flight') {
+          if (this.scheme === 'flight') {
             if (this.rStickId === null) { this.rStickId = t.identifier; this.rStickOrigin = { x: t.clientX, y: t.clientY }; this.rStickVec = { x: 0, y: 0 }; }
           } else this.brakeIds.add(t.identifier);
           this.swipes.set(t.identifier, { x: t.clientX, y: t.clientY, t: performance.now() });
@@ -146,10 +156,10 @@ export class Input {
         // quick sideways swipe on the right side = barrel roll
         const sw = this.swipes.get(t.identifier);
         this.swipes.delete(t.identifier);
-        const flick = this.padScheme === 'flight' ? 200 : 450; // the right stick drags slower than a flick
+        const flick = this.scheme === 'flight' ? 200 : 450; // the right stick drags slower than a flick
         if (sw && performance.now() - sw.t < flick) {
           const dx = t.clientX - sw.x, dy = t.clientY - sw.y;
-          if (Math.max(Math.abs(dx), Math.abs(dy)) > (this.padScheme === 'flight' ? 80 : 45)) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) > (this.scheme === 'flight' ? 80 : 45)) {
             // (barrel roll removed: flicks no longer do anything)
           }
         }
@@ -179,6 +189,40 @@ export class Input {
     this.knobEl.style.transform = 'translate(0px, 0px)';
   }
 
+  /** Which connected pad to read. Some controllers show up as several "gamepads" (a PlayStation pad on
+   *  Linux or Android also lists its motion sensors and touchpad, whose tilt axes sit far off centre and
+   *  used to read as a held stick). Prefer real pads with the browser's standard layout, and stick with the
+   *  one the player last pressed a button on. */
+  private pickPad(): Gamepad | null {
+    const pads = (navigator.getGamepads ? Array.from(navigator.getGamepads()) : []).filter((p): p is Gamepad =>
+      !!p && p.connected !== false && !/motion|sensor|accel|gyro|touch ?pad/i.test(p.id) && p.axes.length >= 2 && p.buttons.length >= 4);
+    if (!pads.length) { this.padIndex = -1; return null; }
+    for (const p of pads) {
+      if (p.index !== this.padIndex && p.buttons.some((b) => b.pressed)) { this.padIndex = p.index; this.padButtonsPrev = p.buttons.map((b) => b.pressed); }
+    }
+    const cur = pads.find((p) => p.index === this.padIndex);
+    if (cur) return cur;
+    const best = pads.find((p) => p.mapping === 'standard') ?? pads[0];
+    this.padIndex = best.index;
+    this.padButtonsPrev = best.buttons.map((b) => b.pressed);
+    return best;
+  }
+
+  /** Left X, left Y, right X, right Y. With the browser's standard mapping that's axes 0-3 on every pad.
+   *  Without it (some PlayStation / generic pads, mostly in Firefox and on Linux) the triggers are often
+   *  axes too, resting at -1, and they can sit where the right stick should be: holding a trigger, or just
+   *  having one, rolled or pitched the bird. Trigger-like axes (resting far from centre) are skipped. */
+  private sticks(gp: Gamepad): [number, number, number, number] {
+    const a = gp.axes;
+    if (gp.mapping === 'standard' || a.length <= 4) return [a[0] ?? 0, a[1] ?? 0, a[2] ?? 0, a[3] ?? 0];
+    const key = `${gp.index}:${gp.id}`;
+    let rest = this.padRest.get(key);
+    if (!rest) { rest = Array.from(a); this.padRest.set(key, rest); }
+    const right: number[] = [];
+    for (let i = 2; i < a.length && right.length < 2; i++) if (Math.abs(rest[i] ?? 0) < 0.5) right.push(a[i]);
+    return [a[0], a[1], right[0] ?? 0, right[1] ?? 0];
+  }
+
   poll(): InputState {
     const k = this.keys;
     let pitch = 0, roll = 0, yaw = 0, brake = 0, tuck = 0;
@@ -195,7 +239,7 @@ export class Input {
     // touch: stick up = dive, down = pull up
     if (this.stickId !== null) {
       pitch += expo(this.stickVec.y);
-      if (this.padScheme !== 'flight') roll += expo(this.stickVec.x);
+      if (this.scheme !== 'flight') roll += expo(this.stickVec.x);
     }
     if (this.brakeIds.size) brake = 1;
     let aimX = 0, aimY = 0;
@@ -204,11 +248,11 @@ export class Input {
     if (this.mouseAim && this.state.source === 'keyboard') { aimX = this.mouseAim.x * 1.6; aimY = this.mouseAim.y * 1.6; }
 
     // gamepad
-    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-    for (const gp of pads) {
-      if (!gp) continue;
-      const ax = dz(gp.axes[0] ?? 0), ay = dz(gp.axes[1] ?? 0);
-      const rx = dz(gp.axes[2] ?? 0), ry = dz(gp.axes[3] ?? 0);
+    const gp = this.pickPad();
+    this.activePad = gp;
+    if (gp) {
+      const [ax0, ay0, rx0, ry0] = this.sticks(gp);
+      const ax = dz(ax0), ay = dz(ay0), rx = dz(rx0), ry = dz(ry0);
       if (ax || ay || rx || ry) this.state.source = 'gamepad';
       // a flick of the left stick also moves through menus
       const fx = Math.abs(ax) > 0.6 ? Math.sign(ax) : Math.abs(ax) < 0.3 ? 0 : this.stickNav.x;
@@ -216,10 +260,10 @@ export class Input {
       if (fx && fx !== this.stickNav.x) this.nav.x = fx;
       if (fy && fy !== this.stickNav.y) this.nav.y = fy;
       this.stickNav = { x: fx, y: fy };
-      if (this.padScheme === 'flight') {
+      if (this.scheme === 'flight') {
         // flight sticks: left stick ↑↓ pitches, right stick ←→ rolls (the bank holds)
         pitch += expo(ay); roll += expo(rx);
-      } else if (this.padScheme === 'wings') {
+      } else if (this.scheme === 'wings') {
         // wing sticks: left stick Y is the left wing, right stick Y is the right wing.
         // Stick up lifts that wing. Both up = dive, both down = climb,
         // opposite = hard bank (right up + left down = sharp left).
@@ -248,12 +292,11 @@ export class Input {
         }
         this.padButtonsPrev[i] = b.pressed;
       });
-      break; // first connected pad only
     }
 
     // both bumpers (or Q+E) held = tuck; a lone bumper becomes a barrel roll after a short wait
     let both = k.has('KeyQ') && k.has('KeyE');
-    for (const gp of pads) { if (gp) { both ||= !!(gp.buttons[4]?.pressed && gp.buttons[5]?.pressed); break; } }
+    if (gp) both ||= !!(gp.buttons[4]?.pressed && gp.buttons[5]?.pressed);
     if (both) this.pendingRoll = null;
     else if (this.pendingRoll && performance.now() - this.pendingAt > 90) { this.trick = this.pendingRoll; this.pendingRoll = null; }
     this.state.tuck = 0; // tuck removed: speed only comes from diving (both / tuck kept as no-ops)
@@ -262,7 +305,7 @@ export class Input {
     this.state.pitch = clamp(this.invertPitch ? -pitch : pitch);
     this.state.roll = clamp(roll);
     this.state.yaw = clamp(yaw);
-    this.state.rollRate = this.padScheme === 'flight';
+    this.state.rollRate = this.scheme === 'flight';
     this.state.brake = Math.min(1, brake);
     this.state.fire = fire;
     this.state.dart = this.dartReq; this.dartReq = false;
