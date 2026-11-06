@@ -6,6 +6,13 @@ import Peer, { type DataConnection, type PeerOptions } from 'peerjs';
 // PeerJS also brings STUN and free TURN relays, so players behind awkward home or mobile NATs can
 // still reach the host.
 //
+// Or, when the game is built for Cloudflare (npm run build:cloudflare, see CLOUDFLARE.md), it skips WebRTC
+// and goes through a small relay server instead: every player holds one WebSocket to a Durable Object for
+// the room, which forwards messages exactly the way the host's browser does here. That works on any
+// network that can load a web page, with no NAT traversal or TURN to fail.
+//   build time: VITE_RELAY=same-origin (the game and the relay on one Cloudflare Worker) or wss://...
+//   page URL:   ?relay=wss://glide.you.workers.dev to try a relay, ?relay=peerjs to force PeerJS
+//
 // For testing, or your own servers, the page URL can override these:
 //   ?signal=host:port[/path]   your own PeerJS server (npx peer --port 9000)
 //   ?turn=turn:host:3478&tu=user&tp=pass   your own TURN relay (added to the defaults)
@@ -38,6 +45,18 @@ function peerOptions(): PeerOptions {
   return o;
 }
 
+/** The relay server's base URL (ws:// or wss://), or '' to use PeerJS. */
+function relayBase(): string {
+  const q = new URLSearchParams(location.search).get('relay');
+  const v = (q ?? (import.meta.env.VITE_RELAY as string | undefined) ?? '').trim();
+  if (!v || v === 'peerjs') return '';
+  if (v === 'same-origin') {
+    if (!/^https?:$/.test(location.protocol)) return ''; // opened from a file: no server to talk to
+    return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+  }
+  return v.replace(/^http/, 'ws').replace(/\/+$/, '');
+}
+
 export class Net {
   peer: Peer | null = null;
   isHost = false;
@@ -48,17 +67,22 @@ export class Net {
   private conns = new Map<string, DataConnection>();
   private nextId = 1;
   onMessage: (m: NetMsg) => void = () => {};
-  /** Host: a player's connection dropped. Client: the host went away (id = 'p0'). */
+  /** Host: a player's connection dropped. Client: the host went away (id = 'p0'). Relay: our own link dropped (id = 'self'). */
   onLeave: (id: string) => void = () => {};
   /** Host: a new player connected (before their hello). */
   onJoin: (id: string) => void = () => {};
-  get open() { return !!this.peer && (this.isHost || this.conns.size > 0); }
+  /** Relay mode: the one WebSocket to the room server. */
+  private ws: WebSocket | null = null;
+  private pingTimer = 0;
+  readonly relay = relayBase();
+  get open() { return this.relay ? this.ws?.readyState === WebSocket.OPEN : !!this.peer && (this.isHost || this.conns.size > 0); }
   get peerCount() { return this.conns.size; }
 
   /** Open a room. Resolves with the room code once the signalling server has registered it. */
   host(): Promise<string> {
     this.close();
     this.isHost = true; this.myId = 'p0';
+    if (this.relay) return this.relayHost();
     return new Promise((resolve, reject) => {
       let tries = 0;
       const attempt = () => {
@@ -92,6 +116,7 @@ export class Net {
   join(code: string): Promise<void> {
     this.close();
     this.isHost = false; this.code = cleanCode(code);
+    if (this.relay) return this.relayJoin();
     return new Promise((resolve, reject) => {
       const peer = new Peer(peerOptions());
       this.peer = peer;
@@ -120,9 +145,76 @@ export class Net {
     this.onMessage(m);
   }
 
+  // ---------- relay mode (Cloudflare Durable Object) ----------
+
+  /** Connect a WebSocket to a room. Resolves with the first control message the server sends. */
+  private relayOpen(code: string, host: boolean): Promise<{ ws: WebSocket; first: NetMsg }> {
+    return new Promise((resolve, reject) => {
+      let ws: WebSocket;
+      try { ws = new WebSocket(`${this.relay}/room/${code}${host ? '?role=host' : ''}`); }
+      catch { reject(new Error('Couldn\'t reach the game server.')); return; }
+      let settled = false;
+      const timer = setTimeout(() => { if (!settled) { settled = true; ws.close(); reject(new Error('The game server took too long to answer. Check your connection.')); } }, 12000);
+      ws.onmessage = (e) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        let m: NetMsg; try { m = JSON.parse(String(e.data)); } catch { m = { t: '_bad' }; }
+        resolve({ ws, first: m });
+      };
+      ws.onclose = ws.onerror = () => {
+        if (!settled) { settled = true; clearTimeout(timer); reject(new Error('Couldn\'t reach the game server. Check your connection, or this page may be blocking it.')); }
+      };
+    });
+  }
+
+  /** Wire up a connected room socket: game messages, join/leave notices, keep-alive pings. */
+  private relayAttach(ws: WebSocket) {
+    this.ws = ws;
+    ws.onmessage = (e) => {
+      if (typeof e.data !== 'string' || e.data === 'pong') return;
+      let m: NetMsg; try { m = JSON.parse(e.data); } catch { return; }
+      if (m.t === '_join') { this.conns.set(String(m.id), null as unknown as DataConnection); this.onJoin(String(m.id)); return; }
+      if (m.t === '_leave') { this.conns.delete(String(m.id)); this.onLeave(String(m.id)); return; }
+      if (m.t.startsWith('_')) return;
+      this.onMessage(m);
+    };
+    ws.onclose = ws.onerror = () => {
+      if (this.ws !== ws) return; // we closed it ourselves
+      this.ws = null; clearInterval(this.pingTimer);
+      if (this.isHost) for (const id of [...this.conns.keys()]) this.onLeave(id); // our own link dropped
+      this.conns.clear();
+      this.onLeave('self');
+    };
+    // idle sockets get dropped by some networks; Cloudflare answers these pings without waking the room
+    this.pingTimer = window.setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send('ping'); }, 20000);
+  }
+
+  private async relayHost(): Promise<string> {
+    for (let tries = 0; tries < 5; tries++) {
+      const code = makeCode();
+      const { ws, first } = await this.relayOpen(code, true);
+      if (first.t === '_taken') { ws.close(); continue; }
+      if (first.t !== '_ready') { ws.close(); throw new Error('The game server refused the room.'); }
+      this.code = code;
+      this.relayAttach(ws);
+      return code;
+    }
+    throw new Error('Couldn\'t find a free room code. Try again.');
+  }
+
+  private async relayJoin(): Promise<void> {
+    const { ws, first } = await this.relayOpen(this.code, false);
+    if (first.t === '_ready') { this.conns.set('p0', null as unknown as DataConnection); this.relayAttach(ws); return; }
+    ws.close();
+    if (first.t === '_noroom') throw new Error(`No room called ${this.code}. Check the code.`);
+    if (first.t === '_full') throw new Error('That room is full.');
+    throw new Error('The game server refused to join that room.');
+  }
+
   /** Send to everyone in the room (or, with m.to, one player). */
   send(m: NetMsg) {
     m.from = this.myId;
+    if (this.ws) { if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(m)); return; }
     if (this.isHost) {
       if (m.to) this.conns.get(m.to)?.send(m);
       else for (const c of this.conns.values()) c.send(m);
@@ -132,10 +224,14 @@ export class Net {
   /** Host only: assign an id (the host gives each joiner theirs in the welcome message). */
   setMyId(id: string) { this.myId = id; }
 
-  kick(id: string) { this.conns.get(id)?.close(); this.conns.delete(id); }
+  kick(id: string) {
+    if (this.ws) { this.send({ t: '_kick', id }); this.conns.delete(id); return; }
+    this.conns.get(id)?.close(); this.conns.delete(id);
+  }
 
   close() {
-    for (const c of this.conns.values()) { try { c.close(); } catch { /* ignore */ } }
+    if (this.ws) { const ws = this.ws; this.ws = null; clearInterval(this.pingTimer); try { ws.close(1000, 'bye'); } catch { /* ignore */ } }
+    else for (const c of this.conns.values()) { try { c.close(); } catch { /* ignore */ } }
     this.conns.clear();
     this.peer?.destroy();
     this.peer = null; this.code = ''; this.nextId = 1;
