@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { Net, type NetMsg } from './net';
 import type { BirdPalette, Glider } from './bird';
 import { Dogfight, type DogfightEvent, type Enemy, type NetTarget, type Role } from './dogfight';
-import { ARENA_R, terrainHeight } from './world';
+import { ARENA_R, terrainHeight, isSpace } from './world';
+import { SPACE_R, clearSpawnY } from './space';
 
 // Online arena: the game side of multiplayer.
 // - Each player flies their own bird on their own machine (no input lag) and sends where it is ~20 times a second.
@@ -12,7 +13,7 @@ import { ARENA_R, terrainHeight } from './world';
 //   judged by whoever fired and confirmed by the host, and a dart at another player is flown on their machine,
 //   so they can shake it exactly like a dart from an AI bird.
 
-export interface MatchRules { seed: number; arena: number; bots: number; myDarts: boolean; enemyDarts: boolean; allies: boolean }
+export interface MatchRules { seed: number; arena: number; bots: number; myDarts: boolean; enemyDarts: boolean; allies: boolean; /** space fighters in the asteroid belt */ space?: boolean }
 export interface PlayerInfo { id: string; name: string; kills: number; deaths: number }
 
 const SEND_HZ = 20, AI_HZ = 15;
@@ -114,7 +115,7 @@ export class Online {
     this.rules = rules;
     this.phase = 'playing';
     this.net.send({ t: 'start', rules });
-    this.net.meta({ phase: 'playing', arena: rules.arena });
+    this.net.meta({ phase: 'playing', arena: rules.space ? 99 : rules.arena }); // (99 = space, for the room list)
     this.events.push({ type: 'start', rules, late: false });
   }
 
@@ -322,6 +323,11 @@ export class Online {
   spawnPoint(): { x: number; y: number; z: number; heading: number } {
     // spread players round the rim by player number, so nobody spawns on top of anyone else
     const a = (colorIndex(this.myId) / PLAYER_PALETTES.length) * Math.PI * 2 + (Math.random() - 0.5) * 0.6;
+    if (isSpace()) {
+      const r = SPACE_R * (0.55 + Math.random() * 0.15);
+      const x = Math.cos(a) * r, z = Math.sin(a) * r;
+      return { x, y: clearSpawnY(x, z, new THREE.Vector3(-x / r, 0, -z / r)), z, heading: Math.atan2(x, z) };
+    }
     const r = ARENA_R * (0.55 + Math.random() * 0.15);
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     let ground = 0;

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeNoise2D, hash2 } from './noise';
 import { route, type Biome, type LiveBranch } from './route';
+import { planetHeight, spaceBarrier, asteroidsNear, spaceGap } from './space';
 
 // ---------- Terrain shape: an endless downhill mountainside ----------
 // Forward is -Z. The ground falls away by SLOPE metres per metre travelled.
@@ -20,7 +21,7 @@ const { smoothstep, clamp, lerp } = THREE.MathUtils;
 const STEP = 380;
 
 // ---------- Arena mode: a bounded basin ringed by mountains, flat on average (no downhill) ----------
-export type ArenaId = 'meadow' | 'pillars' | 'peaks' | 'cloudforest' | 'canyons';
+export type ArenaId = 'meadow' | 'pillars' | 'peaks' | 'cloudforest' | 'canyons' | 'space';
 export interface ArenaEnv {
   id: ArenaId; name: string; blurb: string; biome: Biome;
   /** obstacle densities (multipliers / probabilities) */
@@ -35,14 +36,19 @@ export const ARENAS: ArenaEnv[] = [
   { id: 'cloudforest', name: 'Cloud Forest', blurb: 'dense woods under thick low cloud: lose them in the mist', biome: 'misty', trees: 1.25, spires: 0.12, boulders: 0.15, spireH: 1, arches: 0.3, clouds: 0.92, lowClouds: true },
   { id: 'canyons', name: 'Autumn Canyons', blurb: 'a plateau cut by winding slot canyons', biome: 'autumn', trees: 0.5, spires: 0.08, boulders: 0.2, spireH: 0.9, arches: 0.35, clouds: 0.45, lowClouds: false },
 ];
+/** Space mode is an arena too (waves, the same menus, online), just one with no ground to speak of: an
+ *  asteroid field over a planet (see space.ts). It isn't in ARENAS, so "Random" never lands you in space. */
+export const SPACE_ARENA: ArenaEnv = { id: 'space', name: 'Asteroid Belt', blurb: 'an asteroid field in orbit over a wild planet', biome: 'misty', trees: 0, spires: 0, boulders: 0, spireH: 1, arches: 0, clouds: 0, lowClouds: false };
+export function isSpace() { return arena?.id === 'space'; }
 /** Flyable radius of the arena (metres from the middle); mountains wall it in beyond. */
 export const ARENA_R = 620;
 /** Past this radius the mountain wall is at full height, so only a bird flying over the wall gets here.
  *  An invisible barrier stands there: nothing steers you, you just can't go any further out. */
 export const ARENA_LID_R = ARENA_R + 200;
 /** Arena: keep `pos` inside the barrier above the wall. Returns how far it had to push the bird back (m). */
-export function arenaBarrier(pos: { x: number; z: number }): number {
+export function arenaBarrier(pos: { x: number; y: number; z: number }): number {
   if (!arena) return 0;
+  if (arena.id === 'space') return spaceBarrier(pos);
   const r = Math.hypot(pos.x, pos.z);
   if (r <= ARENA_LID_R) return 0;
   const k = ARENA_LID_R / r;
@@ -58,7 +64,7 @@ const CRUISE_DRAG = 0.0016; // same drag as the glide model
 /** Forward push from flapping (m/s^2): zero on the endless mountain, enough in the arena to hold cruise
  *  speed in level flight. It fades out high up, so you can't just climb forever. */
 export function cruiseThrust(y: number): number {
-  if (!arena) return 0;
+  if (!arena || arena.id === 'space') return 0;
   return CRUISE_DRAG * CRUISE_SPEED * CRUISE_SPEED * (1 - smoothstep(y, 230, 380));
 }
 
@@ -160,7 +166,7 @@ export function riverAt(x: number, z: number, nb?: LiveBranch): number {
 }
 
 export function terrainHeight(x: number, z: number): number {
-  if (arena) return arenaHeight(x, z);
+  if (arena) return arena.id === 'space' ? planetHeight(x, z) : arenaHeight(x, z);
   const lv = route.live(z, liveTmp);
   // valleys: the nearest open valley wins; closed valleys rise back into the mountainside.
   // Valleys narrow into gorges and open into wide plains along the run.
@@ -268,12 +274,14 @@ function biomeAt(x: number, z: number, r: number): Biome {
 }
 
 // ---------- Obstacles (deterministic per grid cell) ----------
-export type ObstacleType = 'tree' | 'rock' | 'spire';
+export type ObstacleType = 'tree' | 'rock' | 'spire' | 'asteroid' | 'ring' | 'bore';
 export type TreeKind = 'pine' | 'round' | 'cactus' | 'snowpine';
 export interface Obstacle {
   id: string; type: ObstacleType;
   x: number; z: number; y0: number; top: number; r: number; scale: number; tint: number;
   kind?: TreeKind; biome?: Biome;
+  /** space: centre height, axis (rings and tunnel rocks), ring / outer radius, tunnel radius, tunnel half-length */
+  cy?: number; ax?: number; ay?: number; az?: number; R?: number; ri?: number; L?: number;
 }
 
 export const TREE_CELL = 13;
@@ -374,6 +382,7 @@ export function archAt(ix: number, iz: number, out: Obstacle[]) {
 /** All obstacles whose cells touch the circle around (x, z). */
 export function obstaclesNear(x: number, z: number, radius: number, out: Obstacle[] = []): Obstacle[] {
   out.length = 0;
+  if (arena?.id === 'space') return asteroidsNear(x, z, radius, out);
   const t0x = Math.floor((x - radius) / TREE_CELL), t1x = Math.floor((x + radius) / TREE_CELL);
   const t0z = Math.floor((z - radius) / TREE_CELL), t1z = Math.floor((z + radius) / TREE_CELL);
   for (let ix = t0x; ix <= t1x; ix++) for (let iz = t0z; iz <= t1z; iz++) { const o = treeAt(ix, iz); if (o) out.push(o); }
@@ -396,6 +405,7 @@ export function obstaclesNear(x: number, z: number, radius: number, out: Obstacl
 
 /** Signed gap between a point and an obstacle's surface (negative = inside). */
 export function obstacleGap(o: Obstacle, px: number, py: number, pz: number): number {
+  if (o.cy !== undefined) return spaceGap(o, px, py, pz);
   const dx = px - o.x, dz = pz - o.z;
   if (o.type === 'rock') return Math.hypot(dx, py - o.y0, dz) - o.r;
   const horiz = Math.hypot(dx, dz);
@@ -416,6 +426,7 @@ export function obstacleGap(o: Obstacle, px: number, py: number, pz: number): nu
 export interface Cloud { id: string; puffs: { x: number; y: number; z: number; r: number }[] }
 export const CLOUD_CELL = 150;
 export function cloudAt(ix: number, iz: number): Cloud | null {
+  if (arena?.id === 'space') return null;
   const cx0 = (ix + 0.5) * CLOUD_CELL, cz0 = (iz + 0.5) * CLOUD_CELL;
   if (arena && Math.hypot(cx0, cz0) > ARENA_R + 150) return null;
   const misty = arena ? (arena.lowClouds ? 1 : 0) : biomeWeight(nearestBranch(cx0, cz0), 'misty');
@@ -660,6 +671,7 @@ export class World {
 
   /** Stream chunks around a focus point (biased ahead of the bird). Builds at most `budget` per call. */
   update(fx: number, fz: number, budget = 2) {
+    if (arena?.id === 'space') { if (this.chunks.size) this.reset(); return 0; } // nothing to stand on up here
     const ccx = Math.floor(fx / CHUNK), ccz = Math.floor(fz / CHUNK);
     const R = this.radius;
     const want: [number, number, number][] = [];

@@ -5,6 +5,8 @@ export interface InputState {
   yaw: number;     // -1 left .. +1 right: rudder, flat turn without banking (flight layout)
   rollRate: boolean; // true: roll is rate-controlled (flight sim), false: stick sets the bank directly
   brake: number;   // 0..1
+  boost: number;   // 0..1: space fighters only (Shift, A / bumpers, right stick or right thumb up)
+  view: boolean;   // edge-triggered: switch between the chase camera and first person (T, R3, VIEW)
   tuck: number;    // 0..1: hold both bumpers (or Q+E) to fold the wings and dive
   fire: boolean;   // held: pea shooter
   dart: boolean;   // edge-triggered: fire a homing dart at your locked target
@@ -26,7 +28,7 @@ export type PadScheme = 'flight' | 'classic' | 'wings';
 const SCHEMES: PadScheme[] = ['flight', 'classic', 'wings'];
 
 export class Input {
-  state: InputState = { pitch: 0, roll: 0, yaw: 0, rollRate: true, brake: 0, tuck: 0, fire: false, dart: false, aimX: 0, aimY: 0, anyPress: false, trick: null, source: 'keyboard', nav: { x: 0, y: 0, ok: false, back: false, menu: false } };
+  state: InputState = { pitch: 0, roll: 0, yaw: 0, rollRate: true, brake: 0, boost: 0, view: false, tuck: 0, fire: false, dart: false, aimX: 0, aimY: 0, anyPress: false, trick: null, source: 'keyboard', nav: { x: 0, y: 0, ok: false, back: false, menu: false } };
   private nav = { x: 0, y: 0, ok: false, back: false, menu: false };
   private stickNav = { x: 0, y: 0 };
   private trick: InputState['trick'] = null;
@@ -44,6 +46,10 @@ export class Input {
   private fireIds = new Set<number>();
   private mouseFire = false;
   private dartReq = false;
+  private viewReq = false;
+  /** Space fighter controls: Shift boosts instead of braking, and the right stick (or right thumb)
+   *  pushed up boosts, pulled down brakes. */
+  space = false;
   private mouseAim: { x: number; y: number } | null = null;
   private padButtonsPrev: boolean[] = [];
   private stickEl: HTMLElement;
@@ -83,6 +89,7 @@ export class Input {
         this.pressed = true;
         if (e.code === 'KeyV') this.toggleScheme();
         if (e.code === 'KeyR') this.dartReq = true;
+        if (e.code === 'KeyT') this.viewReq = true;
         const c = e.code;
         if (c === 'ArrowLeft' || c === 'KeyA') this.nav.x = -1;
         if (c === 'ArrowRight' || c === 'KeyD') this.nav.x = 1;
@@ -110,7 +117,8 @@ export class Input {
           const b = document.getElementById(id)?.getBoundingClientRect();
           return !!b && b.width > 0 && t.clientX >= b.left - 12 && t.clientX <= b.right + 12 && t.clientY >= b.top - 12 && t.clientY <= b.bottom + 12;
         };
-        if (hit('dartBtn')) { this.dartReq = true; this.fireIds.add(-1 - t.identifier); }
+        if (hit('viewBtn')) { this.viewReq = true; this.fireIds.add(-1 - t.identifier); }
+        else if (hit('dartBtn')) { this.dartReq = true; this.fireIds.add(-1 - t.identifier); }
         else if (hit('fire')) {
           this.fireIds.add(t.identifier);
         } else if (t.clientX < innerWidth * 0.5 && this.stickId === null) {
@@ -225,7 +233,7 @@ export class Input {
 
   poll(): InputState {
     const k = this.keys;
-    let pitch = 0, roll = 0, yaw = 0, brake = 0, tuck = 0;
+    let pitch = 0, roll = 0, yaw = 0, brake = 0, tuck = 0, boost = 0;
     let fire = this.mouseFire || [...this.fireIds].some((id) => id >= 0) || k.has('KeyF') || k.has('KeyJ') || k.has('Enter');
     // keyboard: W / Up = nose down (dive), S / Down = pull up (flight-sim style)
     if (k.has('KeyW') || k.has('ArrowUp')) pitch -= 1;
@@ -234,7 +242,9 @@ export class Input {
     if (k.has('KeyD') || k.has('ArrowRight')) roll += 1;
     if (k.has('KeyZ')) yaw -= 1;
     if (k.has('KeyC')) yaw += 1;
-    if (k.has('Space') || k.has('ShiftLeft') || k.has('ShiftRight')) brake = 1;
+    const shift = k.has('ShiftLeft') || k.has('ShiftRight');
+    if (k.has('Space') || (shift && !this.space)) brake = 1;
+    if (shift && this.space) boost = 1;
 
     // touch: stick up = dive, down = pull up
     if (this.stickId !== null) {
@@ -244,7 +254,11 @@ export class Input {
     if (this.brakeIds.size) brake = 1;
     let aimX = 0, aimY = 0;
     // flight layout: left thumb pitches, right thumb rolls
-    if (this.rStickId !== null) roll += expo(dz(this.rStickVec.x));
+    if (this.rStickId !== null) {
+      roll += expo(dz(this.rStickVec.x));
+      // space: the right thumb is the throttle too (drag up = boost, down = brake)
+      if (this.space) { const y = dz(this.rStickVec.y); if (y < 0) boost = Math.max(boost, -y); else brake = Math.max(brake, y); }
+    }
     if (this.mouseAim && this.state.source === 'keyboard') { aimX = this.mouseAim.x * 1.6; aimY = this.mouseAim.y * 1.6; }
 
     // gamepad
@@ -275,13 +289,18 @@ export class Input {
       // RT or X fires the pea shooter; LT or A is the air-brake
       const rt = gp.buttons[7]?.value ?? 0, lt = gp.buttons[6]?.value ?? 0;
       const a = gp.buttons[0]?.pressed ? 1 : 0;
-      brake = Math.max(brake, lt, a);
+      if (this.space) {
+        // space: LT brakes, A or either bumper boosts, and the right stick is a throttle (up boost, down brake)
+        brake = Math.max(brake, lt, ry > 0.3 ? ry : 0);
+        boost = Math.max(boost, a, gp.buttons[4]?.pressed || gp.buttons[5]?.pressed ? 1 : 0, ry < -0.3 ? -ry : 0);
+      } else brake = Math.max(brake, lt, a);
       fire ||= rt > 0.3 || !!gp.buttons[2]?.pressed;
       gp.buttons.forEach((b, i) => {
         if (b.pressed && !this.padButtonsPrev[i]) {
           this.pressed = true; this.state.source = 'gamepad';
           if (i === 8) this.toggleScheme();
           if (i === 3) this.dartReq = true;
+          if (i === 11) this.viewReq = true;
           if (i === 14) this.nav.x = -1;
           if (i === 15) this.nav.x = 1;
           if (i === 12) this.nav.y = -1;
@@ -307,6 +326,8 @@ export class Input {
     this.state.yaw = clamp(yaw);
     this.state.rollRate = this.scheme === 'flight';
     this.state.brake = Math.min(1, brake);
+    this.state.boost = Math.min(1, boost);
+    this.state.view = this.viewReq; this.viewReq = false;
     this.state.fire = fire;
     this.state.dart = this.dartReq; this.dartReq = false;
     this.state.aimX = clamp(aimX); this.state.aimY = clamp(aimY);
