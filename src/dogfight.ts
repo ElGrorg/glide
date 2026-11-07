@@ -66,6 +66,22 @@ export function hitsObstacle(p: THREE.Vector3, pad = 0.3) {
   return false;
 }
 
+const sweepObs: Obstacle[] = [];
+/** How far (0..1) along the hop from `a` to `b` a shot first hits the ground, a tree, a rock, a pillar or an arch;
+ *  -1 if the way is clear. Steps every ~1 m so fast peas can't skip through a thin trunk in one frame. */
+export function shotImpact(a: THREE.Vector3, b: THREE.Vector3, pad = 0): number {
+  const len = a.distanceTo(b);
+  const steps = Math.max(1, Math.ceil(len));
+  const obs = obstaclesNear((a.x + b.x) / 2, (a.z + b.z) / 2, len / 2 + 5, sweepObs);
+  for (let i = 1; i <= steps; i++) {
+    const f = i / steps;
+    const x = a.x + (b.x - a.x) * f, y = a.y + (b.y - a.y) * f, z = a.z + (b.z - a.z) * f;
+    if (y < terrainHeight(x, z) + pad) return f;
+    for (const o of obs) if (obstacleGap(o, x, y, z) < pad) return f;
+  }
+  return -1;
+}
+
 const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpC = new THREE.Vector3();
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 
@@ -723,7 +739,10 @@ export class Dogfight {
       }
       mprev.copy(d.pos);
       d.pos.addScaledVector(d.vel, dt);
-      let ended = d.pos.y < terrainHeight(d.pos.x, d.pos.z);
+      // stopped by the ground or anything in the way (only birds before the impact point can be hit)
+      const hitF = shotImpact(mprev, d.pos);
+      if (hitF >= 0) d.pos.lerpVectors(mprev, d.pos, hitF);
+      let ended = false;
       for (const e of this.enemies) {
         if (!e.alive || ended) continue;
         if (segDist(mprev, d.pos, e.pos) < MY_DART_HIT_R) {
@@ -734,6 +753,11 @@ export class Dogfight {
           out.push({ type: 'hitEnemy', enemy: e });
           this.kill(e, out);
         }
+      }
+      if (!ended && hitF >= 0) {
+        ended = true;
+        this.puffs.burst(d.pos, tmpA.set(0, 3, 0), 3, 8, 0.7);
+        out.push({ type: 'myDartMiss' });
       }
       if (ended) d.life = 0;
       else if (d.life <= 0) out.push({ type: 'myDartMiss' });
@@ -748,7 +772,10 @@ export class Dogfight {
       p.life -= dt;
       prev.copy(p.pos);
       p.pos.addScaledVector(p.vel, dt);
-      if (p.pos.y < terrainHeight(p.pos.x, p.pos.z)) { p.life = 0; }
+      // the ground, trees, rocks, pillars and arches stop peas; birds behind the impact point are safe
+      const hitF = shotImpact(prev, p.pos);
+      const blocked = hitF >= 0;
+      if (blocked) p.pos.lerpVectors(prev, p.pos, hitF);
       if (!p.enemy) {
         for (const e of this.enemies) {
           if (!e.alive || e.friendly) continue;
@@ -768,6 +795,7 @@ export class Dogfight {
         if (g.trick && d < 3.5) { out.push({ type: 'dodged' }); p.life = 0; }   // a barrel roll shrugs off the burst
         else if (d < PLAYER_HIT_R) { if (this.hurtT <= 0) { out.push({ type: 'hitPlayer', by: p.owner }); this.hurtT = 0.8; } p.life = 0; }
       }
+      if (blocked && p.life > 0) { p.life = 0; this.puffs.burst(p.pos, tmpA.set(0, 1.5, 0), 1.2, 3, 0.45); }
       if (p.life <= 0) p.mesh.visible = false;
       else { p.mesh.position.copy(p.pos); p.mesh.lookAt(tmpA.copy(p.pos).add(p.vel)); }
     }
@@ -801,12 +829,14 @@ export class Dogfight {
       if (!d.tracking) d.life = Math.min(d.life, 1.5);
       const prev = d.pos.clone(); // (segDist uses the tmp vectors itself)
       d.pos.addScaledVector(d.dir, d.speed * dt);
+      const hitF = shotImpact(prev, d.pos, 0.3); // ground or an obstacle in the way
+      if (hitF >= 0) d.pos.lerpVectors(prev, d.pos, hitF);
       if (d.tracking && active && segDist(prev, d.pos, g.pos) < DART_HIT_R) {
         out.push({ type: 'dartHit', by: d.by }); this.hurtT = 0.8; // a dart always lands, even right after a pea hit
         this.puffs.burst(d.pos, tmpA.set(0, 2, 0), 5, 14, 0.8);
         this.removeDart(d); continue;
       }
-      if (d.pos.y < terrainHeight(d.pos.x, d.pos.z) + 0.3) {
+      if (hitF >= 0) {
         if (d.tracking) out.push({ type: 'dartShaken', how: 'ground' });
         this.puffs.burst(d.pos, tmpA.set(0, 5, 0), 5, 14, 0.9);
         this.removeDart(d); continue;
