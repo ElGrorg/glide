@@ -68,6 +68,18 @@ export class WindAudio {
     o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.09);
   }
 
+  /** Space laser: a bright zap that drops fast. Enemy bolts are lower. */
+  laser(enemy = false) {
+    if (!this.ctx || this.muted) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = 'sawtooth';
+    const f0 = enemy ? 1300 : 2200;
+    o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f0 * 0.18, t + 0.12);
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 3200;
+    const g = ctx.createGain(); g.gain.setValueAtTime(enemy ? 0.035 : 0.045, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+    o.connect(f).connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.14);
+  }
+
   /** Dart launch: a rising whoosh-chirp. */
   dart() {
     if (!this.ctx || this.muted) return;

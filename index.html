@@ -175,6 +175,21 @@
     .menu.side { width: 440px; margin-right: auto; } .side h1, .side .hint { text-align: left; }
   }
   @media (max-height: 500px) { .menu h1 { margin-bottom: 8px; } .panel .blurb { display: none; } }
+  /* space mode */
+  body.space { background: #020108; }
+  body.space #overlay { background: linear-gradient(180deg, rgba(10,4,30,.35), rgba(20,6,40,.65)); }
+  #boost { left: 16px; bottom: calc(36px + env(safe-area-inset-bottom)); width: 150px; height: 9px; border-radius: 5px; background: rgba(255,255,255,.18);
+    display: none; align-items: center; box-shadow: 0 0 6px var(--shadow); }
+  #boost i { display: block; height: 100%; border-radius: 5px; background: #7af0ff; transition: background .2s; }
+  #boost b { position: absolute; left: 158px; font-size: 11px; font-weight: 900; letter-spacing: 2px; white-space: nowrap; }
+  #boost.on i { background: #fff; box-shadow: 0 0 10px #7af0ff; }
+  #boost.low i { background: #ff5a4a; }
+  #pipper { position: fixed; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px; border: 2px solid rgba(140,255,170,.85); border-radius: 50%;
+    pointer-events: none; display: none; box-shadow: 0 0 4px rgba(0,0,0,.4); }
+  #pipper::after { content: ''; position: absolute; left: 15px; top: 15px; width: 4px; height: 4px; border-radius: 50%; background: rgba(140,255,170,.95); }
+  #viewBtn { position: fixed; left: 50%; margin-left: -28px; bottom: calc(14px + env(safe-area-inset-bottom)); width: 56px; height: 36px; border-radius: 10px;
+    border: 2px solid rgba(255,255,255,.6); background: rgba(20,40,60,.35); display: none; pointer-events: none;
+    align-items: center; justify-content: center; font-weight: 900; font-size: 12px; letter-spacing: 1px; }
   #stick { position: fixed; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%; border: 2px solid rgba(255,255,255,.6);
     background: rgba(255,255,255,.12); display: none; pointer-events: none; }
   #knob { position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.7); }
@@ -197,6 +212,9 @@
   <div id="darts" class="hud"></div>
   <div id="fire">FIRE</div>
   <div id="dartBtn">DART</div>
+  <div id="viewBtn">VIEW</div>
+  <div id="boost" class="hud"><i></i><b>BOOST</b></div>
+  <div id="pipper"></div>
   <div id="rets"></div>
   <div id="gunCross"></div>
   <div id="stick"><div id="knob"></div></div>
