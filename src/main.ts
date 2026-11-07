@@ -89,19 +89,34 @@ const $ = (id: string) => document.getElementById(id)!;
 const hud = { wave: $('wave'), hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('stats'), darts: $('darts'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
-const PAD_HELP = {
-  flight: 'Controller (<b>flight sticks</b>): left stick ↑↓ = dive / pull up · right stick ←→ = roll, both all the way round (bank holds when you let go)<br><b>RT</b>/<b>X</b> shoot · <b>Y</b> homing dart · <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
-  classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>Y</b> homing dart, <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
-  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>Y</b> homing dart · <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
+// Controls help: [keys, what they do] pairs, laid out as a key list in the menu's "Controls" panel.
+type Help = [string, string][];
+const kb = (...keys: string[]) => keys.map((x) => `<kbd>${x}</kbd>`).join('');
+const PAD_HELP: Record<string, Help> = {
+  flight: [[`Left stick ${kb('↑↓')}`, 'Dive / pull up (keep pulling to loop)'], [`Right stick ${kb('←→')}`, 'Roll, all the way round (bank holds)']],
+  classic: [['Left stick', 'Steer (keep pulling down to loop)']],
+  wings: [[`Left stick ${kb('↑↓')}`, 'Left wing'], [`Right stick ${kb('↑↓')}`, 'Right wing'], ['Both up / both down', 'Dive / climb'], ['One up, one down', 'Sharp turn']],
 };
-const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.scheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot &nbsp; <b>R</b> or right-click = homing dart (hold your nose on a bird for 1 s to lock)<br>hold <b>S</b> to loop &nbsp; <b>V</b> = change layout`;
-const TOUCH_HELP = () => input.scheme === 'flight'
-  ? 'Left thumb: drag up to dive, down to pull up<br>Right thumb: drag ←→ to roll, all the way round if you like (the bank holds when you let go)<br>Hold <b>FIRE</b> to shoot<br>Hold your nose on a bird to lock, then tap <b>DART</b><br>Keep pulling down to loop'
-  : 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Hold <b>FIRE</b> to shoot<br>Hold your nose on a bird to lock, then tap <b>DART</b><br>Keep pulling down to loop';
+const PAD_COMMON: Help = [[kb('RT') + ' / ' + kb('X'), 'Shoot'], [kb('Y'), 'Homing dart'], [kb('LT') + ' / ' + kb('A'), 'Air-brake'], [kb('Back'), 'Next stick layout']];
+const KEYS_HELP = (): Help => [
+  [kb('W', 'S') + ' / ' + kb('↑', '↓'), 'Dive / pull up (hold S to loop)'],
+  [kb('A', 'D') + ' / ' + kb('←', '→'), input.scheme === 'flight' ? 'Roll (bank holds)' : 'Bank'],
+  [kb('Z', 'C'), 'Rudder'], [kb('Space'), 'Air-brake'], [kb('F') + ' or click', 'Shoot'],
+  [kb('R') + ' or right-click', 'Homing dart (hold your nose on a bird for 1 s to lock)'], [kb('V'), 'Change layout'],
+];
+const TOUCH_HELP = (): Help => input.scheme === 'flight'
+  ? [['Left thumb ↑↓', 'Dive / pull up (keep pulling down to loop)'], ['Right thumb ←→', 'Roll, all the way round (bank holds)'], ['Hold FIRE', 'Shoot'], ['Tap DART', 'Homing dart, once your nose has locked a bird']]
+  : [['Drag left side', 'Steer: up dives, down pulls up'], ['Hold right side', 'Air-brake'], ['Hold FIRE', 'Shoot'], ['Tap DART', 'Homing dart, once your nose has locked a bird']];
+const helpList = (title: string, rows: Help) => `<h3>${title}</h3><dl class="keys">${rows.map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join('')}</dl>`;
 const showControls = () => {
-  $('controls').innerHTML = isTouch ? TOUCH_HELP() : `${KEYS_HELP()}<br>${PAD_HELP[input.scheme]}`;
+  const el = document.getElementById('controls');
+  if (!el) return;
+  if (isTouch) { el.innerHTML = helpList('Touch', TOUCH_HELP()); return; }
+  const pad = helpList(`Controller · ${LAYOUT_NAMES[input.scheme][0].toLowerCase()}`, [...PAD_HELP[input.scheme], ...PAD_COMMON]);
+  const keys = helpList('Keyboard &amp; mouse', KEYS_HELP());
+  el.innerHTML = input.activePad ? pad + keys : keys + pad; // the controller first once one is plugged in
 };
-const showControlsSafe = () => { if (document.getElementById('controls')) showControls(); };
+const showControlsSafe = showControls;
 addEventListener('gamepadconnected', showControlsSafe);
 if (isTouch) { $('fire').style.display = 'flex'; $('dartBtn').style.display = 'flex'; }
 
@@ -112,6 +127,7 @@ const DOWNCAM_OPTS: DownCamSetting[] = ['shot', 'all', 'off'];
 const settings = { mode: 'endless' as GameMode, env: ARENAS.length /* = random */, enemies: 3, myDarts: true, enemyDarts: true,
   /* online */ name: '', bots: 2, allies: false, code: '', public: true,
   /* HUD: lead marker showing where to aim your peas */ lead: true,
+  /* title menu: controls list open (open on a first visit) */ help: true,
   /* replay when you go down: 'shot' = shot down (or chased into the ground), 'all' = every crash too, 'off' */ downcam: 'shot' as DownCamSetting };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('glide.settings') || '{}')); } catch { /* storage unavailable */ }
 settings.env = THREE.MathUtils.clamp(Math.round(settings.env) || 0, 0, ARENAS.length);
@@ -131,15 +147,15 @@ loadBest();
 /** The arena chosen for this match ("random" rolls one per match). */
 let arenaIdx = 0;
 
-const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go', 'vis', 'host', 'join', 'rooms'] as const;
+const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
 const GO_ROW = MENU_ROWS.indexOf('go');
 let menuRow = inviteCode ? MENU_ROWS.indexOf('join') : GO_ROW;
 function menuRows(): readonly string[] {
   const browser = hasRoomBrowser();
   if (settings.mode === 'online') return online.active
     ? (online.isHost && online.phase === 'lobby' ? [...(browser ? ['vis'] : []), 'env', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go'] : online.phase === 'lobby' ? ['lead', 'downcam'] : [])
-    : ['mode', 'lead', 'downcam', ...(browser && openRooms.length ? ['rooms'] : []), 'join', ...(browser ? ['vis'] : []), 'host'];
-  return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go'] : ['mode', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go'];
+    : ['mode', ...(browser && openRooms.length ? ['rooms'] : []), 'join', ...(browser ? ['vis'] : []), 'host', 'lead', 'downcam', 'help'];
+  return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go', 'help'] : ['mode', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go', 'help'];
 }
 let onlineNote = '';
 
@@ -174,47 +190,69 @@ function roomListHtml() {
 }
 const esc = (s: string) => s.replace(/[<>&"]/g, '');
 const inviteLink = () => { const u = new URL(location.href); u.search = ''; u.hash = ''; u.searchParams.set('room', online.code); const sig = new URLSearchParams(location.search).get('signal'); if (sig) u.searchParams.set('signal', sig); return u.toString(); };
+/** Mode tabs on the title menu. A new mode only needs an entry here (plus its blurb and rows below). */
+const MODE_TABS: { id: GameMode; label: string }[] = [
+  { id: 'endless', label: 'Endless' }, { id: 'arena', label: 'Arena' }, { id: 'online', label: 'Online' },
+];
+const MODE_BLURB: Record<GameMode, string> = {
+  endless: 'An endless mountainside. Skim the ground, thread the trees, punch through the clouds, and shoot down the birds hunting you.',
+  arena: 'A walled-in basin to fight in, wave after wave. You flap to hold your speed, but climbing still costs it and diving still builds it.',
+  online: 'Fight in the arena with other players anywhere: join an open room, type a friend\'s code, or host your own.',
+};
+const onOff = (b: boolean) => (b ? 'On' : 'Off');
+const sect = (title: string) => `<h2 class="sect">${title}</h2>`;
+/** The bottom line: how to drive the menu on this device. */
+const menuHint = (fly: string) => (isTouch ? '' : `<p class="hint">${kb('↑', '↓')} choose · ${kb('←', '→')} change · ${kb('Enter')} / ${kb('A')} ${fly}</p>`);
+function helpRow(sel: string) {
+  return `<button class="opt toggle${sel}" data-act="help:1"><span class="lab">Controls</span><span class="chev">${settings.help ? 'Hide ▴' : 'Show ▾'}</span></button>
+    ${settings.help ? '<div class="controls" id="controls"></div>' : ''}`;
+}
 function renderMenu() {
   if (settings.mode === 'online') { renderOnlineMenu(); return; }
   const rows = menuRows() as readonly string[];
   if (!rows.includes(MENU_ROWS[menuRow])) menuRow = GO_ROW;
   const sel = (r: string) => (MENU_ROWS[menuRow] === r ? ' sel' : '');
   const envName = settings.env === ARENAS.length ? 'Random' : ARENAS[settings.env].name;
-  const envBlurb = settings.env === ARENAS.length ? 'a different arena every match' : ARENAS[settings.env].blurb;
+  const envBlurb = settings.env === ARENAS.length ? 'A different arena every match' : ARENAS[settings.env].blurb;
   const arena = settings.mode === 'arena';
-  hud.overlay.innerHTML = `<div class="menu">
+  hud.overlay.innerHTML = `<div class="menu side">
     <h1>Glide!</h1>
-    ${modeRow(sel('mode'))}
-    <p class="blurb">${arena
-      ? 'A walled-in basin to fight in. You flap to hold your speed, so the ground doesn\'t have to fall away: climbing still costs speed and diving still builds it. Clear a wave and the next one comes in.'
-      : 'An endless mountainside. Skim the ground, thread the trees, punch through the clouds, and shoot down the birds hunting you.'}</p>
-    ${arena ? `<div class="row pick${sel('env')}"><span class="lab">Arena</span><button data-act="env:-1">◀</button><b>${envName}</b><button data-act="env:1">▶</button></div>
-    <p class="blurb small">${envBlurb}</p>
-    <div class="row pick${sel('enemies')}"><span class="lab">Enemies</span><button data-act="enemies:-1">◀</button><b>${settings.enemies}</b><button data-act="enemies:1">▶</button></div>` : ''}
-    <div class="row pick${sel('myDarts')}"><span class="lab">Your darts</span><button data-act="myDarts:-1">◀</button><b>${settings.myDarts ? 'On' : 'Off'}</b><button data-act="myDarts:1">▶</button></div>
-    <div class="row pick${sel('enemyDarts')}"><span class="lab">Enemy darts</span><button data-act="enemyDarts:-1">◀</button><b>${settings.enemyDarts ? 'On' : 'Off'}</b><button data-act="enemyDarts:1">▶</button></div>
-    ${leadRow(sel('lead'))}
-    ${downcamRow(sel('downcam'))}
-    <div class="row${sel('go')}"><button data-act="go" class="go-btn">Fly!</button></div>
-    <div class="controls" id="controls"></div>
-    <p class="hint">${isTouch ? 'Tap to choose' : '↑↓ choose · ←→ change · Enter / A to fly'}</p>
+    <div class="panel">
+      ${modeRow(sel('mode'))}
+      <p class="blurb">${MODE_BLURB[settings.mode]}</p>
+      ${arena ? `${sect('Match')}${pickRow(sel('env'), 'env', 'Arena', envName, envBlurb)}${pickRow(sel('enemies'), 'enemies', 'Enemies', `${settings.enemies} per wave`)}` : ''}
+      ${sect('Darts')}
+      ${pickRow(sel('myDarts'), 'myDarts', 'Your darts', onOff(settings.myDarts))}
+      ${pickRow(sel('enemyDarts'), 'enemyDarts', 'Enemy darts', onOff(settings.enemyDarts))}
+      ${sect('View')}
+      ${leadRow(sel('lead'))}
+      ${downcamRow(sel('downcam'))}
+      <button data-act="go" class="go-btn cta${sel('go')}">Fly!</button>
+      ${helpRow(sel('help'))}
+    </div>
+    ${menuHint('fly')}
   </div>`;
   showControls();
+  revealSel();
 }
+/** Keep the pad / keyboard selection on screen when the menu is taller than the window. */
+const revealSel = () => hud.overlay.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
 function visRow(sel: string) {
   const on = online.active ? online.isPublic : settings.public;
-  return `${pickRow(sel, 'vis', 'Room', on ? 'Public' : 'Private')}<p class="blurb small">${on ? 'Listed under Open rooms for anyone to join' : 'Hidden: friends join with the code or invite link'}</p>`;
+  return pickRow(sel, 'vis', 'Room', on ? 'Public' : 'Private', on ? 'Listed under Open rooms for anyone to join' : 'Hidden: friends join with the code or invite link');
 }
-function leadRow(sel: string) { return pickRow(sel, 'lead', 'Lead marker', settings.lead ? 'On' : 'Off'); }
+function leadRow(sel: string) { return pickRow(sel, 'lead', 'Lead marker', onOff(settings.lead), 'Shows where to aim your peas'); }
 function downcamRow(sel: string) {
-  return pickRow(sel, 'downcam', 'Down cam', { shot: 'When shot down', all: 'Every crash', off: 'Off' }[settings.downcam]);
+  return pickRow(sel, 'downcam', 'Down cam', { shot: 'When shot down', all: 'Every crash', off: 'Off' }[settings.downcam], 'Replay from your killer\'s view');
 }
 function modeRow(sel: string) {
-  const b = (m: GameMode, label: string) => `<button data-act="mode:${m}" class="${settings.mode === m ? 'on' : ''}">${label}</button>`;
-  return `<div class="row modes${sel}">${b('endless', 'Endless downhill')}${b('arena', 'Arena')}${b('online', 'Online')}</div>`;
+  return `<div class="tabs${sel}" role="tablist">${MODE_TABS.map((m) =>
+    `<button role="tab" data-act="mode:${m.id}" class="${settings.mode === m.id ? 'on' : ''}" aria-selected="${settings.mode === m.id}">${m.label}</button>`).join('')}</div>`;
 }
-function pickRow(sel: string, key: string, label: string, value: string) {
-  return `<div class="row pick${sel}"><span class="lab">${label}</span><button data-act="${key}:-1">◀</button><b>${value}</b><button data-act="${key}:1">▶</button></div>`;
+/** A setting: label (and an optional note) on the left, ◀ value ▶ on the right. Tapping the value steps it forward. */
+function pickRow(sel: string, key: string, label: string, value: string, note = '') {
+  return `<div class="opt${sel}"><span class="lab">${label}${note ? `<small>${note}</small>` : ''}</span>
+    <span class="ctl"><button data-act="${key}:-1" aria-label="Previous">◀</button><b data-act="${key}:1">${value}</b><button data-act="${key}:1" aria-label="Next">▶</button></span></div>`;
 }
 /** Online: the room menu (host or join), then the lobby once you're in a room. */
 function renderOnlineMenu() {
@@ -222,43 +260,53 @@ function renderOnlineMenu() {
   if (rows.length && !rows.includes(MENU_ROWS[menuRow])) menuRow = MENU_ROWS.indexOf(rows[rows.length - 1] as typeof MENU_ROWS[number]);
   const sel = (r: string) => (MENU_ROWS[menuRow] === r ? ' sel' : '');
   const envName = settings.env === ARENAS.length ? 'Random' : ARENAS[settings.env].name;
+  const note = onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : '';
   let body = '';
   if (!online.active) {
     body = `${modeRow(sel('mode'))}
-    <p class="blurb">${hasRoomBrowser() ? 'Fight in the arena with other players anywhere. Join an open room, type a friend\'s code, or host your own.' : 'Fight in the arena with friends anywhere: different houses, Wi-Fi or phone data. One of you hosts a room and shares its code; everyone else joins with it.'}</p>
-    <div class="row"><span class="lab">Your name</span><input id="nameIn" maxlength="16" placeholder="Bird" value="${esc(settings.name)}" autocomplete="off" spellcheck="false"></div>
+    <p class="blurb">${hasRoomBrowser() ? MODE_BLURB.online : 'Fight in the arena with friends anywhere: different houses, Wi-Fi or phone data. One of you hosts a room and shares its code; everyone else joins with it.'}</p>
+    <div class="opt"><label class="lab" for="nameIn">Your name</label><span class="ctl"><input id="nameIn" maxlength="16" placeholder="Bird" value="${esc(settings.name)}" autocomplete="off" spellcheck="false"></span></div>
+    ${hasRoomBrowser() ? `${sect('Open rooms')}<div class="rooms${sel('rooms')}" id="roomList">${roomListHtml()}</div>` : ''}
+    ${sect('Join with a code')}
+    <div class="opt join${sel('join')}"><input id="codeIn" class="code" maxlength="8" placeholder="CODE" value="${esc(settings.code)}" autocomplete="off" autocapitalize="characters" spellcheck="false"><button data-act="join" class="go-btn">Join</button></div>
+    ${note}
+    ${sect('Host your own')}
+    ${hasRoomBrowser() ? visRow(sel('vis')) : ''}
+    <button data-act="host" class="go-btn cta${sel('host')}">Host a room</button>
+    ${sect('View')}
     ${leadRow(sel('lead'))}
     ${downcamRow(sel('downcam'))}
-    ${hasRoomBrowser() ? `<p class="blurb small">Open rooms</p><div class="rooms" id="roomList">${roomListHtml()}</div>` : ''}
-    <div class="row${sel('join')}"><input id="codeIn" class="code" maxlength="8" placeholder="CODE" value="${esc(settings.code)}" autocomplete="off" autocapitalize="characters" spellcheck="false"><button data-act="join" class="go-btn">Join</button></div>
-    ${onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : ''}
-    ${hasRoomBrowser() ? visRow(sel('vis')) : ''}
-    <div class="row${sel('host')}"><button data-act="host" class="go-btn">Host a room</button></div>`;
+    ${helpRow(sel('help'))}`;
   } else if (online.phase === 'connecting') {
-    body = `<p class="blurb">${online.isHost ? 'Opening a room…' : `Joining room <b>${esc(online.code)}</b>…`}</p>
-    <div class="row"><button data-act="leave">Cancel</button></div>`;
+    body = `<p class="blurb center">${online.isHost ? 'Opening a room…' : `Joining room <b>${esc(online.code)}</b>…`}</p>
+    <div class="btns"><button data-act="leave">Cancel</button></div>`;
   } else {
-    const players = online.roster().map((p) => `<li style="color:${PLAYER_CSS[colorIndex(p.id)]}">${esc(p.name)}${p.id === online.myId ? ' (you)' : ''}${p.id === 'p0' ? ' · host' : ''}</li>`).join('');
+    const players = online.roster().map((p) => `<li><i style="background:${PLAYER_CSS[colorIndex(p.id)]}"></i>${esc(p.name)}${p.id === online.myId ? ' <em>you</em>' : ''}${p.id === 'p0' ? ' <em>host</em>' : ''}</li>`).join('');
     const hostSettings = online.isHost ? `
+      ${sect('Match')}
       ${hasRoomBrowser() ? visRow(sel('vis')) : ''}
       ${pickRow(sel('env'), 'env', 'Arena', envName)}
       ${pickRow(sel('bots'), 'bots', 'AI birds', settings.bots ? `${settings.bots} per wave` : 'None')}
       ${pickRow(sel('allies'), 'allies', 'Players', settings.allies ? 'Team up' : 'Free for all')}
-      ${pickRow(sel('myDarts'), 'myDarts', 'Player darts', settings.myDarts ? 'On' : 'Off')}
-      ${pickRow(sel('enemyDarts'), 'enemyDarts', 'AI darts', settings.enemyDarts ? 'On' : 'Off')}
+      ${pickRow(sel('myDarts'), 'myDarts', 'Player darts', onOff(settings.myDarts))}
+      ${pickRow(sel('enemyDarts'), 'enemyDarts', 'AI darts', onOff(settings.enemyDarts))}
+      ${sect('View')}
       ${leadRow(sel('lead'))}
-    ${downcamRow(sel('downcam'))}
-      <div class="row${sel('go')}"><button data-act="go" class="go-btn">Start match</button></div>` : `${leadRow(sel('lead'))}
-    ${downcamRow(sel('downcam'))}<p class="blurb">Waiting for the host to start…</p>`;
-    body = `<p class="blurb small">Room code</p>
+      ${downcamRow(sel('downcam'))}
+      <button data-act="go" class="go-btn cta${sel('go')}">Start match</button>` : `${sect('View')}${leadRow(sel('lead'))}
+      ${downcamRow(sel('downcam'))}<p class="blurb center wait">Waiting for the host to start…</p>`;
+    body = `<p class="sect center">Room code</p>
     <div class="roomcode">${esc(online.code)}</div>
-    <div class="row"><button data-act="copy">Copy invite link</button><button data-act="leave">Leave</button></div>
-    ${onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : ''}
+    <div class="btns"><button data-act="copy">Copy invite link</button><button data-act="leave">Leave</button></div>
+    ${note}
+    ${sect(`Players · ${online.roster().length}`)}
     <ul class="players">${players}</ul>
     ${hostSettings}`;
   }
-  hud.overlay.innerHTML = `<div class="menu"><h1>Glide!</h1>${body}
-    <p class="hint">${isTouch ? 'Tap to choose' : online.active ? '↑↓ choose · ←→ change · Enter to start' : 'Type a name · Enter on a row to host or join'}</p></div>`;
+  hud.overlay.innerHTML = `<div class="menu side"><h1>Glide!</h1><div class="panel">${body}</div>
+    ${online.active ? menuHint('start') : isTouch ? '' : `<p class="hint">${kb('↑', '↓')} choose · ${kb('Enter')} on a row to join or host · type to set your name</p>`}</div>`;
+  showControls();
+  revealSel();
   if (browsing() && !roomsLive) refreshRooms();
   const nameIn = document.getElementById('nameIn') as HTMLInputElement | null;
   const codeIn = document.getElementById('codeIn') as HTMLInputElement | null;
@@ -292,7 +340,7 @@ function onlineAction(act: string) {
 let previewTimer = 0;
 /** Rebuild the world behind the title so it shows the chosen mode / arena. */
 function queuePreview() { clearTimeout(previewTimer); previewTimer = window.setTimeout(() => { if (mode === 'title') spawn(true); }, 220); }
-const MODES: GameMode[] = ['endless', 'arena', 'online'];
+const MODES: GameMode[] = MODE_TABS.map((m) => m.id);
 function menuChange(row: string, d: number) {
   if (row === 'mode') {
     const m = MODES[THREE.MathUtils.clamp(MODES.indexOf(settings.mode) + d, 0, MODES.length - 1)];
@@ -301,6 +349,7 @@ function menuChange(row: string, d: number) {
   else if (row === 'bots') settings.bots = THREE.MathUtils.clamp(settings.bots + d, 0, 12);
   else if (row === 'allies') settings.allies = !settings.allies;
   else if (row === 'lead') settings.lead = !settings.lead;
+  else if (row === 'help') settings.help = !settings.help;
   else if (row === 'downcam') settings.downcam = DOWNCAM_OPTS[(DOWNCAM_OPTS.indexOf(settings.downcam) + d + DOWNCAM_OPTS.length) % DOWNCAM_OPTS.length];
   else if (row === 'vis') { if (online.active) online.setPublic(!online.isPublic); else settings.public = !settings.public; }
   else if (row === 'rooms') { if (openRooms.length) roomSel = (roomSel + d + openRooms.length) % openRooms.length; }
@@ -598,7 +647,7 @@ function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall 
     // online: no game over, you're straight back in
     online.downed(by, how);
     const who = by && by !== 'ai' ? esc(online.nameOf(by)) : by === 'ai' ? 'a wild bird' : '';
-    hud.overlay.innerHTML = `<div><h1>${title}</h1>${who ? `<p>by <b>${who}</b></p>` : ''}<p>${online.kills} down · ${online.deaths} time${online.deaths === 1 ? '' : 's'} downed</p><div class="go" id="respawnIn">Back in the air in 3…</div><div class="row"><button data-act="menu">${isTouch ? 'Leave room' : 'Leave room (Esc)'}</button></div></div>`;
+    hud.overlay.innerHTML = `<div class="menu"><h1>${title}</h1><div class="panel center">${who ? `<p>by <b>${who}</b></p>` : ''}<p class="big">${online.kills} down · ${online.deaths} time${online.deaths === 1 ? '' : 's'} downed</p><div class="go" id="respawnIn">Back in the air in 3…</div><div class="btns"><button data-act="menu">${isTouch ? 'Leave room' : 'Leave room (Esc)'}</button></div></div></div>`;
     setTimeout(() => { if (mode === 'crashed' && !downcam.playing) hud.overlay.classList.remove('hidden'); }, 500);
     return;
   }
@@ -609,7 +658,7 @@ function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall 
   const what = getArena()
     ? `${getArena()!.name} · wave ${Math.max(1, dogfight.wave)} · ${dogfight.kills} shot down`
     : `${dist} m downhill${dogfight.kills ? ` · ${dogfight.kills} shot down` : ''}`;
-  hud.overlay.innerHTML = `<div><h1>${title}</h1><p><b>${final}</b> points · ${what}</p><p>${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div><div class="row"><button data-act="menu">${isTouch ? 'Menu' : 'Menu (Esc / B)'}</button></div></div>`;
+  hud.overlay.innerHTML = `<div class="menu"><h1>${title}</h1><div class="panel center"><p class="score"><b>${final}</b><span>points</span></p><p>${what}</p><p class="best${isBest ? ' new' : ''}">${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div><div class="btns"><button data-act="menu">${isTouch ? 'Menu' : 'Menu (Esc / B)'}</button></div></div></div>`;
   setTimeout(() => { if (mode === 'crashed' && !downcam.playing) hud.overlay.classList.remove('hidden'); }, 700);
 }
 
@@ -965,7 +1014,8 @@ function frame(now: number) {
       renderMenu();
     }
     if (nav.x && MENU_ROWS[menuRow] !== 'go' && rows.includes(MENU_ROWS[menuRow])) menuChange(MENU_ROWS[menuRow], nav.x);
-    if (settings.mode === 'online') {
+    if (nav.ok && MENU_ROWS[menuRow] === 'help' && rows.includes('help')) menuChange('help', 1); // A / Enter opens the controls list
+    else if (settings.mode === 'online') {
       const row = MENU_ROWS[menuRow];
       if (nav.ok && rows.includes(row) && ['host', 'join', 'go'].includes(row)) onlineAction(row);
       if (nav.ok && row === 'rooms' && openRooms[roomSel] && openRooms[roomSel].players < openRooms[roomSel].max) { settings.code = openRooms[roomSel].code; onlineAction('join'); }
