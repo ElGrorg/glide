@@ -41,7 +41,9 @@ const DART_RELOAD = 11;
 const DART_SPEED = 95;       // faster than anything but a long steep dive
 const DART_TURN = 2.4;       // rad/s: tracks anything but a well-timed hard break
 const DART_LIFE = 7;
-const DART_HIT_R = 2.0;      // proximity fuse
+const DART_HIT_R = 2.0;
+const MAX_LAG_MS = 400;     // online: favour the shooter's view by at most this much (a bad link shouldn't let you hit people long gone)
+const pastMe = new THREE.Vector3();      // proximity fuse
 const dartSpeed = () => (isSpace() ? MISSILE_SPEED : DART_SPEED);
 // Your homing darts: hold your nose on a bird to lock, then fire. Limited ammo that recharges.
 const LOCK_CONE = 0.26;     // ~15° either side of your nose
@@ -349,7 +351,9 @@ export class Enemy {
   dispose(scene: THREE.Scene) { scene.remove(this.mesh); }
 }
 
-interface Pea { mesh: THREE.Mesh; pos: THREE.Vector3; vel: THREE.Vector3; life: number; enemy: boolean; near: number; owner: string }
+/** `lag`: for a pea from another machine, how many ms behind real time its shooter saw you (it's judged
+ *  against where you were then, so a shot that looked on target on their screen lands here). */
+interface Pea { mesh: THREE.Mesh; pos: THREE.Vector3; vel: THREE.Vector3; life: number; enemy: boolean; near: number; owner: string; lag: number }
 
 interface MyDart { mesh: THREE.Mesh; pos: THREE.Vector3; vel: THREE.Vector3; life: number; target: Enemy | null }
 
@@ -460,7 +464,7 @@ export class Dogfight {
       const enemy = i >= 60;
       const mesh = new THREE.Mesh(geo, enemy ? theirs : mine);
       mesh.visible = false; scene.add(mesh);
-      this.peas.push({ mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, enemy, near: 99, owner: '' });
+      this.peas.push({ mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, enemy, near: 99, owner: '', lag: 0 });
     }
     this.peaLook = { geo, mine, theirs };
     // laser bolts: a thin core, over-bright so the bloom gives it a coloured halo
@@ -524,17 +528,41 @@ export class Dogfight {
     this.spawnT = 9; this.kills = 0; this.tailThreat = 0; this.dartLockProgress = 0; this.dartIncoming = Infinity;
   }
 
-  private shoot(enemy: boolean, from: THREE.Vector3, vel: THREE.Vector3, owner = enemy ? 'ai' : 'me', relay = true) {
+  private shoot(enemy: boolean, from: THREE.Vector3, vel: THREE.Vector3, owner = enemy ? 'ai' : 'me', relay = true, lag = 0) {
     const p = this.peas.find((q) => q.enemy === enemy && q.life <= 0);
     if (!p) return;
-    p.pos.copy(from); p.vel.copy(vel); p.life = peaLife(); p.near = 99; p.owner = owner;
+    p.pos.copy(from); p.vel.copy(vel); p.life = peaLife(); p.near = 99; p.owner = owner; p.lag = lag;
     p.mesh.visible = true;
     if (isSpace()) sfx.muzzle(from, vel.clone().multiplyScalar(0.9), enemy ? BOLT_THEIRS : BOLT_MINE);
     if (relay) this.onShot?.(from, vel, owner);
   }
 
-  /** A pea fired on another machine: it can hit you here (that machine never decides hits on you). */
-  addPea(from: THREE.Vector3, vel: THREE.Vector3, owner: string) { this.shoot(true, from, vel, owner, false); }
+  /** A pea fired on another machine: it can hit you here (that machine never decides hits on you).
+   *  `lagMs` = how far behind real time that machine drew you; the pea is judged against where you were then. */
+  addPea(from: THREE.Vector3, vel: THREE.Vector3, owner: string, lagMs = 0) { this.shoot(true, from, vel, owner, false, lagMs); }
+
+  /** Where you were over the last moment (online lag compensation), newest last. */
+  private history: { at: number; p: THREE.Vector3 }[] = [];
+  private recordHistory(pos: THREE.Vector3) {
+    const now = performance.now();
+    const h = this.history;
+    if (h.length && h[h.length - 1].p.distanceToSquared(pos) > 60 * 60) h.length = 0; // respawned: forget where you were
+    const old = h.length && now - h[0].at > MAX_LAG_MS + 100 ? h.shift()! : null;
+    h.push({ at: now, p: (old?.p ?? new THREE.Vector3()).copy(pos) });
+  }
+  /** Where you were `lagMs` ago (between the two recorded frames either side). */
+  private pastPos(lagMs: number, out: THREE.Vector3) {
+    const h = this.history, at = performance.now() - Math.min(lagMs, MAX_LAG_MS);
+    if (!h.length) return out;
+    if (at <= h[0].at) return out.copy(h[0].p);
+    for (let i = h.length - 1; i > 0; i--) {
+      if (h[i - 1].at <= at) {
+        const a = h[i - 1], b = h[i];
+        return out.lerpVectors(a.p, b.p, (at - a.at) / Math.max(1e-3, b.at - a.at));
+      }
+    }
+    return out.copy(h[h.length - 1].p);
+  }
 
   /** Online: a bird mirrored from the network (an AI bird run by the host, or another player). */
   addPuppet(kind: 'ai' | 'human', netId: string, role: Role, palette?: BirdPalette) {
@@ -620,6 +648,7 @@ export class Dogfight {
   /** Advance everything. `active` is false on the crash screen: enemies keep flying but hold fire.
    *  `inCloud`: you're inside a cloud, which breaks dart locks. */
   update(dt: number, t: number, me: Glider, fire: boolean, dart: boolean, active: boolean, inCloud = false): DogfightEvent[] {
+    this.recordHistory(me.pos);
     const g = me;
     const out: DogfightEvent[] = [];
     this.dartLockProgress = 0;
@@ -965,7 +994,10 @@ export class Dogfight {
           }
         }
       } else if (active && !this.isAlly(p.owner)) {
-        const d = segDist(prev, p.pos, g.pos);
+        // a pea from another machine is checked against where its shooter saw you (they draw you a bit in
+        // the past), so online hits line up with what they aimed at, just like hits on local birds
+        const at = p.lag > 0 ? this.pastPos(p.lag, pastMe) : g.pos;
+        const d = segDist(prev, p.pos, at);
         p.near = Math.min(p.near, d);
         if (g.trick && d < 3.5) { out.push({ type: 'dodged' }); p.life = 0; }   // a barrel roll shrugs off the burst
         else if (d < PLAYER_HIT_R) { if (this.hurtT <= 0) { out.push({ type: 'hitPlayer', by: p.owner }); this.hurtT = 0.8; } p.life = 0; }

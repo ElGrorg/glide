@@ -22,6 +22,7 @@ export const TEAM_CSS = ['#ff6a5c', '#5aa8ff'];
 
 const SEND_HZ = 20, AI_HZ = 15;
 const INTERP_DELAY = 110; // ms behind real time we draw other birds
+const DEFAULT_RTT = 120;   // ms, until a ping has measured the real round trip
 export const PLAYER_PALETTES: BirdPalette[] = [
   { body: 0xd9733a, belly: 0xf2d7b0, wing: 0xb85a2b, tip: 0x5b3a26 }, // orange (same as single player)
   { body: 0x46a85a, belly: 0xe2f0d0, wing: 0x2f7d40, tip: 0x173d20 }, // green
@@ -42,6 +43,8 @@ interface Remote extends PlayerInfo {
   lockOn: string; lockP: number;
   /** their health as they last reported it (a drop means they just took a hit) */
   hp: number;
+  /** round trip to them in ms (measured with pings; 0 = not measured yet) */
+  rtt: number;
 }
 interface AiPuppet { e: Enemy; buf: Snap[]; seen: number; target: string; lock: number; hp: number }
 
@@ -72,7 +75,7 @@ export class Online {
   private ai = new Map<string, AiPuppet>();
   private aiIds = new WeakMap<Enemy, string>();
   private nextAi = 1;
-  private sendT = 0; private aiT = 0;
+  private sendT = 0; private aiT = 0; private pingT = 0;
   private events: OnlineEvent[] = [];
   /** Host: AI-bird targets, one per other player (handed to Dogfight.targets). */
   targets: NetTarget[] = [];
@@ -169,7 +172,7 @@ export class Online {
     let r = this.remotes.get(id);
     if (!r) {
       r = {
-        id, name, kills: 0, deaths: 0, team: 0, alive: false, buf: [], puppet: null, lockOn: '', lockP: 0, hp: 3,
+        id, name, kills: 0, deaths: 0, team: 0, alive: false, buf: [], puppet: null, lockOn: '', lockP: 0, hp: 3, rtt: 0,
         target: { id, pos: new THREE.Vector3(), vel: new THREE.Vector3(), dir: new THREE.Vector3(0, 0, -1), speed: 34, brake: 0, trick: null, active: false, inCloud: false },
       };
       this.remotes.set(id, r);
@@ -249,7 +252,16 @@ export class Online {
       case 'shot': {
         if (this.phase !== 'playing') return;
         const owner = typeof m.o === 'string' ? m.o : from;
-        this.dogfight.addPea(vec(m.f), vec(m.v), owner);
+        // they aimed at where they drew you: INTERP_DELAY in the past, plus your update's trip to them and
+        // this shot's trip back. Judge the pea against where you were then, so what they saw is what they get.
+        const rtt = this.remotes.get(from)?.rtt || DEFAULT_RTT;
+        this.dogfight.addPea(vec(m.f), vec(m.v), owner, INTERP_DELAY + rtt);
+        break;
+      }
+      case 'pg': this.net.send({ t: 'po', to: from, ts: m.ts }); break;
+      case 'po': {
+        const r = this.remotes.get(from), sample = performance.now() - Number(m.ts);
+        if (r && sample >= 0 && sample < 3000) r.rtt = r.rtt ? r.rtt * 0.8 + sample * 0.2 : sample;
         break;
       }
       case 'dart': // a dart has been fired at you: it flies here, against your own bird
@@ -429,6 +441,8 @@ export class Online {
       tailCheck(df, r.puppet, g);
     }
 
+    this.pingT -= dt;
+    if (this.pingT <= 0) { this.pingT = 1; this.net.send({ t: 'pg', ts: Math.round(performance.now()) }); }
     this.sendT -= dt;
     if (this.sendT <= 0) {
       this.sendT = 1 / SEND_HZ;
@@ -467,11 +481,13 @@ function interp(e: Enemy, buf: Snap[], at: number) {
     const vel = b.v.lengthSq() > 0 ? b.v : tmpV.copy(FWD).applyQuaternion(b.q).multiplyScalar(b.s);
     e.pos.copy(b.p).addScaledVector(vel, Math.max(0, ahead));
     e.quat.copy(b.q); e.speed = b.s;
+    if (isSpace()) e.sv.copy(b.v);
   } else {
     const k = THREE.MathUtils.clamp((at - a.at) / Math.max(1, b.at - a.at), 0, 1);
     e.pos.lerpVectors(a.p, b.p, k);
     e.quat.slerpQuaternions(a.q, b.q, k);
     e.speed = a.s + (b.s - a.s) * k;
+    if (isSpace()) e.sv.lerpVectors(a.v, b.v, k);
   }
   e.dir.copy(FWD).applyQuaternion(e.quat);
   tmpE.setFromQuaternion(tmpQ.copy(e.quat), 'YXZ');
