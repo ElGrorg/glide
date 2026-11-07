@@ -82,6 +82,18 @@ export function shotImpact(a: THREE.Vector3, b: THREE.Vector3, pad = 0): number 
   return -1;
 }
 
+const losA = new THREE.Vector3(), losB = new THREE.Vector3();
+/** True if nothing (ground, tree, rock, pillar, arch) blocks the straight line between two birds.
+ *  Trims a couple of metres off each end so a bird skimming the ground or a trunk still counts as seen. */
+export function inSight(a: THREE.Vector3, b: THREE.Vector3): boolean {
+  const len = a.distanceTo(b);
+  if (len < 5) return true;
+  const trim = 2 / len;
+  losA.lerpVectors(a, b, trim); losB.lerpVectors(a, b, 1 - trim);
+  return shotImpact(losA, losB) < 0;
+}
+const LOS_EVERY = 0.1; // re-check line of sight ten times a second (the sweep isn't free)
+
 const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpC = new THREE.Vector3();
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 
@@ -129,6 +141,9 @@ export class Enemy {
   /** Dart lock progress, seconds (hunters only), and reload timer. */
   dartLock = 0;
   dartCd = rand(3, 6);
+  /** Line of sight, re-checked every LOS_EVERY s: from this bird to its target, and from you to this bird. */
+  seesTgt = true; seesTgtT = 0;
+  mySight = true; mySightT = 0;
   heading = 0;
   /** Online play: 'ai' = a host-run bird mirrored on this machine, 'human' = another player. Puppets
    *  skip the brain here; their position comes over the network and their own machine decides hits. */
@@ -617,7 +632,13 @@ export class Dogfight {
         }
         // dart lock: keep you inside its cone, at range, out of the clouds, and it launches a dart
         e.dartCd -= dt;
-        const inCone = e.dir.angleTo(toPlayer) < DART_CONE && dist > DART_RANGE_MIN && dist < DART_RANGE_MAX && !inCloud;
+        let inCone = e.dir.angleTo(toPlayer) < DART_CONE && dist > DART_RANGE_MIN && dist < DART_RANGE_MAX && !inCloud;
+        // ...and in clear sight: go round a ridge, a pillar or a tree and the lock breaks outright
+        if (inCone) {
+          e.seesTgtT -= dt;
+          if (e.seesTgtT <= 0) { e.seesTgtT = LOS_EVERY; e.seesTgt = inSight(e.pos, g.pos); }
+          if (!e.seesTgt) { inCone = false; e.dartLock = 0; }
+        } else e.seesTgtT = 0; // check straight away the next time you're in its cone
         if (active && this.enemyDarts && e.dartCd <= 0 && inCone) {
           if (e.dartLock === 0 && isMe) out.push({ type: 'dartLocking' });
           e.dartLock += dt;
@@ -686,8 +707,14 @@ export class Dogfight {
       const d = tmpA.copy(e.pos).sub(g.pos); const dist = d.length();
       if (dist > LOCK_RANGE * 1.25) continue;
       const err = g.dir.angleTo(d);
-      if (e === this.locked && err < LOCK_KEEP) { best = e; break; }
-      if (dist < LOCK_RANGE && err < bestErr) { best = e; bestErr = err; }
+      const keep = e === this.locked && err < LOCK_KEEP;
+      if (!keep && !(dist < LOCK_RANGE && err < bestErr)) { e.mySightT = 0; continue; }
+      // only a bird in clear sight: lose it behind a ridge, a pillar or a tree and the lock breaks
+      e.mySightT -= dt;
+      if (e.mySightT <= 0) { e.mySightT = LOS_EVERY; e.mySight = inSight(g.pos, e.pos); }
+      if (!e.mySight) continue;
+      if (keep) { best = e; break; }
+      best = e; bestErr = err;
     }
     if (!active) best = null;
     if (best && best === this.locked) { /* keep */ }
