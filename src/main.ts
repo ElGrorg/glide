@@ -546,8 +546,50 @@ function onGate(e: GateEvent) {
   }
 }
 
-function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash') {
+// ---------- Your bird going down: it falls and tumbles like the AI birds, then comes to rest ----------
+const fallVel = new THREE.Vector3();
+const fallDir = new THREE.Vector3(0, 0, -1);
+let fallSpin = 0, fallSettled = false, fallSmoke = false;
+const fallM = new THREE.Matrix4(), fallQ = new THREE.Quaternion(), FALL_ORIGIN = new THREE.Vector3(), Z_AXIS = new THREE.Vector3(0, 0, 1);
+/** `wall`: you flew into a tree, rock or pillar (you bounce back off it). */
+function startFall(shot: boolean, wall: boolean) {
+  const v = Math.max(glider.speed, 12);
+  if (shot) fallVel.copy(glider.dir).multiplyScalar(v);               // carries on, then drops
+  else if (wall) fallVel.copy(glider.dir).multiplyScalar(-0.12 * v).setY(3); // knocked back off it
+  else { fallVel.copy(glider.dir).multiplyScalar(0.3 * v); fallVel.y = Math.abs(fallVel.y) * 0.4 + 4; } // skids and bounces
+  fallDir.copy(glider.dir);
+  fallSpin = 0; fallSettled = false; fallSmoke = shot;
+}
+function updateFall(dt: number) {
+  const p = glider.pos;
+  if (!fallSettled) {
+    fallVel.y -= 18 * dt;
+    fallVel.multiplyScalar(Math.exp(-0.3 * dt));
+    p.addScaledVector(fallVel, dt);
+    const ground = terrainHeight(p.x, p.z) + 0.45;
+    if (p.y < ground) {
+      p.y = ground;
+      if (fallVel.y < -6) { puffs.burst(p, tmp.set(0, 4, 0), 4, 10, 0.8); audio.thud(); shake = Math.max(shake, 0.5); }
+      fallVel.set(fallVel.x * 0.45, Math.abs(fallVel.y) * 0.2, fallVel.z * 0.45);
+      if (fallVel.length() < 2.5) { fallSettled = true; fallVel.set(0, 0, 0); fallDir.y = 0; if (fallDir.lengthSq() < 1e-4) fallDir.set(0, 0, -1); fallDir.normalize(); }
+    }
+    if (fallVel.lengthSq() > 1) fallDir.lerp(tmp.copy(fallVel).normalize(), 1 - Math.exp(-5 * dt)).normalize();
+    fallSpin += dt * 8 * Math.min(1, fallVel.length() / 10);
+    // shot down: trails smoke and feathers all the way down
+    if (fallSmoke && Math.random() < 30 * dt) puffs.burst(p, tmp.set(0, 2, 0), 2, 1, 0.7);
+  }
+  glider.speed = fallVel.length();
+}
+/** Point the bird mesh nose-first along its fall, spinning about its own length. */
+function poseFall() {
+  const d = fallDir;
+  fallM.lookAt(FALL_ORIGIN, d, Math.abs(d.y) > 0.98 ? Z_AXIS : WORLD_UP); // (a matrix lookAt points -Z, the beak, at the target)
+  bird.quaternion.setFromRotationMatrix(fallM).multiply(fallQ.setFromAxisAngle(Z_AXIS, fallSpin));
+}
+
+function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall = false) {
   mode = 'crashed'; crashTimer = 0; shake = 1;
+  startFall(how !== 'crash', wall);
   audio.thud(); rumble(1, 300);
   // whoever hit you in the last few seconds gets the credit (and the down cam watches from their bird)
   const by = how !== 'crash' || t - lastHitT < 6 ? lastAttacker : '';
@@ -996,7 +1038,7 @@ function frame(now: number) {
     const seen = new Set<string>();
     for (const o of nearby) {
       const gap = obstacleGap(o, p.x, p.y, p.z) - 0.5; // bird radius
-      if (gap < 0 && mode === 'flying') { crash(); break; }
+      if (gap < 0 && mode === 'flying') { crash('Crunch!', 'crash', true); break; }
       if (gap < 6) {
         seen.add(o.id);
         const prev = near.get(o.id);
@@ -1102,8 +1144,7 @@ function frame(now: number) {
     online.preUpdate();
     for (const ev of dogfight.update(dt, t, glider, false, false, false)) if (online.phase === 'playing') onDogfight(ev);
     online.postUpdate(dt, glider, bird.quaternion, false);
-    glider.speed *= Math.exp(-4 * dt);
-    glider.spin += dt * 6;
+    updateFall(dt);
   } else {
     // title: gentle demo glide that hovers in place
     glider.roll = Math.sin(t * 0.6) * 0.25;
@@ -1125,7 +1166,8 @@ function frame(now: number) {
   }
 
   glider.applyTo(bird);
-  bird.animate(t, glider.brake, glider.speed, glider.tuck, flapAmount(glider.speed, glider.brake));
+  if (mode === 'crashed') { poseFall(); bird.animate(t, 0.1, glider.speed, 0.6, 0); } // limp wings, like a downed AI bird
+  else bird.animate(t, glider.brake, glider.speed, glider.tuck, flapAmount(glider.speed, glider.brake));
 
   // shadow
   const gp = glider.pos;
