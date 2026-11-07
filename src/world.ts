@@ -68,6 +68,18 @@ export function cruiseThrust(y: number): number {
   return CRUISE_DRAG * CRUISE_SPEED * CRUISE_SPEED * (1 - smoothstep(y, 230, 380));
 }
 
+/** Ground effect: skimming low over the ground cushions the wings and pushes you along (m/s^2).
+ *  Full push at 1 m or lower, fading out by 6 m, so it only pays to fly right on the deck. Level
+ *  skimming tops out where drag catches up (~50 m/s), so it's a reward for staying low, not free speed.
+ *  The same for every bird: you, the AI, and online players. None in space. */
+export const SKIM_HEIGHT = 6;
+const SKIM_ACCEL = 4;
+export function skimThrust(x: number, y: number, z: number): number {
+  if (isSpace()) return 0;
+  const clear = y - terrainHeight(x, z);
+  return SKIM_ACCEL * THREE.MathUtils.clamp((SKIM_HEIGHT - clear) / (SKIM_HEIGHT - 1), 0, 1);
+}
+
 function arenaCanyon(x: number, z: number): number {
   // winding channels where a ridged noise crosses zero
   const v = Math.abs(n2(x / 330, z / 330));

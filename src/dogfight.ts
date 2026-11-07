@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { BirdMesh, MAX_LIFT_G, type BirdPalette, type Glider } from './bird'; // MAX_LIFT_G: same hardest pull as yours
-import { terrainHeight, nearestBranch, cruiseThrust, getArena, obstaclesNear, obstacleGap, ARENA_R, CRUISE_SPEED, arenaBarrier, isSpace, type Obstacle } from './world';
+import { terrainHeight, nearestBranch, cruiseThrust, skimThrust, getArena, obstaclesNear, obstacleGap, ARENA_R, CRUISE_SPEED, arenaBarrier, isSpace, type Obstacle } from './world';
 import { ShipMesh, type Craft } from './ship';
 import { SPACE_CRUISE, SPACE_BOOST, SPACE_PITCH_RATE, SPACE_R, SPACE_CEIL, SPACE_SPAWN_Y, LASER_SPEED, LASER_LIFE, MISSILE_SPEED, PICKUP_FUEL, spaceTurnMul, stepSpaceVel, stepFuel, nearestPickup, grabPickup } from './space';
 import type { CloudPuffs } from './puffs';
@@ -205,7 +205,7 @@ export class Enemy {
     // and can flare its wings to slow down
     const brake = wantSpeed < this.speed - 6 ? Math.min(1, (this.speed - wantSpeed) / 15) : 0;
     const drag = (DRAG + BRAKE_DRAG * brake) * this.speed * this.speed;
-    this.speed += (-G * this.dir.y - drag + cruiseThrust(this.pos.y)) * dt; // + arena flapping, same as yours
+    this.speed += (-G * this.dir.y - drag + cruiseThrust(this.pos.y) + skimThrust(this.pos.x, this.pos.y, this.pos.z)) * dt; // + flapping and ground skim, same as yours
     this.speed = THREE.MathUtils.clamp(this.speed, 4, MAX_SPEED);
 
     // barrel roll: a quick sideways juke

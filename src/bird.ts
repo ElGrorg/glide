@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { InputState } from './input';
-import { cruiseThrust } from './world';
+import { cruiseThrust, skimThrust } from './world';
 import { SPACE_CRUISE, SPACE_PITCH_RATE, SPACE_ROLL_RATE, SPACE_YAW_RATE, spaceTurnMul, stepSpaceVel, stepFuel } from './space';
 
 const G = 9.8;
@@ -306,10 +306,11 @@ export class Glider {
     return finished;
   }
 
-  /** Speed after one step: gravity along the path, drag, air-brake, and tuck thrust. */
+  /** Speed after one step: gravity along the path, drag, air-brake, arena flapping and the ground-skim push. */
   private energy(dt: number, climb: number) {
     const drag = (DRAG * (1 - 0.8 * this.tuck) + BRAKE_DRAG * this.brake) * this.speed * this.speed;
-    const acc = -G * climb - drag + TUCK_THRUST * this.tuck + cruiseThrust(this.pos.y);
+    const acc = -G * climb - drag + TUCK_THRUST * this.tuck + cruiseThrust(this.pos.y)
+      + skimThrust(this.pos.x, this.pos.y, this.pos.z); // ground effect: skim low for a push
     return THREE.MathUtils.clamp(this.speed + acc * dt, 4, MAX_SPEED);
   }
 

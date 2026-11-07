@@ -145,7 +145,7 @@ const LAYOUT_NAMES = { flight: ['Flight sticks', 'left stick pitches, right stic
 input.onSchemeChange = (sc) => { showControlsSafe(); popup(LAYOUT_NAMES[sc][0], LAYOUT_NAMES[sc][1]); };
 const audio = new WindAudio();
 const $ = (id: string) => document.getElementById(id)!;
-const hud = { wave: $('wave'), hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('stats'), darts: $('darts'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
+const hud = { wave: $('wave'), hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo'), stats: $('stats'), darts: $('darts'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
 // ---------- Phones play in landscape ----------
@@ -555,7 +555,7 @@ let score = 0, combo = 0, comboTimer = 0, slowmo = 0, crashTimer = 0, shake = 0;
 let startZ = 0;
 const near = new Map<string, { gap: number; type: string }>(); // obstacle id -> closest gap while passing
 const prevPos = new THREE.Vector3();
-let waterSkim = false, trickMinClear = 99, loopMinClear = 99, tunnelChain = 0, inCanyonRun = false, wasInCloud = false;
+let trickMinClear = 99, loopMinClear = 99, tunnelChain = 0, inCanyonRun = false, wasInCloud = false;
 let inLoop = false;
 let waveClearedT = 0, outOfBounds = 0;
 let hp = 3, hpRegen = 0, hitFlash = 0, dodgeCd = 0, warnBeep = 0, dartHint = 0;
@@ -1367,11 +1367,10 @@ function frame(now: number) {
       const wp = new THREE.Vector3(p.x, terrainHeight(p.x, p.z) + 0.3, p.z);
       for (let i = 0; i < n; i++) puffs.burst(wp, glider.vel.clone().multiplyScalar(0.15).setY(4), 3, 1, 0.5);
     }
-    waterSkim = onWater;
     // ground skim
     if (clearance < 5 && mode === 'flying') {
       score += dt * (5 - clearance) * glider.speed * 0.35 * multiplier();
-      if (dogfight.chargeDart(dt * 0.08 * (5 - clearance) / 5)) { popup('Dart reloaded', 'skimming the ground'); audio.beep(1600, 0.1, 0.07); }
+      if (dogfight.chargeDart(dt * 0.08 * (5 - clearance) / 5)) { popup('Dart reloaded'); audio.beep(1600, 0.1, 0.07); }
       comboTimer = Math.max(comboTimer, 1.5);
     }
 
@@ -1509,8 +1508,6 @@ function frame(now: number) {
     hud.warn.textContent = isSpace() ? '◀ LEAVING THE BATTLE: TURN BACK ▶' : '◀ NO WAY OVER THE WALL: TURN BACK ▶';
     hud.warn.style.opacity = String(0.5 + 0.5 * Math.sin(t * 10));
   }
-  hud.skim.textContent = danger > 0 ? (waterSkim ? 'WATER SKIM' : 'SKIM') : 'CANYON RUN';
-  hud.skim.style.opacity = String(danger > 0 ? 0.6 + danger * 0.4 : inCanyonRun && mode === 'flying' ? 0.7 : 0);
   hud.score.textContent = mode === 'title' || replaying ? '' : String(Math.floor(score));
   hud.combo.style.opacity = combo > 0 && mode === 'flying' ? '1' : '0';
   hud.combo.textContent = `combo x${multiplier().toFixed(1)}`;
