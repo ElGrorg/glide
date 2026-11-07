@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, ARENAS, ARENA_R, ARENA_LID_R, arenaBarrier, setArena, getArena, SPACE_ARENA, isSpace, type Obstacle } from './world';
-import { SpaceScene, buildField, holeThreaded, fleet, clearSpawnY, spaceEdge, SPACE_R, SPACE_CRUISE, SPACE_BOOST } from './space';
+import { SpaceScene, buildField, holeThreaded, fleet, clearSpawnY, spaceEdge, grabPickup, boostPickups, SPACE_R, SPACE_CRUISE, SPACE_BOOST, PICKUP_FUEL } from './space';
 import { ShipMesh, type Craft } from './ship';
 import { route, BIOME_NAME } from './route';
 import { CloudPuffs } from './puffs';
@@ -184,12 +184,12 @@ const KEYS_HELP = (): Help => [
   [kb('R') + ' or right-click', 'Homing dart (hold your nose on a bird for 1 s to lock)'], [kb('V'), 'Change layout'], [kb('T'), 'First-person view'],
 ];
 // space fighters
-const SPACE_PAD: Help = [[`Left stick ${kb('↑↓')}`, 'Pitch'], [`Right stick ${kb('←→')}`, 'Roll'], [`Right stick ${kb('↑')} / ${kb('↓')}`, 'Boost / brake'],
-  [kb('RT') + ' / ' + kb('X'), 'Lasers'], [kb('Y'), 'Missile'], [kb('A') + ' / ' + kb('LB') + ' / ' + kb('RB'), 'Boost'], [kb('LT'), 'Brake (turns tighter)'], [kb('R3'), 'Cockpit view']];
+const SPACE_PAD: Help = [[`Left stick ${kb('↑↓')}`, 'Pitch'], [`Right stick ${kb('←→')}`, 'Roll'], [`Right stick ${kb('↑')} / ${kb('↓')}`, 'Boost / drift'],
+  [kb('RT') + ' / ' + kb('X'), 'Lasers'], [kb('Y'), 'Missile'], [kb('A') + ' / ' + kb('LB') + ' / ' + kb('RB'), 'Boost'], [kb('LT'), 'Drift: slide and aim'], [kb('R3'), 'Cockpit view']];
 const SPACE_KEYS: Help = [[kb('W', 'S') + ' / ' + kb('↑', '↓'), 'Pitch'], [kb('A', 'D') + ' / ' + kb('←', '→'), 'Roll'], [kb('Z', 'C'), 'Yaw'],
-  [kb('Shift'), 'Boost'], [kb('Space'), 'Brake (turns tighter)'], [kb('F') + ' or click', 'Lasers'],
+  [kb('Shift'), 'Boost'], [kb('Space'), 'Drift: slide and aim'], [kb('F') + ' or click', 'Lasers'],
   [kb('R') + ' or right-click', 'Missile (hold your nose on a fighter for 1 s to lock)'], [kb('T'), 'Cockpit view']];
-const SPACE_TOUCH: Help = [['Left thumb ↑↓', 'Pitch'], ['Right thumb ←→', 'Roll'], ['Right thumb ↑ / ↓', 'Boost / brake'],
+const SPACE_TOUCH: Help = [['Left thumb ↑↓', 'Pitch'], ['Right thumb ←→', 'Roll'], ['Right thumb ↑ / ↓', 'Boost / drift'],
   ['Hold FIRE', 'Lasers'], ['Tap MSL', 'Missile, once your nose has locked a fighter'], ['Tap VIEW', 'Cockpit view']];
 const TOUCH_HELP = (): Help => input.scheme === 'flight'
   ? [['Left thumb ↑↓', 'Dive / pull up (keep pulling down to loop)'], ['Right thumb ←→', 'Roll, all the way round (bank holds)'], ['Hold FIRE', 'Shoot'], ['Tap DART', 'Homing dart, once your nose has locked a bird']]
@@ -296,7 +296,7 @@ const MODE_TABS: { id: GameMode; label: string }[] = [
 const MODE_BLURB: Record<GameMode, string> = {
   endless: 'An endless mountainside. Skim the ground, thread the trees, punch through the clouds, and shoot down the birds hunting you.',
   arena: 'A walled-in basin to fight in, wave after wave. You flap to hold your speed, but climbing still costs it and diving still builds it.',
-  space: 'Space fighters in the middle of a capital-ship battle over a wild planet. No air, no stalling: cruise, boost to change pace, brake to whip round. Run the carrier hangar bays and the tunnels through the cruisers, skim the hulls, and lead missiles into them.',
+  space: 'Space fighters in the middle of a capital-ship battle over a wild planet. No air, no stalling: cruise, boost (grab the gold pickups to refill it), drift to swing your nose round. Run the carrier hangar bays and the tunnels through the cruisers, skim the hulls, and lead missiles into them.',
   online: 'Fight in the arena with other players anywhere: join an open room, type a friend\'s code, or host your own.',
 };
 const onOff = (b: boolean) => (b ? 'On' : 'Off');
@@ -716,12 +716,11 @@ function addCloseCall(gap: number, label: string) {
   const veryClose = gap < 1.2;
   // flying dangerously pays: a slipstream speed kick and a chunk of dart recharge, more the closer you cut it
   const kick = veryClose ? 7 : 3 + (3.5 - gap) * 1.2;
-  // (space: no slipstream off a rock in a vacuum, but the adrenaline tops up your boost)
-  if (isSpace()) glider.boostFuel = Math.min(1, glider.boostFuel + (veryClose ? 0.35 : 0.15));
-  else glider.speed = Math.min(95, glider.speed + kick);
+  // (space: no slipstream off a hull in a vacuum, and boost only comes from pickups)
+  if (!isSpace()) glider.speed = Math.min(95, glider.speed + kick);
   const refilled = dogfight.chargeDart(veryClose ? 0.5 : 0.25);
-  const perks = `${isSpace() ? 'boost refuelled' : `+${Math.round(kick * 3.6)} km/h`}${refilled ? ' · DART RELOADED' : ''}`;
-  popup(veryClose ? `INSANE! +${pts}` : `Close call +${pts}`, `${label} · ${gap.toFixed(1)} m · ${perks}`);
+  const perks = isSpace() ? (refilled ? 'MISSILE RELOADED' : '') : `+${Math.round(kick * 3.6)} km/h${refilled ? ' · DART RELOADED' : ''}`;
+  popup(veryClose ? `INSANE! +${pts}` : `Close call +${pts}`, `${label} · ${gap.toFixed(1)} m${perks ? ` · ${perks}` : ''}`);
   if (refilled) audio.beep(1600, 0.1, 0.07);
   audio.whoosh(veryClose ? 1 : 0.6);
   rumble(veryClose ? 0.8 : 0.4, 120);
@@ -1253,16 +1252,20 @@ function frame(now: number) {
       glider.steerToward(wind.dir, Math.min(1, 1.5 * dt));
     }
     const finished = glider.step(dt, inp);
-    // space: flying through a carrier's hangar bay or a cruiser's tunnel pays, and tops up your boost
+    // space: flying through a carrier's hangar bay or a cruiser's tunnel pays; boost pickups refill the tank
     if (isSpace()) {
       const th = holeThreaded(prevPos, glider.pos);
       if (th) {
         const pts = Math.round((th.kind === 'hangar' ? 450 : 300) * multiplier());
         score += pts; combo++; comboTimer = 4;
-        glider.boostFuel = Math.min(1, glider.boostFuel + 0.5);
         dogfight.chargeDart(0.35);
-        popup(th.kind === 'hangar' ? `Hangar run +${pts}` : `Through the hull +${pts}`, 'boost refuelled');
+        popup(th.kind === 'hangar' ? `Hangar run +${pts}` : `Through the hull +${pts}`, 'missile charged');
         audio.whoosh(1); rumble(0.5, 120);
+      }
+      if (mode === 'flying' && grabPickup(glider.pos)) {
+        glider.boostFuel = Math.min(1, glider.boostFuel + PICKUP_FUEL);
+        popup('Boost +', `tank ${Math.round(glider.boostFuel * 100)}%`);
+        audio.beep(1400, 0.08, 0.08); setTimeout(() => audio.beep(2100, 0.1, 0.07), 70); rumble(0.3, 60);
       }
     }
     online.preUpdate();
@@ -1533,7 +1536,7 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
-(window as any).__glide = { settings, glider, dogfight, world, gates, spaceScene, fleet, isSpace, camera, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
+(window as any).__glide = { settings, glider, dogfight, world, gates, spaceScene, fleet, boostPickups, isSpace, camera, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
 
 // ?debug exposes the game objects to the console (used for the two-browser online tests)
 if (new URLSearchParams(location.search).has('debug')) {

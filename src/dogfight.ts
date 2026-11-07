@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { BirdMesh, MAX_LIFT_G, type BirdPalette, type Glider } from './bird'; // MAX_LIFT_G: same hardest pull as yours
 import { terrainHeight, nearestBranch, cruiseThrust, skimThrust, getArena, obstaclesNear, obstacleGap, ARENA_R, CRUISE_SPEED, arenaBarrier, isSpace, type Obstacle } from './world';
 import { ShipMesh, type Craft } from './ship';
-import { SPACE_CRUISE, SPACE_BOOST, SPACE_BRAKE, SPACE_PITCH_RATE, SPACE_R, SPACE_CEIL, SPACE_SPAWN_Y, LASER_SPEED, LASER_LIFE, MISSILE_SPEED, spaceTurnMul, stepThrottle, stepFuel } from './space';
+import { SPACE_CRUISE, SPACE_BOOST, SPACE_PITCH_RATE, SPACE_R, SPACE_CEIL, SPACE_SPAWN_Y, LASER_SPEED, LASER_LIFE, MISSILE_SPEED, PICKUP_FUEL, spaceTurnMul, stepSpaceVel, stepFuel, nearestPickup, grabPickup } from './space';
 import type { CloudPuffs } from './puffs';
 
 // Dogfights: enemy birds that either hunt you (spawn behind) or flee from you (spawn ahead).
@@ -97,6 +97,8 @@ export class Enemy {
   speed = 34;
   /** Space throttle: same fuel tank, brake and boost as yours. */
   boostFuel = 1; boost = 0; brakeAmt = 0;
+  /** Space: the actual velocity (the nose can point off it while drifting). */
+  sv = new THREE.Vector3();
   roll = 0;
   spin = 0;
   hp = 3;
@@ -143,7 +145,7 @@ export class Enemy {
     this.hp = role === 'hunter' ? 4 : 3;
     scene.add(this.mesh);
   }
-  get vel() { return tmpB.copy(this.dir).multiplyScalar(this.speed); }
+  get vel() { return isSpace() && this.sv.lengthSq() > 1 ? tmpB.copy(this.sv) : tmpB.copy(this.dir).multiplyScalar(this.speed); }
 
   /** Steer, keep clear of the ground, move. */
   fly(dt: number, want: THREE.Vector3, wantSpeed: number, rate: number, minClear: number) {
@@ -222,20 +224,26 @@ export class Enemy {
     if (this.pos.y < floor) this.pos.y = floor;
   }
 
-  /** Space: no gravity, no lift. Throttle and turn rates are exactly yours (space.ts); what makes an enemy
-   *  good is choosing when to brake into a turn and when to burn its boost. */
+  /** Space: no gravity, no lift. Thrust, turn rates and fuel are exactly yours (space.ts); what makes an
+   *  enemy good is choosing when to drift its nose round onto you, when to burn its boost, and going for
+   *  boost pickups when its tank runs low. */
   private flySpace(dt: number, want: THREE.Vector3, wantSpeed: number, rate: number, minClear: number) {
+    if (this.sv.lengthSq() < 1) this.sv.copy(this.dir).multiplyScalar(Math.max(this.speed, SPACE_CRUISE));
+    // where it's actually going (while drifting that isn't where the nose points)
+    const mv = tmpC.copy(this.sv).normalize();
     // the planet: stay well up off it (it can still be chased down into it)
-    const la = tmpA.copy(this.pos).addScaledVector(this.dir, this.speed * 1.5);
+    const la = tmpA.copy(this.pos).addScaledVector(mv, this.speed * 1.5);
     const short = terrainHeight(la.x, la.z) + minClear + 25 - la.y;
     if (short > 0) { want.y = Math.max(want.y, Math.min(0.8, short * 0.04)); }
     want.normalize();
     // ship hulls: look ahead and steer out along the way the hull surface faces (round it, or through the hole)
     let avoiding = false;
-    for (const ahead of [0.45, 1.1]) {
-      const look = tmpA.copy(this.pos).addScaledVector(this.dir, Math.max(14, this.speed * ahead));
+    // (turns are wide out here, so it looks well ahead, about two turn radii, marching along its path so a
+    // thin deck can't slip between two looks; the first hull it meets is the one to turn from)
+    const reach = Math.max(40, this.speed * 2.3);
+    for (let d = 12; d <= reach && !avoiding; d += 12) {
+      const look = tmpA.copy(this.pos).addScaledVector(mv, d);
       for (const o of obstaclesNear(look.x, look.z, 12, nearObs)) {
-        if (o.top < look.y - 14 || o.y0 > look.y + 14) continue;
         const gap = obstacleGap(o, look.x, look.y, look.z);
         if (gap > 10) continue;
         avoiding = true;
@@ -244,32 +252,39 @@ export class Enemy {
         const gy = obstacleGap(o, look.x, look.y + e, look.z) - obstacleGap(o, look.x, look.y - e, look.z);
         const gz = obstacleGap(o, look.x, look.y, look.z + e) - obstacleGap(o, look.x, look.y, look.z - e);
         const gl = Math.hypot(gx, gy, gz) || 1;
-        const k = (ahead < 1 ? 2.6 : 1.2) * (1 + Math.max(0, -gap) / 6);
+        const k = (1.5 + 4 * (1 - d / reach)) * (1 + Math.max(0, -gap) / 6);
         want.x += (gx / gl) * k; want.y += (gy / gl) * k; want.z += (gz / gl) * k;
       }
     }
     want.normalize();
     // the edge of the field: read where it'll be in two seconds and come back in, within its own turn
     {
-      const ahead = tmpA.copy(this.pos).addScaledVector(this.dir, this.speed * 2);
+      const ahead = tmpA.copy(this.pos).addScaledVector(mv, this.speed * 2);
       const r = Math.hypot(ahead.x, ahead.z) || 1;
       if (r > SPACE_R - 80) { const k = THREE.MathUtils.clamp((r - SPACE_R + 80) / 80, 0, 1.5); want.x -= (ahead.x / r) * k; want.z -= (ahead.z / r) * k; }
       if (ahead.y > SPACE_CEIL - 90) want.y -= THREE.MathUtils.clamp((ahead.y - SPACE_CEIL + 90) / 60, 0, 1.5);
       want.normalize();
     }
+    // low on boost and nothing better to do: go and grab a pickup
+    if (this.boostFuel < 0.4 && this.state === 'cruise' && !avoiding) {
+      const pk = nearestPickup(this.pos, 450);
+      if (pk) { want.lerp(tmpB.set(pk.x - this.pos.x, pk.y - this.pos.y, pk.z - this.pos.z).normalize(), 0.75).normalize(); }
+    }
     // throttle, by the same rules as yours
-    let brake = wantSpeed < SPACE_CRUISE - 4 ? THREE.MathUtils.clamp((SPACE_CRUISE - wantSpeed) / (SPACE_CRUISE - SPACE_BRAKE), 0, 1) : 0;
     let boost = wantSpeed > SPACE_CRUISE + 4 ? THREE.MathUtils.clamp((wantSpeed - SPACE_CRUISE) / (SPACE_BOOST - SPACE_CRUISE), 0, 1) : 0;
-    // a hard turn coming up (a dodge, a rock, getting round onto your tail): brake into it, like you would
+    // drift: in a knife fight, with you off to the side and close, cut the engines and swing the nose
+    // round onto you (never near a hull: the drift would carry it straight in)
     const ang = this.dir.angleTo(want);
-    if (ang > 0.85 && (avoiding || this.state !== 'cruise')) { brake = Math.max(brake, THREE.MathUtils.clamp((ang - 0.85) / 0.8, 0, 1)); boost = 0; }
+    let drift = 0;
+    if (!avoiding && this.state === 'attack' && ang > 0.5 && this.seenPos.distanceTo(this.pos) < 240) drift = THREE.MathUtils.clamp((ang - 0.5) / 0.6, 0, 1);
+    if (drift > 0 || avoiding) boost = 0; // (boosting would only widen the turn away from a hull)
     // and keep a little boost in the tank for when it matters, unless it's already running for it
     if (this.boostFuel < 0.3 && this.state !== 'evade' && this.breakT <= 0) boost = 0;
-    this.brakeAmt += (brake - this.brakeAmt) * Math.min(1, 8 * dt);
+    this.brakeAmt += (drift - this.brakeAmt) * Math.min(1, 8 * dt);
     const b = stepFuel(this, this.brakeAmt > 0.05 ? 0 : boost, dt);
     this.boost += (b - this.boost) * Math.min(1, 6 * dt);
-    this.speed = stepThrottle(this.speed, this.boost, this.brakeAmt, dt);
-    // turn: never faster than your stick can turn you at the same throttle
+    if (grabPickup(this.pos)) this.boostFuel = Math.min(1, this.boostFuel + PICKUP_FUEL);
+    // turn: never faster than your stick can turn your nose at the same throttle
     const cap = SPACE_PITCH_RATE * spaceTurnMul(this.boost, this.brakeAmt);
     if (avoiding) rate = cap;
     rate = Math.min(rate, cap);
@@ -281,7 +296,8 @@ export class Enemy {
     const yawRate = dh / Math.max(dt, 1e-3);
     const bank = THREE.MathUtils.clamp(Math.atan(-yawRate * this.speed / G), -1.4, 1.4);
     this.roll += (bank - this.roll) * Math.min(1, 6 * dt);
-    this.pos.addScaledVector(this.dir, this.speed * dt);
+    this.speed = stepSpaceVel(this.sv, this.dir, this.boost, this.brakeAmt, dt);
+    this.pos.addScaledVector(this.sv, dt);
     arenaBarrier(this.pos);
     const floor = terrainHeight(this.pos.x, this.pos.z) + 2.5;
     if (this.pos.y < floor) this.pos.y = floor;

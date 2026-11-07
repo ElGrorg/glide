@@ -73,12 +73,13 @@ export class ShipMesh extends THREE.Group implements Craft {
     for (const s of [-1, 1]) { const c = core.clone(); c.position.set(0.68 * s, -0.08, 1.86); this.add(c); }
   }
 
-  /** `brake` 0..1 lifts the brake flaps; the flames grow with speed (boosting = long and bright). */
+  /** `brake` 0..1 (a drift) lifts the flaps and cuts the engines; the flames grow with speed (boosting = long and bright). */
   animate(t: number, brake: number, speed: number) {
     const thr = THREE.MathUtils.clamp((speed - SPACE_BRAKE) / (SPACE_BOOST - SPACE_BRAKE), 0, 1);
     const boost = THREE.MathUtils.clamp((speed - SPACE_CRUISE - 4) / (SPACE_BOOST - SPACE_CRUISE - 4), 0, 1);
     const flick = 1 + Math.sin(t * 47) * 0.08 + Math.sin(t * 31) * 0.06;
-    for (const f of this.flames) f.scale.set(1 + boost * 0.4, 1 + boost * 0.4, (0.35 + thr * 1.3 + boost * 2.2) * flick);
+    const cut = 1 - brake * 0.85; // drifting: the engines are cut
+    for (const f of this.flames) f.scale.set(1 + boost * 0.4, 1 + boost * 0.4, Math.max(0.05, (0.35 + thr * 1.3 + boost * 2.2) * flick * cut));
     for (const h of this.flaps) h.rotation.x = -brake * 1.15;
   }
 }

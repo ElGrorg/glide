@@ -3,22 +3,28 @@ import { hash2, makeNoise2D } from './noise';
 import type { Obstacle } from './world';
 
 // ---------- Space mode: a capital-ship battle in low orbit over a wild planet ----------
-// No air up here, so no gliding and no stall: every fighter cruises at the same speed, can boost (on a
-// fuel gauge that refills) to change pace, or brake to slow right down and turn much tighter.
+// No air up here, so no gliding and no stall. Every fighter cruises at the same speed and turns wide.
+// Boost (on a fuel tank you can only refill from the boost pickups dotted round the battle) changes pace.
+// Brake is a drift: the engines cut, your momentum carries on along the old line, and the nose swings round
+// much faster, so you can slide sideways and aim off-axis. Let go and the engines haul you onto the new line.
 // Your fighter and the enemy fighters all use exactly these numbers.
 
 export const SPACE_CRUISE = 55;      // m/s: hands-off speed
 export const SPACE_BOOST = 95;       // full boost
-export const SPACE_BRAKE = 22;       // full brake
-const SPACE_ACCEL = 28;              // m/s^2 speeding up
-const SPACE_DECEL = 42;              // m/s^2 slowing down
-export const SPACE_PITCH_RATE = 1.45; // rad/s at cruise
-export const SPACE_ROLL_RATE = 2.8;
-export const SPACE_YAW_RATE = 0.8;
-const BRAKE_TURN_BONUS = 0.85;       // full brake turns up to 85% faster...
-const BOOST_TURN_CUT = 0.3;          // ...full boost 30% slower
-export const BOOST_TIME = 3.5;       // seconds of boost on a full tank
-const BOOST_RECHARGE = 7;            // seconds to refill an empty tank
+export const SPACE_BRAKE = 22;       // the slowest a long drift bleeds down to
+/** Engine thrust, m/s^2: how hard the engines can bend or change your velocity. With the nose turning at
+ *  SPACE_PITCH_RATE this gives a turn radius of about 65 m at cruise (a boosted turn is far wider). */
+export const SPACE_THRUST = 45;
+const DRIFT_THRUST = 5;              // drifting: the engines are cut, only the trim jets nudge your path
+const DRIFT_BLEED = 4;               // m/s^2 of speed lost per second while drifting
+export const SPACE_PITCH_RATE = 0.85; // rad/s the nose turns at cruise
+export const SPACE_ROLL_RATE = 2.6;
+export const SPACE_YAW_RATE = 0.5;
+const DRIFT_TURN_BONUS = 1.2;        // drifting, the nose swings up to 2.2x as fast...
+const BOOST_TURN_CUT = 0.3;          // ...boosting, 30% slower
+export const BOOST_TIME = 4;         // seconds of boost on a full tank
+/** One boost pickup refills this much of the tank. */
+export const PICKUP_FUEL = 0.4;
 /** Lasers: much faster than peas (they're light, after all), so the range is longer too. */
 export const LASER_SPEED = 260;
 export const LASER_LIFE = 0.8;
@@ -27,24 +33,34 @@ export const MISSILE_SPEED = 140;
 
 const { clamp, smoothstep, lerp } = THREE.MathUtils;
 
-/** Speed the throttle is heading for. `boost` and `brake` are 0..1 (brake wins). */
-export function spaceTargetSpeed(boost: number, brake: number) {
-  if (brake > 0.05) boost = 0;
-  return SPACE_CRUISE + (SPACE_BOOST - SPACE_CRUISE) * boost - (SPACE_CRUISE - SPACE_BRAKE) * brake;
+/** Speed the engines are pushing for. `boost` 0..1. */
+export function spaceTargetSpeed(boost: number) {
+  return SPACE_CRUISE + (SPACE_BOOST - SPACE_CRUISE) * boost;
 }
-/** One step of the throttle: speed eases toward the target at the shared accel / decel rates. */
-export function stepThrottle(speed: number, boost: number, brake: number, dt: number) {
-  const d = spaceTargetSpeed(boost, brake) - speed;
-  return speed + clamp(d, -SPACE_DECEL * dt, SPACE_ACCEL * dt);
+/** How much faster (or slower) than normal the nose can turn: drifting frees it, boosting stiffens it. */
+export function spaceTurnMul(boost: number, drift: number) {
+  return 1 + DRIFT_TURN_BONUS * drift - BOOST_TURN_CUT * (drift > 0.05 ? 0 : boost);
 }
-/** How much faster (or slower) than normal you can turn: braking tightens it, boosting widens it. */
-export function spaceTurnMul(boost: number, brake: number) {
-  return 1 + BRAKE_TURN_BONUS * brake - BOOST_TURN_CUT * (brake > 0.05 ? 0 : boost);
+const _push = new THREE.Vector3();
+/** One step of a fighter's motion: the engines push its velocity toward (nose x target speed), at most
+ *  SPACE_THRUST hard; drifting (0..1) cuts them, so the velocity coasts on wherever the nose points.
+ *  Updates `vel` in place and returns the new speed. */
+export function stepSpaceVel(vel: THREE.Vector3, nose: THREE.Vector3, boost: number, drift: number, dt: number) {
+  const sp = vel.length();
+  const target = lerp(spaceTargetSpeed(boost), sp, drift);
+  _push.copy(nose).multiplyScalar(target).sub(vel);
+  const max = lerp(SPACE_THRUST, DRIFT_THRUST, drift) * dt, l = _push.length();
+  if (l > max) _push.multiplyScalar(max / l);
+  vel.add(_push);
+  // (a drift still bleeds speed, even with the nose swung round off the line)
+  if (drift > 0.05) { const v = vel.length(); if (v > SPACE_BRAKE) vel.multiplyScalar(Math.max(SPACE_BRAKE, v - DRIFT_BLEED * drift * dt) / v); }
+  return vel.length();
 }
-/** Boost fuel 0..1 after a step. Returns the boost you actually get (0 once the tank runs dry). */
+/** Boost fuel 0..1 after a step. It doesn't refill by itself (only pickups do). Returns the boost you
+ *  actually get (0 once the tank runs dry). */
 export function stepFuel(f: { boostFuel: number }, want: number, dt: number) {
   const b = f.boostFuel > 0.01 ? want : 0;
-  f.boostFuel = clamp(f.boostFuel + (b > 0.05 ? -b * dt / BOOST_TIME : dt / BOOST_RECHARGE), 0, 1);
+  if (b > 0.05) f.boostFuel = clamp(f.boostFuel - b * dt / BOOST_TIME, 0, 1);
   return b;
 }
 
@@ -273,7 +289,50 @@ export function buildField() {
       }
     }
   }
+  placePickups();
 }
+// ---------- Boost pickups: the only way to refill your boost (and the enemies' too) ----------
+export interface Pickup { x: number; y: number; z: number; /** seconds until it's back (0 = there now) */ wait: number }
+export const PICKUP_RESPAWN = 12;
+const PICKUP_R = 8; // fly within this of one to grab it
+let pickups: Pickup[] = [];
+export const boostPickups = () => pickups;
+/** Scatter the pickups through open space (none tucked against a hull), more of them out in the lane. */
+function placePickups() {
+  pickups = [];
+  const near: Obstacle[] = [];
+  for (let i = 0; i < 400 && pickups.length < 18; i++) {
+    const a = hash2(i, 3, 620) * Math.PI * 2, r = Math.sqrt(hash2(i, 4, 620)) * (SPACE_R - 90);
+    const x = Math.cos(a) * r, z = pickups.length % 3 ? Math.sin(a) * r : (hash2(i, 5, 620) - 0.5) * 140; // every third in the lane
+    const y = lerp(FIELD_LO + 50, FIELD_HI - 20, hash2(i, 6, 620));
+    if (pickups.some((p) => Math.hypot(p.x - x, p.y - y, p.z - z) < 120)) continue;
+    near.length = 0;
+    if (shipPartsNear(x, z, 30, near).some((o) => spaceGap(o, x, y, z) < 30)) continue;
+    pickups.push({ x, y, z, wait: 0 });
+  }
+}
+/** The closest pickup that's there now, within `maxD`. */
+export function nearestPickup(p: THREE.Vector3, maxD: number): Pickup | null {
+  let best: Pickup | null = null, bd = maxD;
+  for (const k of pickups) {
+    if (k.wait > 0) continue;
+    const d = Math.hypot(k.x - p.x, k.y - p.y, k.z - p.z);
+    if (d < bd) { bd = d; best = k; }
+  }
+  return best;
+}
+/** Grab a pickup if `p` is on one. Returns true if it was taken (it's then gone for PICKUP_RESPAWN s). */
+export function grabPickup(p: THREE.Vector3): boolean {
+  for (const k of pickups) {
+    if (k.wait <= 0 && Math.abs(k.x - p.x) < PICKUP_R && Math.abs(k.z - p.z) < PICKUP_R && Math.hypot(k.x - p.x, k.y - p.y, k.z - p.z) < PICKUP_R) {
+      k.wait = PICKUP_RESPAWN;
+      return true;
+    }
+  }
+  return false;
+}
+export function stepPickups(dt: number) { for (const k of pickups) k.wait = Math.max(0, k.wait - dt); }
+
 export function fieldStats() { return { ships: ships.length, boxes: ships.reduce((a, s) => a + s.boxes.length, 0) }; }
 
 // ---------- Look: planet, sky, ships ----------
@@ -303,6 +362,8 @@ export class SpaceScene {
   backdrop = new THREE.Group();
   private field = new THREE.Group();
   private fx = new BattleFx();
+  private pickupMeshes: THREE.Group[] = [];
+  private pickupT = 0;
   readonly sunDir = SUN_DIR.clone();
 
   constructor(scene: THREE.Scene) {
@@ -450,6 +511,15 @@ export class SpaceScene {
     }
     for (const s of ships) this.field.add(shipMesh(s));
     this.fx.reset();
+    // boost pickups: a spinning gold crystal in a ring, with a glow you can spot from across the battle
+    this.pickupMeshes = boostPickups().map((k) => {
+      const g = new THREE.Group(), pickupMats = pickupMatsOf();
+      g.add(new THREE.Mesh(pickupGeo.gem, pickupMats.gem), new THREE.Mesh(pickupGeo.ring, pickupMats.ring));
+      const halo = new THREE.Sprite(pickupMats.halo); halo.scale.setScalar(26); g.add(halo);
+      g.position.set(k.x, k.y, k.z);
+      this.field.add(g);
+      return g;
+    });
   }
 
   /** The backdrop follows the camera; the two fleets keep trading broadsides. */
@@ -457,7 +527,40 @@ export class SpaceScene {
     this.backdrop.position.copy(camPos);
     if (!this.group.visible) return;
     this.fx.update(dt);
+    stepPickups(dt);
+    this.pickupT += dt;
+    boostPickups().forEach((k, i) => {
+      const g = this.pickupMeshes[i];
+      if (!g) return;
+      g.visible = k.wait <= 0;
+      g.position.y = k.y + Math.sin(this.pickupT * 1.6 + i) * 0.8;
+      g.children[0].rotation.y = this.pickupT * 2.2;
+      g.children[1].rotation.set(Math.PI / 2 + Math.sin(this.pickupT + i) * 0.4, this.pickupT * 0.9, 0);
+    });
   }
+}
+
+// ---------- Pickup looks ----------
+const pickupGeo = {
+  gem: new THREE.OctahedronGeometry(2.2, 0).scale(1, 1.5, 1),
+  ring: new THREE.TorusGeometry(4, 0.25, 6, 24),
+};
+let pickupLook: { gem: THREE.Material; ring: THREE.Material; halo: THREE.SpriteMaterial } | null = null;
+const pickupMatsOf = () => (pickupLook ??= {
+  gem: new THREE.MeshBasicMaterial({ color: 0xffd23f }),
+  ring: new THREE.MeshBasicMaterial({ color: 0xfff1a8 }),
+  halo: new THREE.SpriteMaterial({ map: glowTexture(), color: 0xffb020, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }),
+});
+/** A soft white blob (for glows and flashes). */
+function glowTexture() {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 64;
+  const cx = cv.getContext('2d');
+  if (cx) {
+    const gr = cx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.25, 'rgba(255,255,255,0.75)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    cx.fillStyle = gr; cx.fillRect(0, 0, 64, 64);
+  }
+  return new THREE.CanvasTexture(cv);
 }
 
 // ---------- Ship meshes ----------
@@ -622,14 +725,7 @@ class BattleFx {
     im.setColorAt(0, this.c.set(0)); // makes the colour buffer
     this.group.add(im);
     // flashes: soft glowing blobs that swell and fade
-    const cv = document.createElement('canvas'); cv.width = cv.height = 64;
-    const cx = cv.getContext('2d');
-    if (cx) {
-      const gr = cx.createRadialGradient(32, 32, 0, 32, 32, 32);
-      gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.25, 'rgba(255,255,255,0.75)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
-      cx.fillStyle = gr; cx.fillRect(0, 0, 64, 64);
-    }
-    const tex = new THREE.CanvasTexture(cv);
+    const tex = glowTexture();
     for (let i = 0; i < FLASH_MAX; i++) {
       const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
       sp.visible = false; sp.renderOrder = 3;
