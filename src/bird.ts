@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { InputState } from './input';
 import { cruiseThrust } from './world';
-import { SPACE_CRUISE, SPACE_PITCH_RATE, SPACE_ROLL_RATE, SPACE_YAW_RATE, spaceTurnMul, stepThrottle, stepFuel } from './space';
+import { SPACE_CRUISE, SPACE_PITCH_RATE, SPACE_ROLL_RATE, SPACE_YAW_RATE, spaceTurnMul, stepSpaceVel, stepFuel } from './space';
 
 const G = 9.8;
 const DRAG = 0.0016;        // equilibrium glide ~36 m/s at -12°
@@ -123,7 +123,7 @@ export class Glider {
   /** The bird's own up vector (free mode keeps it exact; classic derives it from pitch + heading). */
   up = new THREE.Vector3(0, 1, 0);
   private loopTurn = 0;  // free mode: accumulated pitch rotation, a loop is a full turn
-  /** Space fighter: no lift, no gravity, no stall. Cruise speed, boost (fuel gauge) and brake. */
+  /** Space fighter: no lift, no gravity, no stall. Cruise speed, boost (fuel tank) and drift (the brake). */
   space = false;
   boost = 0;             // 0..1 boost actually being applied (eased)
   boostFuel = 1;         // 0..1
@@ -167,6 +167,7 @@ export class Glider {
     this.boost = 0; this.boostFuel = 1;
     if (this.space) { this.speed = SPACE_CRUISE; this.pitch = 0; this.syncQuat(); }
     this.updateDir();
+    if (this.space) this.vel.copy(this.dir).multiplyScalar(this.speed);
   }
 
   private updateDir() {
@@ -388,15 +389,15 @@ export class Glider {
   }
 
   /** Space flight: the sticks turn the ship about its own axes at fixed rates (any attitude goes, no gravity
-   *  pulling the nose anywhere), and the nose is the flight path. Brake slows you and tightens every turn;
-   *  boost speeds you up and widens them. Enemy fighters fly by exactly the same numbers (space.ts). */
+   *  pulling the nose anywhere), and the engines haul your velocity round after the nose. Brake is a drift:
+   *  engines cut, momentum carries on, the nose swings round faster. Boost speeds you up and widens turns.
+   *  Enemy fighters fly by exactly the same numbers (space.ts). */
   private stepSpace(dt: number, inp: InputState): 'loop' | null {
     let finished: 'loop' | null = null;
     this.free = true; this.trick = null; this.spin = 0; this.tuck = 0;
     this.brake += (inp.brake - this.brake) * Math.min(1, 8 * dt);
     const want = stepFuel(this, inp.brake > 0.05 ? 0 : inp.boost, dt);
     this.boost += (want - this.boost) * Math.min(1, 6 * dt);
-    this.speed = stepThrottle(this.speed, this.boost, this.brake, dt);
     const tm = spaceTurnMul(this.boost, this.brake);
     // classic / wing layouts set a bank angle in the air; out here the stick is always a roll rate
     this.pitchVel += (inp.pitch * SPACE_PITCH_RATE * tm - this.pitchVel) * Math.min(1, 6 * dt);
@@ -416,7 +417,8 @@ export class Glider {
     if (Math.abs(this.loopTurn) > TAU - 0.5) { this.loopTurn = 0; finished = 'loop'; }
     this.overTop = this.up.y < 0;
     this.slip += (-this.yawVel * 0.35 - this.slip) * Math.min(1, 6 * dt);
-    this.vel.copy(this.dir).multiplyScalar(this.speed);
+    if (this.vel.lengthSq() < 1) this.vel.copy(this.dir).multiplyScalar(this.speed);
+    this.speed = stepSpaceVel(this.vel, this.dir, this.boost, this.brake, dt);
     this.pos.addScaledVector(this.vel, dt);
     return finished;
   }
