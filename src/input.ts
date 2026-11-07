@@ -100,8 +100,17 @@ export class Input {
     addEventListener('blur', () => this.keys.clear());
 
     const opts = { passive: false } as AddEventListenerOptions;
+    // Menus, lobby and crash screens (and the rotate-your-phone card) handle their own touches: they scroll
+    // and take taps, so don't block them or turn them into a flight stick.
+    const onScreen = (e: Event) => !!(e.target as HTMLElement | null)?.closest?.('#overlay:not(.hidden), #rotate');
     target.addEventListener('touchstart', (e: any) => {
       if (typing(e)) return; // let the text box take focus
+      if (onScreen(e)) {
+        this.state.source = 'touch';
+        // a tap on the screen itself (not on a button) still counts, e.g. "tap to fly again"
+        if (!(e.target as HTMLElement).closest('[data-act], #rotate')) this.pressed = true;
+        return;
+      }
       e.preventDefault();
       this.state.source = 'touch';
       this.pressed = true;
@@ -127,6 +136,7 @@ export class Input {
       }
     }, opts);
     target.addEventListener('touchmove', (e: any) => {
+      if (onScreen(e)) return; // let the menu scroll
       e.preventDefault();
       for (const t of (Array.from((e as TouchEvent).changedTouches) as Touch[])) {
         if (t.identifier === this.stickId) {
@@ -146,6 +156,7 @@ export class Input {
       }
     }, opts);
     const end = (e: any) => {
+      if (onScreen(e)) return;
       e.preventDefault();
       for (const t of (Array.from((e as TouchEvent).changedTouches) as Touch[])) {
         if (t.identifier === this.stickId) { this.stickId = null; this.stickVec = { x: 0, y: 0 }; this.showStick(false); }

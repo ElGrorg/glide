@@ -89,6 +89,26 @@ const $ = (id: string) => document.getElementById(id)!;
 const hud = { wave: $('wave'), hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('stats'), darts: $('darts'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
+// ---------- Phones play in landscape ----------
+// Held upright, a card asks you to turn the phone (index.html, #rotate) and a solo game waits for you.
+const portraitQ = matchMedia('(orientation: portrait) and (pointer: coarse)');
+/** Where the browser allows it (Android Chrome), go full screen and lock to landscape. iPhones can't lock,
+ *  so there the rotate card does the job. Called from a tap. */
+function goLandscape() {
+  if (!isTouch) return;
+  const el = document.documentElement as Partial<HTMLElement>;
+  const orient = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+  const lock = () => orient?.lock?.('landscape').catch(() => {});
+  try {
+    if (document.fullscreenElement) lock();
+    else if (el.requestFullscreen) el.requestFullscreen.call(document.documentElement, { navigationUI: 'hide' }).then(lock, () => {});
+  } catch { /* not allowed here (an iframe, an iPhone): the rotate card covers it */ }
+}
+const rotateEl = document.getElementById('rotate');
+if (rotateEl) {
+  if (isTouch && (document.documentElement as Partial<HTMLElement>).requestFullscreen && 'lock' in (screen.orientation ?? {})) rotateEl.classList.add('canlock');
+  rotateEl.addEventListener('click', goLandscape);
+}
 // Controls help: [keys, what they do] pairs, laid out as a key list in the menu's "Controls" panel.
 type Help = [string, string][];
 const kb = (...keys: string[]) => keys.map((x) => `<kbd>${x}</kbd>`).join('');
@@ -207,6 +227,14 @@ function helpRow(sel: string) {
   return `<button class="opt toggle${sel}" data-act="help:1"><span class="lab">Controls</span><span class="chev">${settings.help ? 'Hide ▴' : 'Show ▾'}</span></button>
     ${settings.help ? '<div class="controls" id="controls"></div>' : ''}`;
 }
+/** A phone on its side (landscape, not much height): the menu splits into two columns so it fits without
+ *  scrolling: the title and the main buttons on the left, the settings on the right. */
+const compactQ = matchMedia('(orientation: landscape) and (max-height: 540px)');
+compactQ.addEventListener?.('change', () => { if (!hud.overlay.classList.contains('hidden') && mode === 'title') renderMenu(); });
+const splitMenu = (left: string, right: string, hint = '') => `<div class="menu split">
+    <div class="col"><h1>Glide!</h1><div class="panel">${left}</div>${hint}</div>
+    <div class="panel col sets">${right}</div>
+  </div>`;
 function renderMenu() {
   if (settings.mode === 'online') { renderOnlineMenu(); return; }
   const rows = menuRows() as readonly string[];
@@ -215,19 +243,21 @@ function renderMenu() {
   const envName = settings.env === ARENAS.length ? 'Random' : ARENAS[settings.env].name;
   const envBlurb = settings.env === ARENAS.length ? 'A different arena every match' : ARENAS[settings.env].blurb;
   const arena = settings.mode === 'arena';
-  hud.overlay.innerHTML = `<div class="menu side">
-    <h1>Glide!</h1>
-    <div class="panel">
-      ${modeRow(sel('mode'))}
-      <p class="blurb">${MODE_BLURB[settings.mode]}</p>
-      ${arena ? `${sect('Match')}${pickRow(sel('env'), 'env', 'Arena', envName, envBlurb)}${pickRow(sel('enemies'), 'enemies', 'Enemies', `${settings.enemies} per wave`)}` : ''}
+  const head = `${modeRow(sel('mode'))}<p class="blurb">${MODE_BLURB[settings.mode]}</p>`;
+  const sets = `${arena ? `${sect('Match')}${pickRow(sel('env'), 'env', 'Arena', envName, envBlurb)}${pickRow(sel('enemies'), 'enemies', 'Enemies', `${settings.enemies} per wave`)}` : ''}
       ${sect('Darts')}
       ${pickRow(sel('myDarts'), 'myDarts', 'Your darts', onOff(settings.myDarts))}
       ${pickRow(sel('enemyDarts'), 'enemyDarts', 'Enemy darts', onOff(settings.enemyDarts))}
       ${sect('View')}
       ${leadRow(sel('lead'))}
-      ${downcamRow(sel('downcam'))}
-      <button data-act="go" class="go-btn cta${sel('go')}">Fly!</button>
+      ${downcamRow(sel('downcam'))}`;
+  const cta = `<button data-act="go" class="go-btn cta${sel('go')}">Fly!</button>`;
+  hud.overlay.innerHTML = compactQ.matches ? splitMenu(head + cta, sets + helpRow(sel('help')), menuHint('fly')) : `<div class="menu side">
+    <h1>Glide!</h1>
+    <div class="panel">
+      ${head}
+      ${sets}
+      ${cta}
       ${helpRow(sel('help'))}
     </div>
     ${menuHint('fly')}
@@ -261,50 +291,67 @@ function renderOnlineMenu() {
   const sel = (r: string) => (MENU_ROWS[menuRow] === r ? ' sel' : '');
   const envName = settings.env === ARENAS.length ? 'Random' : ARENAS[settings.env].name;
   const note = onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : '';
+  const compact = compactQ.matches;
+  const hint = online.active ? menuHint('start') : isTouch ? '' : `<p class="hint">${kb('↑', '↓')} choose · ${kb('Enter')} on a row to join or host · type to set your name</p>`;
+  const view = `${sect('View')}${leadRow(sel('lead'))}${downcamRow(sel('downcam'))}`;
   let body = '';
   if (!online.active) {
+    const name = `<div class="opt"><label class="lab" for="nameIn">Your name</label><span class="ctl"><input id="nameIn" maxlength="16" placeholder="Bird" value="${esc(settings.name)}" autocomplete="off" spellcheck="false"></span></div>`;
+    const rooms = hasRoomBrowser() ? `${sect('Open rooms')}<div class="rooms${sel('rooms')}" id="roomList">${roomListHtml()}</div>` : '';
+    const join = `${sect('Join with a code')}
+    <div class="opt join${sel('join')}"><input id="codeIn" class="code" maxlength="8" placeholder="CODE" value="${esc(settings.code)}" autocomplete="off" autocapitalize="characters" spellcheck="false"><button data-act="join" class="go-btn">Join</button></div>
+    ${note}`;
+    const vis = hasRoomBrowser() ? visRow(sel('vis')) : '';
+    const host = `<button data-act="host" class="go-btn cta${sel('host')}">Host a room</button>`;
+    if (compact) {
+      // left: who you are and the two ways in; right: the open rooms and the settings
+      hud.overlay.innerHTML = splitMenu(`${modeRow(sel('mode'))}${name}${join}${host}`, `${rooms}${vis ? sect('Your room') + vis : ''}${view}${helpRow(sel('help'))}`, hint);
+      bindOnlineInputs();
+      return;
+    }
     body = `${modeRow(sel('mode'))}
     <p class="blurb">${hasRoomBrowser() ? MODE_BLURB.online : 'Fight in the arena with friends anywhere: different houses, Wi-Fi or phone data. One of you hosts a room and shares its code; everyone else joins with it.'}</p>
-    <div class="opt"><label class="lab" for="nameIn">Your name</label><span class="ctl"><input id="nameIn" maxlength="16" placeholder="Bird" value="${esc(settings.name)}" autocomplete="off" spellcheck="false"></span></div>
-    ${hasRoomBrowser() ? `${sect('Open rooms')}<div class="rooms${sel('rooms')}" id="roomList">${roomListHtml()}</div>` : ''}
-    ${sect('Join with a code')}
-    <div class="opt join${sel('join')}"><input id="codeIn" class="code" maxlength="8" placeholder="CODE" value="${esc(settings.code)}" autocomplete="off" autocapitalize="characters" spellcheck="false"><button data-act="join" class="go-btn">Join</button></div>
-    ${note}
+    ${name}
+    ${rooms}
+    ${join}
     ${sect('Host your own')}
-    ${hasRoomBrowser() ? visRow(sel('vis')) : ''}
-    <button data-act="host" class="go-btn cta${sel('host')}">Host a room</button>
-    ${sect('View')}
-    ${leadRow(sel('lead'))}
-    ${downcamRow(sel('downcam'))}
+    ${vis}
+    ${host}
+    ${view}
     ${helpRow(sel('help'))}`;
   } else if (online.phase === 'connecting') {
     body = `<p class="blurb center">${online.isHost ? 'Opening a room…' : `Joining room <b>${esc(online.code)}</b>…`}</p>
     <div class="btns"><button data-act="leave">Cancel</button></div>`;
   } else {
     const players = online.roster().map((p) => `<li><i style="background:${PLAYER_CSS[colorIndex(p.id)]}"></i>${esc(p.name)}${p.id === online.myId ? ' <em>you</em>' : ''}${p.id === 'p0' ? ' <em>host</em>' : ''}</li>`).join('');
-    const hostSettings = online.isHost ? `
+    const match = online.isHost ? `
       ${sect('Match')}
       ${hasRoomBrowser() ? visRow(sel('vis')) : ''}
       ${pickRow(sel('env'), 'env', 'Arena', envName)}
       ${pickRow(sel('bots'), 'bots', 'AI birds', settings.bots ? `${settings.bots} per wave` : 'None')}
       ${pickRow(sel('allies'), 'allies', 'Players', settings.allies ? 'Team up' : 'Free for all')}
       ${pickRow(sel('myDarts'), 'myDarts', 'Player darts', onOff(settings.myDarts))}
-      ${pickRow(sel('enemyDarts'), 'enemyDarts', 'AI darts', onOff(settings.enemyDarts))}
-      ${sect('View')}
-      ${leadRow(sel('lead'))}
-      ${downcamRow(sel('downcam'))}
-      <button data-act="go" class="go-btn cta${sel('go')}">Start match</button>` : `${sect('View')}${leadRow(sel('lead'))}
-      ${downcamRow(sel('downcam'))}<p class="blurb center wait">Waiting for the host to start…</p>`;
-    body = `<p class="sect center">Room code</p>
+      ${pickRow(sel('enemyDarts'), 'enemyDarts', 'AI darts', onOff(settings.enemyDarts))}` : '';
+    const start = online.isHost ? `<button data-act="go" class="go-btn cta${sel('go')}">Start match</button>` : '<p class="blurb center wait">Waiting for the host to start…</p>';
+    const room = `<p class="sect center">Room code</p>
     <div class="roomcode">${esc(online.code)}</div>
     <div class="btns"><button data-act="copy">Copy invite link</button><button data-act="leave">Leave</button></div>
     ${note}
     ${sect(`Players · ${online.roster().length}`)}
-    <ul class="players">${players}</ul>
-    ${hostSettings}`;
+    <ul class="players">${players}</ul>`;
+    if (compact) {
+      // left: the room, who's in and the start button; right: the match settings
+      hud.overlay.innerHTML = splitMenu(room + start, match + view, hint);
+      bindOnlineInputs();
+      return;
+    }
+    body = `${room}${match}${view}${start}`;
   }
   hud.overlay.innerHTML = `<div class="menu side"><h1>Glide!</h1><div class="panel">${body}</div>
-    ${online.active ? menuHint('start') : isTouch ? '' : `<p class="hint">${kb('↑', '↓')} choose · ${kb('Enter')} on a row to join or host · type to set your name</p>`}</div>`;
+    ${hint}</div>`;
+  bindOnlineInputs();
+}
+function bindOnlineInputs() {
   showControls();
   revealSel();
   if (browsing() && !roomsLive) refreshRooms();
@@ -360,18 +407,31 @@ function menuChange(row: string, d: number) {
   saveSettings(); renderMenu();
 }
 let startReq = false, menuReq = false;
+// The mouse acts on press. A finger acts when it lifts without having moved, so dragging to scroll the menu
+// never flips a setting on the way.
+let tap: { id: number; x: number; y: number } | null = null;
 hud.overlay.addEventListener('pointerdown', (e) => {
-  const act = (e.target as HTMLElement).closest('[data-act]')?.getAttribute('data-act');
+  if (e.pointerType === 'mouse') menuAct(e.target as HTMLElement);
+  else tap = { id: e.pointerId, x: e.clientX, y: e.clientY };
+});
+hud.overlay.addEventListener('pointerup', (e) => {
+  if (tap && tap.id === e.pointerId && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) < 14) menuAct(e.target as HTMLElement);
+  tap = null;
+});
+hud.overlay.addEventListener('pointercancel', () => { tap = null; });
+function menuAct(target: HTMLElement) {
+  const act = target.closest('[data-act]')?.getAttribute('data-act');
   if (!act) return;
   audio.start();
   const [k, v] = act.split(':');
+  if (['go', 'host', 'join', 'joinroom'].includes(k)) goLandscape();
   if (k === 'joinroom') { settings.code = cleanCode(v); onlineAction('join'); return; }
   if (settings.mode === 'online' && ['host', 'join', 'leave', 'copy', 'go'].includes(k)) { onlineAction(k); return; }
   if (k === 'go') startReq = true;
   else if (k === 'menu') menuReq = true;
   else if (k === 'mode') { menuRow = 0; menuChange('mode', MODES.indexOf(v as GameMode) - MODES.indexOf(settings.mode)); }
   else { menuRow = MENU_ROWS.indexOf(k as typeof MENU_ROWS[number]); menuChange(k, Number(v)); }
-});
+}
 function goToMenu() {
   if (online.phase === 'playing') online.leave();
   mode = 'title';
@@ -999,6 +1059,8 @@ function frame(now: number) {
   let dt = Math.min(0.05, (now - last) / 1000);
   const realDt = dt;
   last = now;
+  // phone held upright: a solo game holds still behind the rotate card (an online match can't wait)
+  if (portraitQ.matches && mode === 'flying' && online.phase !== 'playing') { input.poll(); renderer.render(scene, camera); return; }
   input.lockScheme = online.active ? 'flight' : null; // online: everyone flies the same layout
   const inp = input.poll();
   onlineEvents();
