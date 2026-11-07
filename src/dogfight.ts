@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BirdMesh, type BirdPalette, type Glider } from './bird';
+import { BirdMesh, MAX_LIFT_G, type BirdPalette, type Glider } from './bird'; // MAX_LIFT_G: same hardest pull as yours
 import { terrainHeight, nearestBranch, cruiseThrust, getArena, obstaclesNear, obstacleGap, ARENA_R, CRUISE_SPEED, arenaBarrier, type Obstacle } from './world';
 import type { CloudPuffs } from './puffs';
 
@@ -13,7 +13,6 @@ const UP = new THREE.Vector3(0, 1, 0);
 // a turn limited by how much lift their speed gives them, and a stall when they get too slow.
 const DRAG = 0.0016, BRAKE_DRAG = 0.0065, MAX_SPEED = 115;
 const STALL_SPEED = 15;
-const MAX_LIFT_G = 1.65;   // same as your hardest banked pull
 export const PEA_SPEED = 150;
 const ASSIST_CONE = 0.19;   // pea aim assist kicks in when a bird's lead point is within ~11° of your nose
 const ASSIST_BEND = 0.087;  // and bends the shot at most ~5° (enemies get exactly the same bend)
