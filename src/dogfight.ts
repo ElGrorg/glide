@@ -367,6 +367,8 @@ export class Dogfight {
   spawning = true;
   /** Online host: other players the AI birds can chase (you are always a candidate too). */
   targets: NetTarget[] = [];
+  /** Online Team up: is this shooter (a player id) on your team? Their peas pass through you. */
+  isAlly: (owner: string) => boolean = () => false;
   /** Called for every pea fired on this machine (yours, and AI birds' on the host), to send it to the others. */
   onShot: ((from: THREE.Vector3, vel: THREE.Vector3, owner: string) => void) | null = null;
   wave = 0;
@@ -903,7 +905,7 @@ export class Dogfight {
             break;
           }
         }
-      } else if (active) {
+      } else if (active && !this.isAlly(p.owner)) {
         const d = segDist(prev, p.pos, g.pos);
         p.near = Math.min(p.near, d);
         if (g.trick && d < 3.5) { out.push({ type: 'dodged' }); p.life = 0; }   // a barrel roll shrugs off the burst

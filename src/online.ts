@@ -14,7 +14,11 @@ import { SPACE_R, clearSpawnY } from './space';
 //   so they can shake it exactly like a dart from an AI bird.
 
 export interface MatchRules { seed: number; arena: number; bots: number; myDarts: boolean; enemyDarts: boolean; allies: boolean; /** space fighters in the fleet battle */ space?: boolean }
-export interface PlayerInfo { id: string; name: string; kills: number; deaths: number }
+export interface PlayerInfo { id: string; name: string; kills: number; deaths: number; /** Team up: 0 or 1 */ team: number }
+
+/** Team up: two teams. Everyone picks one in the lobby; teammates can't hurt each other. */
+export const TEAM_NAMES = ['Red', 'Blue'];
+export const TEAM_CSS = ['#ff6a5c', '#5aa8ff'];
 
 const SEND_HZ = 20, AI_HZ = 15;
 const INTERP_DELAY = 110; // ms behind real time we draw other birds
@@ -68,6 +72,10 @@ export class Online {
   private events: OnlineEvent[] = [];
   /** Host: AI-bird targets, one per other player (handed to Dogfight.targets). */
   targets: NetTarget[] = [];
+  /** Your team (Team up). In the lobby you pick it; the host has the final say and sends it back in the roster. */
+  team = 0;
+  /** The host's Players setting as the lobby sees it (clients learn it from the roster, before the match starts). */
+  lobbyAllies = false;
 
   constructor(private dogfight: Dogfight) {
     this.net.onMessage = (m) => this.receive(m);
@@ -84,8 +92,21 @@ export class Online {
   get code() { return this.net.code; }
   /** Everyone in the room, you first. */
   roster(): PlayerInfo[] {
-    return [{ id: this.myId, name: this.name, kills: this.kills, deaths: this.deaths }, ...[...this.remotes.values()].sort((a, b) => (a.id < b.id ? -1 : 1))];
+    return [{ id: this.myId, name: this.name, kills: this.kills, deaths: this.deaths, team: this.team }, ...[...this.remotes.values()].sort((a, b) => (a.id < b.id ? -1 : 1))];
   }
+  /** Is the match (or the lobby, before it starts) played in teams? */
+  get teams() { return this.phase === 'playing' ? !!this.rules?.allies : this.lobbyAllies; }
+  teamOf(id: string) { return id === this.myId ? this.team : this.remotes.get(id)?.team ?? -1; }
+  /** On your team (Team up only): no lock-on, peas pass through, their shots can't hurt you. */
+  isAlly(id: string) { return this.teams && id !== 'ai' && id !== this.myId && this.teamOf(id) === this.team; }
+  /** Pick your team. Clients ask the host, who sends the roster back with it. */
+  pickTeam(team: number) {
+    this.team = team ? 1 : 0;
+    if (this.isHost) this.sendRoster(); else this.net.send({ t: 'team', to: 'p0', team: this.team });
+    this.events.push({ type: 'lobby' });
+  }
+  /** Host: switch Team up on or off in the lobby, so everyone sees the team picker. */
+  setTeams(on: boolean) { this.lobbyAllies = on; if (this.isHost && this.phase !== 'off') this.sendRoster(); }
   nameOf(id: string) { return id === this.myId ? 'you' : id === 'ai' ? 'a wild bird' : this.remotes.get(id)?.name ?? 'someone'; }
   drain() { const e = this.events; this.events = []; return e; }
 
@@ -93,8 +114,8 @@ export class Online {
   /** Listed in the room browser (relay servers only); private rooms are joined by code. */
   isPublic = true;
 
-  async host(name: string, isPublic = true) {
-    this.reset(); this.name = name; this.phase = 'connecting'; this.isPublic = isPublic;
+  async host(name: string, isPublic = true, teams = false) {
+    this.reset(); this.name = name; this.lobbyAllies = teams; this.phase = 'connecting'; this.isPublic = isPublic;
     try { await this.net.host({ name, public: isPublic }); this.phase = 'lobby'; }
     catch (err) { this.fail((err as Error).message); return; }
     this.net.onJoin = () => { /* waits for their hello */ };
@@ -114,6 +135,7 @@ export class Online {
     if (!this.isHost) return;
     this.rules = rules;
     this.phase = 'playing';
+    this.sendRoster(); // everyone's team, as it stands at the start
     this.net.send({ t: 'start', rules });
     this.net.meta({ phase: 'playing', arena: rules.space ? 99 : rules.arena }); // (99 = space, for the room list)
     this.events.push({ type: 'start', rules, late: false });
@@ -135,7 +157,7 @@ export class Online {
   private reset() {
     for (const r of this.remotes.values()) if (r.puppet) r.puppet.alive = false;
     this.remotes.clear(); this.ai.clear(); this.targets.length = 0;
-    this.phase = 'off'; this.rules = null; this.kills = 0; this.deaths = 0; this.alive = false; this.error = '';
+    this.phase = 'off'; this.rules = null; this.team = 0; this.lobbyAllies = false; this.kills = 0; this.deaths = 0; this.alive = false; this.error = '';
     this.dogfight.targets = [];
   }
 
@@ -143,7 +165,7 @@ export class Online {
     let r = this.remotes.get(id);
     if (!r) {
       r = {
-        id, name, kills: 0, deaths: 0, alive: false, buf: [], puppet: null, lockOn: '', lockP: 0,
+        id, name, kills: 0, deaths: 0, team: 0, alive: false, buf: [], puppet: null, lockOn: '', lockP: 0,
         target: { id, pos: new THREE.Vector3(), vel: new THREE.Vector3(), dir: new THREE.Vector3(0, 0, -1), speed: 34, brake: 0, trick: null, active: false, inCloud: false },
       };
       this.remotes.set(id, r);
@@ -166,7 +188,8 @@ export class Online {
   }
 
   private sendRoster() {
-    this.net.send({ t: 'roster', players: this.roster().map(({ id, name, kills, deaths }) => ({ id, name, kills, deaths })) });
+    this.net.send({ t: 'roster', allies: this.phase === 'playing' ? !!this.rules?.allies : this.lobbyAllies,
+      players: this.roster().map(({ id, name, kills, deaths, team }) => ({ id, name, kills, deaths, team })) });
   }
 
   // ---------- messages ----------
@@ -178,13 +201,17 @@ export class Online {
         if (this.remotes.size >= 7) { this.net.send({ t: 'full', to: from }); setTimeout(() => this.net.kick(from), 500); return; }
         const r = this.remote(from, clip(String(m.name ?? 'Bird')));
         r.name = clip(String(m.name ?? 'Bird'));
-        this.net.send({ t: 'welcome', to: from, you: from, rules: this.phase === 'playing' ? this.rules : null });
+        // put them on the smaller team; they can switch in the lobby
+        const sizes = [0, 0]; for (const p of this.roster()) if (p.id !== from) sizes[p.team ? 1 : 0]++;
+        r.team = sizes[1] < sizes[0] ? 1 : 0;
+        this.net.send({ t: 'welcome', to: from, you: from, team: r.team, rules: this.phase === 'playing' ? this.rules : null });
         this.sendRoster();
         this.events.push({ type: 'feed', text: `${r.name} joined` }, { type: 'lobby' });
         break;
       }
       case 'welcome': // client: you're in
         this.net.setMyId(String(m.you));
+        this.team = Number(m.team) ? 1 : 0;
         this.phase = 'lobby';
         if (m.rules) { this.rules = m.rules as MatchRules; this.phase = 'playing'; this.events.push({ type: 'start', rules: this.rules, late: true }); }
         this.events.push({ type: 'lobby' });
@@ -192,7 +219,12 @@ export class Online {
       case 'full': this.leave(); this.events.push({ type: 'left', reason: 'That room is full (8 players).' }); break;
       case 'roster': {
         const list = m.players as PlayerInfo[];
-        for (const p of list) if (p.id !== this.myId) { const r = this.remote(p.id, p.name); r.name = p.name; }
+        if (!this.isHost) this.lobbyAllies = !!m.allies;
+        for (const p of list) {
+          const team = Number(p.team) ? 1 : 0;
+          if (p.id === this.myId) this.team = team;
+          else { const r = this.remote(p.id, p.name); r.name = p.name; r.team = team; }
+        }
         for (const id of [...this.remotes.keys()]) if (!list.some((p) => p.id === id)) this.playerLeft(id);
         this.events.push({ type: 'lobby' });
         break;
@@ -201,6 +233,12 @@ export class Online {
         this.rules = m.rules as MatchRules; this.phase = 'playing';
         this.events.push({ type: 'start', rules: this.rules, late: false });
         break;
+      case 'team': { // host: a player picked a team
+        if (!this.isHost) return;
+        const r = this.remotes.get(from);
+        if (r) { r.team = Number(m.team) ? 1 : 0; this.sendRoster(); this.events.push({ type: 'lobby' }); }
+        break;
+      }
       case 'bye': this.playerLeft(from); break;
       case 'st': this.onState(from, m); break;
       case 'ai': this.onAi(m); break;
@@ -322,7 +360,10 @@ export class Online {
   /** A random spot near the rim, facing the middle, well up off the ground. */
   spawnPoint(): { x: number; y: number; z: number; heading: number } {
     // spread players round the rim by player number, so nobody spawns on top of anyone else
-    const a = (colorIndex(this.myId) / PLAYER_PALETTES.length) * Math.PI * 2 + (Math.random() - 0.5) * 0.6;
+    // Team up: each team starts on its own side of the arena
+    const a = this.teams
+      ? this.team * Math.PI + ((colorIndex(this.myId) / PLAYER_PALETTES.length) - 0.5) * 1.6 + (Math.random() - 0.5) * 0.3
+      : (colorIndex(this.myId) / PLAYER_PALETTES.length) * Math.PI * 2 + (Math.random() - 0.5) * 0.6;
     if (isSpace()) {
       const r = SPACE_R * (0.55 + Math.random() * 0.15);
       const x = Math.cos(a) * r, z = Math.sin(a) * r;
@@ -347,7 +388,7 @@ export class Online {
         r.puppet = this.dogfight.addPuppet('human', r.id, 'hunter', PLAYER_PALETTES[colorIndex(r.id)]);
         r.puppet.hp = 3;
       }
-      if (r.puppet) r.puppet.friendly = !!this.rules?.allies;
+      if (r.puppet) r.puppet.friendly = this.isAlly(r.id);
       if (alive && r.puppet) interp(r.puppet, r.buf, at);
     }
     for (const [id, a] of this.ai) {
@@ -369,7 +410,7 @@ export class Online {
       tailCheck(df, a.e, g);
     }
     for (const r of this.remotes.values()) {
-      if (!r.alive || !r.puppet?.alive || this.rules?.allies) continue;
+      if (!r.alive || !r.puppet?.alive || this.isAlly(r.id)) continue;
       if (r.lockOn === this.myId && r.lockP > 0) df.dartLockProgress = Math.max(df.dartLockProgress, r.lockP);
       tailCheck(df, r.puppet, g);
     }
