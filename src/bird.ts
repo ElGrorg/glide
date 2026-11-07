@@ -9,6 +9,10 @@ const NEUTRAL_PITCH = -0.26; // starting glide angle
 const STALL_SPEED = 15;
 const TUCK_THRUST = 0;      // tuck removed: no free speed, you only gain it by diving
 const MAX_SPEED = 115;
+/** How hard any bird can turn, player and AI alike (1 = the original tuning). Below 1 = wider turns. */
+export const TURN_SCALE = 0.8;
+/** Hardest banked pull in g, shared with the enemy AI so both turn the same. */
+export const MAX_LIFT_G = 1.65 * TURN_SCALE;
 const HOLD_GAIN = 2.0;      // how firmly a hands-off nose stays put (1/s)
 const X_AXIS = new THREE.Vector3(1, 0, 0), Y_AXIS = new THREE.Vector3(0, 1, 0), Z_AXIS = new THREE.Vector3(0, 0, 1);
 const _q = new THREE.Quaternion(), _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
@@ -242,7 +246,7 @@ export class Glider {
     }
 
     // pitch is rate-controlled; faster birds pull round tighter
-    const rate = 1.5 + Math.max(0, this.speed - 30) * 0.02;
+    const rate = (1.5 + Math.max(0, this.speed - 30) * 0.02) * TURN_SCALE;
     this.pitchVel += (inp.pitch * rate * this.authority - this.pitchVel) * Math.min(1, 5 * dt);
     this.pitch += this.pitchVel * dt;
     if (Math.abs(inp.pitch) >= 0.05 || !upright) this.holdPitch = null;
@@ -281,7 +285,7 @@ export class Glider {
     // coordinated turn; upside down the bird travels back along its heading, so the turn flips to stay
     // toward the lowered wing (otherwise steering feels reversed over the top of a loop)
     const inverted = Math.cos(this.pitch) < 0 ? -1 : 1;
-    this.heading -= inverted * (G * Math.tan(this.roll) / Math.max(this.speed, 12)) * 1.35 * (1 - 0.5 * this.tuck) * dt;
+    this.heading -= inverted * (G * Math.tan(this.roll) / Math.max(this.speed, 12)) * 1.35 * TURN_SCALE * (1 - 0.5 * this.tuck) * dt;
     // rudder: a slow flat turn, no bank needed (handy for lining up a shot)
     this.yawVel += ((inp.yaw ?? 0) * 0.7 - this.yawVel) * Math.min(1, 4 * dt);
     this.heading -= inverted * this.yawVel * dt;
@@ -319,7 +323,7 @@ export class Glider {
     this.tuck += (inp.tuck - this.tuck) * Math.min(1, 7 * dt);
 
     // stick: smoothed rates about the bird's own axes
-    const pRate = 1.6 + Math.max(0, this.speed - 30) * 0.02;
+    const pRate = (1.6 + Math.max(0, this.speed - 30) * 0.02) * TURN_SCALE;
     const auth = this.authority;
     this.pitchVel += (inp.pitch * pRate * auth - this.pitchVel) * Math.min(1, 5 * dt);
     this.rollVel += (inp.roll * 2.6 * auth - this.rollVel) * Math.min(1, 6 * dt);
@@ -333,7 +337,7 @@ export class Glider {
     const fwd = _v1.set(0, 0, -1).applyQuaternion(q);
     const up = _v2.set(0, 1, 0).applyQuaternion(q);
     // a little extra lift in a bank so turns hold their height (arcade help); none upside down
-    const bankHelp = up.y > 0 ? 0.6 * (1 - up.y) : 0;
+    const bankHelp = up.y > 0 ? Math.max(0, MAX_LIFT_G - 1.05) * (1 - up.y) : 0; // tops out at MAX_LIFT_G
     // below stall speed the wing quits: almost no lift, so gravity pulls the nose down
     const stallCut = this.speed < STALL_SPEED ? 0.25 : 1;
     const lift = G * Math.min(1.05 + bankHelp, (this.speed / 26) ** 2) * (1 - 0.6 * this.tuck) * stallCut;
@@ -341,7 +345,7 @@ export class Glider {
     acc.y -= G;
     acc.addScaledVector(fwd, -acc.dot(fwd));
     const v = Math.max(this.speed, 14);
-    const turn = Math.min(acc.length() / v, 2.2) * dt;
+    const turn = Math.min(acc.length() / v, 2.2 * TURN_SCALE) * dt;
     if (turn > 1e-6) {
       const axis = new THREE.Vector3().crossVectors(fwd, acc).normalize();
       q.premultiply(_q.setFromAxisAngle(axis, turn));
