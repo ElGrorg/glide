@@ -79,7 +79,7 @@ class Particles {
     const mat = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false, fog: false,
       blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
-      uniforms: { map: { value: tex }, gain: { value: additive ? 2.4 : 1 } },
+      uniforms: { map: { value: tex }, gain: { value: additive ? 1.9 : 1 } },
       vertexShader: `
         attribute vec3 offset; attribute vec4 pcol; attribute vec4 misc; attribute vec3 pvel;
         varying vec2 vUv; varying vec4 vCol;
@@ -274,14 +274,14 @@ export class SpaceFx {
     const base = this.v2.copy(vel).multiplyScalar(0.35);
     const g = this.glow, sm = this.smoke, v = this.v;
     // the flash: a blinding white core and a wide blue-white bloom
-    g.add({ p, v: base, life: 0.12, s0: 8 * size, s1: 22 * size, c0: WHITE, a0: 1, a1: 0, frame: 0 });
-    g.add({ p, v: base, life: 0.35, s0: 24 * size, s1: 50 * size, c0: C(0xffd8a0), a0: 0.35, a1: 0, frame: 0 });
+    g.add({ p, v: base, life: 0.1, s0: 4 * size, s1: 12 * size, c0: WHITE, a0: 1, a1: 0, frame: 0 });
+    g.add({ p, v: base, life: 0.3, s0: 12 * size, s1: 24 * size, c0: C(0xffd8a0), a0: 0.25, a1: 0, frame: 0 });
     // the shock ring, flat-on to you, racing outward
-    g.add({ p, v: base, life: 0.6, s0: 6 * size, s1: 70 * size, c0: C(0xcfe6ff), c1: C(0x3a78ff), a0: 0.5, a1: 0, frame: 3 });
+    g.add({ p, v: base, life: 0.55, s0: 3 * size, s1: 42 * size, c0: C(0xcfe6ff), c1: C(0x3a78ff), a0: 0.45, a1: 0, frame: 3 });
     // the fireball: puffs of fire that swell, cool from yellow-white to deep red, and go out
-    for (let i = 0; i < 18 * size; i++) {
-      v.randomDirection().multiplyScalar(rnd(4, 18) * size).add(base);
-      g.add({ p: this.s.randomDirection().multiplyScalar(rnd(0, 2.5) * size).add(p), v, life: rnd(0.7, 1.5), s0: rnd(4, 7) * size, s1: rnd(12, 22) * size,
+    for (let i = 0; i < 16 * size; i++) {
+      v.randomDirection().multiplyScalar(rnd(3, 12) * size).add(base);
+      g.add({ p: this.s.randomDirection().multiplyScalar(rnd(0, 2.5) * size).add(p), v, life: rnd(0.6, 1.3), s0: rnd(2, 3.5) * size, s1: rnd(6, 11) * size,
         c0: FIRE_HOT, c1: FIRE_DEEP, a0: 1, a1: 0, frame: 1, spin: rnd(-1.5, 1.5), drag: 1.2 });
     }
     // sparks: fast, thin, streaking
@@ -291,8 +291,8 @@ export class SpaceFx {
     }
     // the smoke cloud it leaves behind, lit orange from inside at first
     for (let i = 0; i < 14 * size; i++) {
-      v.randomDirection().multiplyScalar(rnd(2, 9) * size).add(base);
-      sm.add({ p: this.s.randomDirection().multiplyScalar(rnd(0, 4) * size).add(p), v, life: rnd(2.5, 4.5), s0: rnd(6, 10) * size, s1: rnd(18, 30) * size,
+      v.randomDirection().multiplyScalar(rnd(2, 7) * size).add(base);
+      sm.add({ p: this.s.randomDirection().multiplyScalar(rnd(0, 3) * size).add(p), v, life: rnd(2.5, 4.5), s0: rnd(3, 5) * size, s1: rnd(10, 17) * size,
         c0: C(0x7a4a36), c1: SMOKE_DARK, a0: 0.75, a1: 0, frame: 2, spin: rnd(-0.4, 0.4), drag: 0.5, fadeIn: 0.25 });
     }
     // burning wreckage tumbling away

@@ -354,13 +354,13 @@ export class SpaceScene {
       const sg = new THREE.BufferGeometry();
       sg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       sg.setAttribute('color', new THREE.BufferAttribute(col, 3));
-      back(new THREE.Points(sg, new THREE.PointsMaterial({ size: size * 1.6, map: dotTexture(), transparent: true, blending: THREE.AdditiveBlending, sizeAttenuation: false, vertexColors: true, fog: false, depthWrite: false, depthTest: false, toneMapped: false })), -9);
+      back(new THREE.Points(sg, new THREE.PointsMaterial({ size: size * 1.6, map: dotTexture(), transparent: true, blending: THREE.AdditiveBlending, sizeAttenuation: false, vertexColors: true, fog: false, depthWrite: false, toneMapped: false })), -9);
     }
     // the sun: a white-hot disc (bright enough to bloom) inside a wide warm glow
     const sunPos = SUN_DIR.clone().multiplyScalar(R * 0.9);
-    const sunDisc = new THREE.Mesh(new THREE.CircleGeometry(300, 32), new THREE.MeshBasicMaterial({ color: new THREE.Color(0xfff6e8).multiplyScalar(6), fog: false, depthWrite: false, depthTest: false, toneMapped: false }));
+    const sunDisc = new THREE.Mesh(new THREE.CircleGeometry(300, 32), new THREE.MeshBasicMaterial({ color: new THREE.Color(0xfff6e8).multiplyScalar(6), fog: false, depthWrite: false, toneMapped: false }));
     const glow = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000), new THREE.ShaderMaterial({
-      transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending, fog: false,
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
       vertexShader: 'varying vec2 vU; void main(){ vU = uv * 2. - 1.; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.); }',
       fragmentShader: `varying vec2 vU; void main(){ float d = length(vU);
         float a = pow(max(0., 1. - d), 6.) * 2. + pow(max(0., 1. - d), 2.) * .12;
@@ -371,13 +371,13 @@ export class SpaceScene {
     back(glow, -8); back(sunDisc, -7);
     // a small grey moon, far off, behind the planet's limb
     const moonDir = PLANET_DIR.clone().lerp(new THREE.Vector3(0.2, 0.15, 0.95), 0.62).normalize();
-    const moon = new THREE.Mesh(rockGeometry(3, 502), new THREE.MeshStandardMaterial({ color: 0xa9a49c, flatShading: true, roughness: 1, metalness: 0, fog: false, depthWrite: false, depthTest: false }));
+    const moon = new THREE.Mesh(rockGeometry(3, 502), new THREE.MeshStandardMaterial({ color: 0xa9a49c, flatShading: true, roughness: 1, metalness: 0, fog: false }));
     moon.scale.setScalar(520); moon.position.copy(moonDir).multiplyScalar(R * 0.85);
     back(moon, -6);
     // the planet
     const PD = R * 0.8, PR = PD * Math.sin(THREE.MathUtils.degToRad(30));
     const planet = new THREE.Mesh(new THREE.SphereGeometry(PR, 128, 64), new THREE.ShaderMaterial({
-      depthWrite: false, depthTest: false, fog: false,
+      fog: false,
       uniforms: { sun: { value: SUN_DIR }, t: { value: 0 } },
       vertexShader: 'varying vec3 vO; varying vec3 vN; varying vec3 vV; void main(){ vO = normalize(position); vec4 w = modelMatrix * vec4(position,1.); vN = normalize(mat3(modelMatrix) * normal); vV = normalize(cameraPosition - w.xyz); gl_Position = projectionMatrix * viewMatrix * w; }',
       fragmentShader: `uniform vec3 sun; uniform float t; varying vec3 vO; varying vec3 vN; varying vec3 vV; ${NOISE_GLSL}
@@ -419,7 +419,7 @@ export class SpaceScene {
     back(planet, -5);
     // the atmosphere's glow just outside the limb
     const atmo = new THREE.Mesh(new THREE.SphereGeometry(PR * 1.045, 96, 48), new THREE.ShaderMaterial({
-      side: THREE.BackSide, transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending, fog: false,
+      side: THREE.BackSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
       uniforms: { sun: { value: SUN_DIR } },
       vertexShader: 'varying vec3 vN; varying vec3 vV; void main(){ vec4 w = modelMatrix * vec4(position,1.); vN = normalize(mat3(modelMatrix) * normal); vV = normalize(cameraPosition - w.xyz); gl_Position = projectionMatrix * viewMatrix * w; }',
       fragmentShader: `uniform vec3 sun; varying vec3 vN; varying vec3 vV; void main(){

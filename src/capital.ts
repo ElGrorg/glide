@@ -391,19 +391,26 @@ export function buildShipMesh(hull: Hull, look: FleetLook, tag: number): ShipVis
     body.geom(turretHead, m, look.hull, -0.05);
     for (const z of [-0.3, 0.3]) body.geom(turretBarrel.clone().translate(0, 0, z), m, look.dark);
   }
-  // engine nozzles: a dark bell, a white-hot core
+  // engine nozzles: a dark bell, a glowing throat and a white-hot core
+  const core = new Batch(-1e9, -1e9 + 1);
   for (const nz of hull.nozzles) {
     m.compose(new THREE.Vector3(nz.u - nz.r * 0.25, nz.v, nz.w), new THREE.Quaternion(), new THREE.Vector3(nz.r * 0.5, nz.r, nz.r));
     body.geom(nozzleRing, m, look.dark, -0.1);
-    m.compose(new THREE.Vector3(nz.u - nz.r * 0.3, nz.v, nz.w), new THREE.Quaternion(), new THREE.Vector3(1, nz.r * 1.08, nz.r * 1.08));
+    m.compose(new THREE.Vector3(nz.u - nz.r * 0.05, nz.v, nz.w), new THREE.Quaternion(), new THREE.Vector3(1, nz.r * 1.1, nz.r * 1.1));
+    body.geom(nozzleBack, m, look.dark, -0.2);
+    m.compose(new THREE.Vector3(nz.u - nz.r * 0.3, nz.v, nz.w), new THREE.Quaternion(), new THREE.Vector3(1, nz.r * 0.92, nz.r * 0.92));
     glow.geom(nozzleBack, m, 0xffffff);
+    m.compose(new THREE.Vector3(nz.u - nz.r * 0.32, nz.v, nz.w), new THREE.Quaternion(), new THREE.Vector3(1, nz.r * 0.45, nz.r * 0.45));
+    core.geom(nozzleBack, m, 0xffffff);
   }
   for (const g of hull.guides) lit.loft(g, 0xffffff);
   const group = new THREE.Group();
   group.add(new THREE.Mesh(body.geometry(), hullMat()));
   const litMesh = new THREE.Mesh(lit.geometry(), glowMat(look.light, 1.35));
-  const gm = new THREE.Mesh(glow.geometry(), glowMat(look.engine, 1.7));
-  group.add(litMesh, gm);
+  const gm = new THREE.Mesh(glow.geometry(), glowMat(look.engine, 1.25));
+  const cm = new THREE.Mesh(core.geometry(), glowMat(0xfff4e0, 1.8));
+  cm.renderOrder = 1;
+  group.add(litMesh, gm, cm);
   // exhaust plumes: soft cones of light trailing each nozzle
   for (const nz of hull.nozzles) {
     const plume = new THREE.Mesh(plumeGeo, plumeMat(look.engine));

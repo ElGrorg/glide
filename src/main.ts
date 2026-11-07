@@ -131,6 +131,25 @@ const cockpit = new THREE.Group();
   strut(-0.32, 0.55, 0.32, 0.55, 0.05, dark);
   const dash = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.3, 0.01), dark); dash.position.set(0, -0.52, -0.62); cockpit.add(dash);
   const lip = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.02, 0.01), edge); lip.position.set(0, -0.37, -0.615); cockpit.add(lip);
+  // two glowing displays set into the dash: a scope and a systems readout
+  const screen = (draw: (c: CanvasRenderingContext2D) => void, x: number, tint: number) => {
+    const cv = document.createElement('canvas'); cv.width = 128; cv.height = 56;
+    const c = cv.getContext('2d');
+    if (c) { c.fillStyle = '#050a10'; c.fillRect(0, 0, 128, 56); draw(c); }
+    const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.15, 0.066), new THREE.MeshBasicMaterial({ map: tex, color: new THREE.Color(tint).multiplyScalar(1.3), fog: false, toneMapped: false }));
+    m.position.set(x, -0.413, -0.614); cockpit.add(m);
+  };
+  screen((c) => {
+    c.strokeStyle = '#3fd8ff'; c.lineWidth = 1.5;
+    for (const r of [9, 18, 26]) { c.beginPath(); c.arc(64, 28, r, 0, Math.PI * 2); c.stroke(); }
+    c.beginPath(); c.moveTo(64, 0); c.lineTo(64, 56); c.moveTo(28, 28); c.lineTo(100, 28); c.stroke();
+    c.fillStyle = '#ff6a50'; for (const [x, y] of [[76, 16], [52, 36], [84, 34]]) c.fillRect(x, y, 4, 4);
+  }, -0.36, 0xbfefff);
+  screen((c) => {
+    c.fillStyle = '#ffc24a'; c.font = 'bold 10px monospace';
+    ['PWR', 'SHD', 'ENG', 'WPN'].forEach((l, i) => { c.fillText(l, 6, 13 + i * 13); c.fillRect(34, 5 + i * 13, 30 + ((i * 37) % 60), 7); });
+  }, 0.36, 0xffe2b0);
   for (const o of cockpit.children) o.renderOrder = 10;
 }
 const beak = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.16, 4).rotateX(-Math.PI / 2), new THREE.MeshLambertMaterial({ color: 0xf2b630, flatShading: true }));
@@ -328,7 +347,7 @@ const MODE_TABS: { id: GameMode; label: string }[] = [
 const MODE_BLURB: Record<GameMode, string> = {
   endless: 'An endless mountainside. Skim the ground, thread the trees, punch through the clouds, and shoot down the birds hunting you.',
   arena: 'A walled-in basin to fight in, wave after wave. You flap to hold your speed, but climbing still costs it and diving still builds it.',
-  space: 'Space fighters in the middle of a capital-ship battle over a wild planet. No air, no stalling: cruise, boost (grab the gold pickups to refill it), drift to swing your nose round. Run the carrier hangar bays and the tunnels through the cruisers, skim the hulls, and lead missiles into them.',
+  space: 'Space fighters in the middle of a capital-ship battle high above a planet. No air, no stalling: cruise, boost (grab the gold pickups to refill it), drift to swing your nose round. Run the carrier hangar bays and the tunnels through the cruisers, skim the hulls, and lead missiles into them.',
   online: 'Fight in the arena with other players anywhere: join an open room, type a friend\'s code, or host your own.',
 };
 const onOff = (b: boolean) => (b ? 'On' : 'Off');
@@ -387,7 +406,7 @@ function visRow(sel: string) {
   return pickRow(sel, 'vis', 'Room', on ? 'Public' : 'Private', on ? 'Listed under Open rooms for anyone to join' : 'Hidden: friends join with the code or invite link');
 }
 function viewRow(sel: string) { return pickRow(sel, 'view', 'Camera', settings.view === 'cockpit' ? 'First person' : 'Chase', 'T / R3 switches in flight'); }
-function leadRow(sel: string) { return pickRow(sel, 'lead', 'Lead marker', onOff(settings.lead), 'Shows where to aim your peas'); }
+function leadRow(sel: string) { return pickRow(sel, 'lead', 'Lead marker', onOff(settings.lead), `Shows where to aim your ${settings.mode === 'space' || isSpace() ? 'lasers' : 'peas'}`); }
 function downcamRow(sel: string) {
   return pickRow(sel, 'downcam', 'Down cam', { shot: 'When shot down', all: 'Every crash', off: 'Off' }[settings.downcam], 'Replay from your killer\'s view');
 }
@@ -1363,6 +1382,7 @@ function frame(now: number) {
       if (warnBeep <= 0) { audio.beep(1250, 0.06, 0.06); warnBeep = 0.35 - 0.25 * dogfight.dartLockProgress; }
     } else if (dogfight.tailThreat > 0 && warnBeep <= 0) { audio.beep(dogfight.tailThreat > 0.7 ? 1100 : 820, 0.07, 0.06); warnBeep = dogfight.tailThreat > 0.7 ? 0.18 : 0.6; }
     if (glider.stalled) shake = Math.max(shake, 0.15); // buffeting as the wings stall
+    if (isSpace() && glider.boost > 0.3) shake = Math.max(shake, 0.07 * glider.boost); // the airframe hums on a full burn
     dartHint -= dt; dodgeCd -= dt; hitFlash = Math.max(0, hitFlash - dt * 2.5);
     if (hp < 3 && (hpRegen += dt) > 20) { hp++; hpRegen = 0; popup('Feather regrown', `${hp}/3`); }
     // a loop starts when the nose comes steeply up (used for the low-loop bonus)
@@ -1619,7 +1639,7 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
   composer.setSize(innerWidth, innerHeight);
 });
-(window as any).__glide = { settings, glider, dogfight, world, gates, spaceScene, fleet, boostPickups, isSpace, camera, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
+(window as any).__glide = { settings, glider, dogfight, world, gates, spaceScene, fleet, obstacleGap, boostPickups, isSpace, camera, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
 
 // ?debug exposes the game objects to the console (used for the two-browser online tests)
 if (new URLSearchParams(location.search).has('debug')) {

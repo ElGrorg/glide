@@ -102,8 +102,8 @@ export class ShipMesh extends THREE.Group implements Craft {
     this.trailColor = new THREE.Color(pal.tip).lerp(new THREE.Color(0xffffff), 0.3).multiplyScalar(0.7);
     const hex = glow.getHex();
     let mat = flameMats.get(hex);
-    if (!mat) { mat = new THREE.MeshBasicMaterial({ color: glow.clone().multiplyScalar(1.5), transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, toneMapped: false, side: THREE.DoubleSide }); flameMats.set(hex, mat); }
-    const core = new THREE.Mesh(new THREE.CircleGeometry(0.22, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffffff).multiplyScalar(1.6), fog: false, toneMapped: false }));
+    if (!mat) { mat = new THREE.MeshBasicMaterial({ color: glow.clone().multiplyScalar(1.15), transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, toneMapped: false, side: THREE.DoubleSide }); flameMats.set(hex, mat); }
+    const core = new THREE.Mesh(new THREE.CircleGeometry(0.17, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffffff).multiplyScalar(1.2), fog: false, toneMapped: false }));
     for (const s of [-1, 1]) {
       const f = new THREE.Mesh(flameGeo, mat);
       f.position.set(s * NOZZLE_X, NOZZLE_Y, NOZZLE_Z);
