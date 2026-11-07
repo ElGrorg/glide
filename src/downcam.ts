@@ -10,7 +10,7 @@ import * as THREE from 'three';
  */
 
 const SHOW = 4.0;        // seconds shown before the hit
-const AFTER = 1.0;       // ...and after it (it keeps recording while the replay plays, so you see yourself fall)
+const AFTER = 3.0;       // ...and after it (it keeps recording while the replay plays, so you see yourself fall)
 const KEEP = SHOW + 0.4; // seconds of history kept
 const SLOW_BEFORE = 0.5; // the moment of the hit plays in slow motion...
 const SLOW_AFTER = 0.35;
