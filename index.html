@@ -190,6 +190,75 @@
   #viewBtn { position: fixed; left: 50%; margin-left: -28px; bottom: calc(14px + env(safe-area-inset-bottom)); width: 56px; height: 36px; border-radius: 10px;
     border: 2px solid rgba(255,255,255,.6); background: rgba(20,40,60,.35); display: none; pointer-events: none;
     align-items: center; justify-content: center; font-weight: 900; font-size: 12px; letter-spacing: 1px; }
+  /* ---------- Safe areas: in landscape the notch and the rounded corners sit at the sides ---------- */
+  #stats, #hp, #darts, #feed, #boost { margin-left: env(safe-area-inset-left); }
+  #wave, #board, #radar, #fire, #dartBtn { margin-right: env(safe-area-inset-right); }
+  /* ---------- Phone on its side: thumbs at the bottom corners ---------- */
+  @media (pointer: coarse) and (orientation: landscape) {
+    /* FIRE in the right thumb's corner, DART just above it, the tail radar between the thumbs */
+    #fire { right: 18px; bottom: calc(16px + env(safe-area-inset-bottom)); width: 80px; height: 80px; }
+    #dartBtn { right: 22px; bottom: calc(110px + env(safe-area-inset-bottom)); width: 68px; height: 68px; }
+    #radar { right: auto; left: 50%; width: 92px; height: 92px; margin: 0 0 0 -46px; bottom: calc(8px + env(safe-area-inset-bottom)); }
+    #stats { bottom: calc(10px + env(safe-area-inset-bottom)); font-size: 13px; max-width: calc(50vw - 70px); }
+    #boost { bottom: calc(58px + env(safe-area-inset-bottom)); } /* above the stats, which can wrap to two lines here */
+    /* space: the VIEW button sits beside FIRE so it doesn't cover the radar */
+    #viewBtn { left: auto; right: 112px; margin: 0 env(safe-area-inset-right) 0 0; bottom: calc(38px + env(safe-area-inset-bottom)); }
+  }
+  @media (orientation: landscape) and (max-height: 540px) {
+    #score { font-size: 28px; top: calc(8px + env(safe-area-inset-top)); }
+    #combo { top: calc(42px + env(safe-area-inset-top)); }
+    #warn { top: calc(64px + env(safe-area-inset-top)); font-size: 17px; }
+    #hp { top: calc(8px + env(safe-area-inset-top)); }
+    #darts { top: calc(38px + env(safe-area-inset-top)); }
+    #feed { top: calc(66px + env(safe-area-inset-top)); max-width: 34vw; font-size: 12px; }
+    #wave { top: calc(10px + env(safe-area-inset-top)); font-size: 14px; }
+    #board { top: calc(34px + env(safe-area-inset-top)); }
+    /* down cam: thinner letterbox so the replay keeps most of the screen */
+    #downcam::before, #downcam::after { height: 7vh; }
+    #downcam .lab { top: calc(7vh + 6px); }
+    #downcam .lab b { font-size: 13px; } #downcam .lab span { font-size: 18px; }
+    #downcam .bar { bottom: calc(7vh + 12px); }
+    #downcam .skip { bottom: calc(7vh / 2 - 8px); }
+    /* menus: two columns, the title and the main buttons on the left, the settings on the right */
+    .menu h1 { font-size: 40px; margin: 0 0 8px; }
+    .menu.split { width: min(860px, 100%); margin: auto; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 14px; align-items: center; }
+    .split h1 { text-align: left; margin-left: 6px; }
+    .split .panel { padding: 10px; border-radius: 18px; }
+    .split .panel.sets { --line: rgba(255,255,255,.16); max-height: calc(100vh - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+      max-height: calc(100dvh - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; box-sizing: border-box; }
+    .split .sets > .sect:first-child { margin-top: 4px; }
+    .split .hint { text-align: left; margin-left: 6px; }
+    .split .panel .blurb { display: block; font-size: 13px; line-height: 1.35; margin: 8px 4px 0; }
+    .split .opt { min-height: 42px; }
+    .split .sect { margin: 10px 6px 2px; }
+    .split .rooms { max-height: 150px; }
+    #overlay .split .tabs button { min-width: 0; padding: 8px 2px; font-size: 14px; }
+    .split .opt .ctl b { min-width: 96px; }
+    #overlay .split .opt .ctl button { width: 34px; }
+    .split .opt .lab { white-space: nowrap; }
+    #overlay .split input#nameIn { width: 140px; }
+    .split .sets .opt .lab { white-space: normal; }
+    .split .roomcode { font-size: 34px; letter-spacing: 6px; }
+    .split .players { margin: 2px 0; }
+    #overlay .split button.cta { margin: 10px 0 0; font-size: 20px; padding: 10px; min-height: 48px; }
+    @media (max-width: 760px) { .split .sets .opt .lab small { display: none; } .split .panel .blurb { font-size: 12px; } }
+    /* crash and "downed" cards */
+    .menu:not(.split) .panel.center { padding: 12px 18px; }
+    .panel .score b { font-size: 40px; }
+    #overlay .go { margin-top: 8px; }
+  }
+  /* ---------- Held upright: ask for landscape ---------- */
+  #rotate { position: fixed; inset: 0; z-index: 50; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px;
+    text-align: center; background: radial-gradient(ellipse at 50% 40%, #3d7fae, #173450); color: #fff; touch-action: manipulation; }
+  #rotate .phone { width: 46px; height: 80px; border: 4px solid #fff; border-radius: 10px; box-sizing: border-box; position: relative; margin-bottom: 14px; animation: turn 2.4s ease-in-out infinite; }
+  #rotate .phone::after { content: ''; position: absolute; left: 50%; bottom: 5px; width: 10px; height: 3px; margin-left: -5px; border-radius: 2px; background: #fff; }
+  @keyframes turn { 0%, 20% { transform: rotate(0); } 50%, 80% { transform: rotate(-90deg); } 100% { transform: rotate(0); } }
+  #rotate b { font-size: 26px; font-weight: 900; }
+  #rotate p { margin: 0; font-size: 16px; opacity: .85; max-width: 280px; }
+  #rotate .tap { display: none; margin-top: 10px; font-weight: 800; color: var(--accent); }
+  #rotate.canlock .tap { display: block; }
+  @media (orientation: portrait) and (pointer: coarse) { #rotate { display: flex; } }
+  #overlay { touch-action: pan-y; }
   #stick { position: fixed; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%; border: 2px solid rgba(255,255,255,.6);
     background: rgba(255,255,255,.12); display: none; pointer-events: none; }
   #knob { position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.7); }
@@ -220,6 +289,7 @@
   <div id="stick"><div id="knob"></div></div>
   <div id="downcam"><div class="lab"><b>DOWN CAM</b><span id="downcamWho"></span></div><div class="bar"><i id="downcamBar"></i></div><div class="skip" id="downcamSkip"></div></div>
   <div id="overlay"><div class="menu side"><h1>Glide!</h1></div></div>
+  <div id="rotate"><div class="phone"></div><b>Turn your phone sideways</b><p>Glide! plays in landscape.</p><p class="tap">Tap to go full screen</p></div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
