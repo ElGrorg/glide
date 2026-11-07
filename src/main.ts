@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, ARENAS, ARENA_R, ARENA_LID_R, arenaBarrier, setArena, getArena, SPACE_ARENA, isSpace, type Obstacle } from './world';
-import { SpaceScene, buildField, holeThreaded, clearSpawnY, spaceEdge, SPACE_R, SPACE_CRUISE, SPACE_BOOST } from './space';
+import { SpaceScene, buildField, holeThreaded, fleet, clearSpawnY, spaceEdge, SPACE_R, SPACE_CRUISE, SPACE_BOOST } from './space';
 import { ShipMesh, type Craft } from './ship';
 import { route, BIOME_NAME } from './route';
 import { CloudPuffs } from './puffs';
@@ -296,7 +296,7 @@ const MODE_TABS: { id: GameMode; label: string }[] = [
 const MODE_BLURB: Record<GameMode, string> = {
   endless: 'An endless mountainside. Skim the ground, thread the trees, punch through the clouds, and shoot down the birds hunting you.',
   arena: 'A walled-in basin to fight in, wave after wave. You flap to hold your speed, but climbing still costs it and diving still builds it.',
-  space: 'Space fighters in an asteroid belt over a wild planet. No air, no stalling: cruise, boost to change pace, brake to whip round. Thread the rings and tunnel rocks, and lead missiles into the rocks.',
+  space: 'Space fighters in the middle of a capital-ship battle over a wild planet. No air, no stalling: cruise, boost to change pace, brake to whip round. Run the carrier hangar bays and the tunnels through the cruisers, skim the hulls, and lead missiles into them.',
   online: 'Fight in the arena with other players anywhere: join an open room, type a friend\'s code, or host your own.',
 };
 const onOff = (b: boolean) => (b ? 'On' : 'Off');
@@ -643,9 +643,9 @@ function spawn(fresh = true) {
   applyLook();
   if (fresh || arenaChanged) { setWorldSeed((Math.random() * 2 ** 31) | 0); route.reset(); world.reset(); if (space) { buildField(); spaceScene.rebuild(); } }
   if (space) {
-    // fly in from the south edge of the belt toward the middle, at a height with a clear run ahead
-    const z = SPACE_R * 0.7;
-    glider.reset(0, clearSpawnY(0, z, tmp.set(0, 0, -1)), z, 0);
+    // fly in from the east end of the open lane between the two fleets, at a height with a clear run ahead
+    const x = SPACE_R * 0.75;
+    glider.reset(x, clearSpawnY(x, 0, tmp.set(-1, 0, 0)), 0, Math.PI / 2);
   } else if (arena) {
     // fly in from the south side of the basin, toward the middle
     const z = ARENA_R * 0.7;
@@ -1253,15 +1253,15 @@ function frame(now: number) {
       glider.steerToward(wind.dir, Math.min(1, 1.5 * dt));
     }
     const finished = glider.step(dt, inp);
-    // space: threading a ring or a tunnel rock pays, and tops up your boost
+    // space: flying through a carrier's hangar bay or a cruiser's tunnel pays, and tops up your boost
     if (isSpace()) {
       const th = holeThreaded(prevPos, glider.pos);
       if (th) {
-        const pts = Math.round((th.type === 'bore' ? 450 : 300) * multiplier());
+        const pts = Math.round((th.kind === 'hangar' ? 450 : 300) * multiplier());
         score += pts; combo++; comboTimer = 4;
         glider.boostFuel = Math.min(1, glider.boostFuel + 0.5);
         dogfight.chargeDart(0.35);
-        popup(th.type === 'bore' ? `Tunnel run +${pts}` : `Threaded the ring +${pts}`, 'boost refuelled');
+        popup(th.kind === 'hangar' ? `Hangar run +${pts}` : `Through the hull +${pts}`, 'boost refuelled');
         audio.whoosh(1); rumble(0.5, 120);
       }
     }
@@ -1304,7 +1304,7 @@ function frame(now: number) {
       if (gap < 6) {
         seen.add(o.id);
         const prev = near.get(o.id);
-        near.set(o.id, { gap: prev === undefined ? gap : Math.min(prev.gap, gap), type: o.type });
+        near.set(o.id, { gap: prev === undefined ? gap : Math.min(prev.gap, gap), type: o.type === 'box' ? 'hull' : o.type });
       }
     }
     if (mode === 'flying') for (const [id, nr] of near) {
@@ -1503,7 +1503,7 @@ function frame(now: number) {
     boostEl.classList.toggle('low', glider.boostFuel < 0.15);
   }
   if (outOfBounds > 0 && mode === 'flying' && hud.warn.style.opacity === '0') {
-    hud.warn.textContent = isSpace() ? '◀ LEAVING THE BELT: TURN BACK ▶' : '◀ NO WAY OVER THE WALL: TURN BACK ▶';
+    hud.warn.textContent = isSpace() ? '◀ LEAVING THE BATTLE: TURN BACK ▶' : '◀ NO WAY OVER THE WALL: TURN BACK ▶';
     hud.warn.style.opacity = String(0.5 + 0.5 * Math.sin(t * 10));
   }
   hud.skim.textContent = danger > 0 ? (waterSkim ? 'WATER SKIM' : 'SKIM') : 'CANYON RUN';
@@ -1536,7 +1536,7 @@ addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
-(window as any).__glide = { settings, glider, dogfight, world, gates, spaceScene, isSpace, camera, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
+(window as any).__glide = { settings, glider, dogfight, world, gates, spaceScene, fleet, isSpace, camera, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
 
 // ?debug exposes the game objects to the console (used for the two-browser online tests)
 if (new URLSearchParams(location.search).has('debug')) {

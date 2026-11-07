@@ -13,7 +13,7 @@ import { SPACE_R, clearSpawnY } from './space';
 //   judged by whoever fired and confirmed by the host, and a dart at another player is flown on their machine,
 //   so they can shake it exactly like a dart from an AI bird.
 
-export interface MatchRules { seed: number; arena: number; bots: number; myDarts: boolean; enemyDarts: boolean; allies: boolean; /** space fighters in the asteroid belt */ space?: boolean }
+export interface MatchRules { seed: number; arena: number; bots: number; myDarts: boolean; enemyDarts: boolean; allies: boolean; /** space fighters in the fleet battle */ space?: boolean }
 export interface PlayerInfo { id: string; name: string; kills: number; deaths: number }
 
 const SEND_HZ = 20, AI_HZ = 15;

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeNoise2D, hash2 } from './noise';
 import { route, type Biome, type LiveBranch } from './route';
-import { planetHeight, spaceBarrier, asteroidsNear, spaceGap } from './space';
+import { planetHeight, spaceBarrier, shipPartsNear, spaceGap } from './space';
 
 // ---------- Terrain shape: an endless downhill mountainside ----------
 // Forward is -Z. The ground falls away by SLOPE metres per metre travelled.
@@ -37,8 +37,8 @@ export const ARENAS: ArenaEnv[] = [
   { id: 'canyons', name: 'Autumn Canyons', blurb: 'a plateau cut by winding slot canyons', biome: 'autumn', trees: 0.5, spires: 0.08, boulders: 0.2, spireH: 0.9, arches: 0.35, clouds: 0.45, lowClouds: false },
 ];
 /** Space mode is an arena too (waves, the same menus, online), just one with no ground to speak of: an
- *  asteroid field over a planet (see space.ts). It isn't in ARENAS, so "Random" never lands you in space. */
-export const SPACE_ARENA: ArenaEnv = { id: 'space', name: 'Asteroid Belt', blurb: 'an asteroid field in orbit over a wild planet', biome: 'misty', trees: 0, spires: 0, boulders: 0, spireH: 1, arches: 0, clouds: 0, lowClouds: false };
+ *  capital-ship battle over a planet (see space.ts). It isn't in ARENAS, so "Random" never lands you in space. */
+export const SPACE_ARENA: ArenaEnv = { id: 'space', name: 'Fleet Battle', blurb: 'a capital-ship battle in orbit over a wild planet', biome: 'misty', trees: 0, spires: 0, boulders: 0, spireH: 1, arches: 0, clouds: 0, lowClouds: false };
 export function isSpace() { return arena?.id === 'space'; }
 /** Flyable radius of the arena (metres from the middle); mountains wall it in beyond. */
 export const ARENA_R = 620;
@@ -274,14 +274,14 @@ function biomeAt(x: number, z: number, r: number): Biome {
 }
 
 // ---------- Obstacles (deterministic per grid cell) ----------
-export type ObstacleType = 'tree' | 'rock' | 'spire' | 'asteroid' | 'ring' | 'bore';
+export type ObstacleType = 'tree' | 'rock' | 'spire' | 'box';
 export type TreeKind = 'pine' | 'round' | 'cactus' | 'snowpine';
 export interface Obstacle {
   id: string; type: ObstacleType;
   x: number; z: number; y0: number; top: number; r: number; scale: number; tint: number;
   kind?: TreeKind; biome?: Biome;
-  /** space: centre height, axis (rings and tunnel rocks), ring / outer radius, tunnel radius, tunnel half-length */
-  cy?: number; ax?: number; ay?: number; az?: number; R?: number; ri?: number; L?: number;
+  /** space (a box of a ship's hull): centre height, heading (ax, az) and half sizes along / up / across */
+  cy?: number; ax?: number; az?: number; hx?: number; hy?: number; hz?: number;
 }
 
 export const TREE_CELL = 13;
@@ -382,7 +382,7 @@ export function archAt(ix: number, iz: number, out: Obstacle[]) {
 /** All obstacles whose cells touch the circle around (x, z). */
 export function obstaclesNear(x: number, z: number, radius: number, out: Obstacle[] = []): Obstacle[] {
   out.length = 0;
-  if (arena?.id === 'space') return asteroidsNear(x, z, radius, out);
+  if (arena?.id === 'space') return shipPartsNear(x, z, radius, out);
   const t0x = Math.floor((x - radius) / TREE_CELL), t1x = Math.floor((x + radius) / TREE_CELL);
   const t0z = Math.floor((z - radius) / TREE_CELL), t1z = Math.floor((z + radius) / TREE_CELL);
   for (let ix = t0x; ix <= t1x; ix++) for (let iz = t0z; iz <= t1z; iz++) { const o = treeAt(ix, iz); if (o) out.push(o); }

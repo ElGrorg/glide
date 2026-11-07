@@ -230,7 +230,7 @@ export class Enemy {
     const short = terrainHeight(la.x, la.z) + minClear + 25 - la.y;
     if (short > 0) { want.y = Math.max(want.y, Math.min(0.8, short * 0.04)); }
     want.normalize();
-    // rocks: look ahead and steer out along the way the rock's surface faces (round it, or through the hole)
+    // ship hulls: look ahead and steer out along the way the hull surface faces (round it, or through the hole)
     let avoiding = false;
     for (const ahead of [0.45, 1.1]) {
       const look = tmpA.copy(this.pos).addScaledVector(this.dir, Math.max(14, this.speed * ahead));
@@ -728,7 +728,7 @@ export class Dogfight {
         } else e.dartLock = Math.max(0, e.dartLock - dt * 2); // lose it and the lock unwinds
         if (isMe) this.dartLockProgress = Math.max(this.dartLockProgress, e.dartLock / DART_LOCK_TIME);
       } else if (getArena()) {
-        // arena bandit: circle the basin low, keeping its distance from you (in space: weaving through the belt)
+        // arena bandit: circle the basin low, keeping its distance from you (in space: weaving between the ships)
         const r = Math.hypot(e.pos.x, e.pos.z) || 1;
         const side = e.id % 2 ? 1 : -1;
         want.set((-e.pos.z / r) * side, 0, (e.pos.x / r) * side).addScaledVector(tmpC.set(e.pos.x / r, 0, e.pos.z / r), (320 - r) / 200);
@@ -865,7 +865,7 @@ export class Dogfight {
       prev.copy(p.pos);
       p.pos.addScaledVector(p.vel, dt);
       if (p.pos.y < terrainHeight(p.pos.x, p.pos.z)) { p.life = 0; }
-      else if (space && hitsObstacle(p.pos, 0)) { p.life = 0; this.puffs.burst(p.pos, tmpA.set(0, 0, 0), 3, 2, 0.35); } // a laser splashes on rock
+      else if (space && hitsObstacle(p.pos, 0)) { p.life = 0; this.puffs.burst(p.pos, tmpA.set(0, 0, 0), 3, 2, 0.35); } // a laser splashes on a hull
       if (!p.enemy) {
         for (const e of this.enemies) {
           if (!e.alive || e.friendly) continue;
@@ -923,7 +923,7 @@ export class Dogfight {
         this.puffs.burst(d.pos, tmpA.set(0, 2, 0), 5, 14, 0.8);
         this.removeDart(d); continue;
       }
-      if (d.pos.y < terrainHeight(d.pos.x, d.pos.z) + 0.3 || (space && hitsObstacle(d.pos, 0.3))) { // (in space: a rock)
+      if (d.pos.y < terrainHeight(d.pos.x, d.pos.z) + 0.3 || (space && hitsObstacle(d.pos, 0.3))) { // (in space: a ship)
         if (d.tracking) out.push({ type: 'dartShaken', how: 'ground' });
         this.puffs.burst(d.pos, tmpA.set(0, 5, 0), 5, 14, 0.9);
         this.removeDart(d); continue;
