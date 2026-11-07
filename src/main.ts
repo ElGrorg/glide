@@ -1396,7 +1396,7 @@ function frame(now: number) {
     }
     online.preUpdate();
     for (const ev of dogfight.update(dt, t, glider, inp.fire, inp.dart && myDartsOn(), true, wasInCloud)) onDogfight(ev);
-    online.postUpdate(dt, glider, bird.quaternion, wasInCloud);
+    online.hp = hp; online.postUpdate(dt, glider, bird.quaternion, wasInCloud);
     spawnShield -= dt;
     if (dogfight.myDartThisFrame) { audio.dart(); rumble(0.3, 80); }
     if (dogfight.locked && dogfight.locked !== wasLocked) audio.beep(1900, 0.12, 0.07);
@@ -1534,7 +1534,7 @@ function frame(now: number) {
     crashTimer += dt;
     online.preUpdate();
     for (const ev of dogfight.update(dt, t, glider, false, false, false)) if (online.phase === 'playing') onDogfight(ev);
-    online.postUpdate(dt, glider, bird.quaternion, false);
+    online.hp = hp; online.postUpdate(dt, glider, bird.quaternion, false);
     updateFall(dt);
   } else {
     // title: gentle demo glide that hovers in place

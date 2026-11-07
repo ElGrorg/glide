@@ -36,8 +36,10 @@ interface Remote extends PlayerInfo {
   alive: boolean; buf: Snap[]; puppet: Enemy | null; target: NetTarget;
   /** whom their lock-on is on, and how far through (1 = locked) */
   lockOn: string; lockP: number;
+  /** their health as they last reported it (a drop means they just took a hit) */
+  hp: number;
 }
-interface AiPuppet { e: Enemy; buf: Snap[]; seen: number; target: string; lock: number }
+interface AiPuppet { e: Enemy; buf: Snap[]; seen: number; target: string; lock: number; hp: number }
 
 const tmpV = new THREE.Vector3(), tmpQ = new THREE.Quaternion(), tmpE = new THREE.Euler();
 const FWD = new THREE.Vector3(0, 0, -1);
@@ -59,6 +61,8 @@ export class Online {
   name = 'Bird';
   kills = 0; deaths = 0;
   alive = false;
+  /** your own health, sent with your state so the others see you smoke when you're hit */
+  hp = 3;
   error = '';
   remotes = new Map<string, Remote>();
   private ai = new Map<string, AiPuppet>();
@@ -143,7 +147,7 @@ export class Online {
     let r = this.remotes.get(id);
     if (!r) {
       r = {
-        id, name, kills: 0, deaths: 0, alive: false, buf: [], puppet: null, lockOn: '', lockP: 0,
+        id, name, kills: 0, deaths: 0, alive: false, buf: [], puppet: null, lockOn: '', lockP: 0, hp: 3,
         target: { id, pos: new THREE.Vector3(), vel: new THREE.Vector3(), dir: new THREE.Vector3(0, 0, -1), speed: 34, brake: 0, trick: null, active: false, inCloud: false },
       };
       this.remotes.set(id, r);
@@ -261,6 +265,11 @@ export class Online {
     r.kills = Number(m.k ?? r.kills); r.deaths = Number(m.d ?? r.deaths);
     r.lockOn = String(m.lk ?? ''); r.lockP = Number(m.lp ?? 0);
     const alive = !!m.a;
+    const hp = m.h === undefined ? 3 : Number(m.h);
+    // they took a hit (their own machine decides that): everyone sees the feathers fly
+    if (alive && r.alive && hp < r.hp && r.puppet?.alive) this.dogfight.hurtFx(r.puppet);
+    r.hp = hp;
+    if (r.puppet) r.puppet.hp = Math.max(0, hp);
     const snap: Snap = { at: performance.now(), p: vec(m.p), q: quat(m.q), v: vec(m.v), s: Number(m.s), b: Number(m.b) };
     if (alive && !r.alive) r.buf.length = 0; // fresh spawn: don't slide over from where they died
     r.alive = alive;
@@ -275,16 +284,21 @@ export class Online {
     if (this.isHost || this.phase !== 'playing') return;
     const now = performance.now();
     for (const row of m.l as unknown[][]) {
-      const [id, role, x, y, z, qx, qy, qz, qw, s, alive, tgt, lock] = row as [string, Role, number, number, number, number, number, number, number, number, number, string, number];
+      const [id, role, x, y, z, qx, qy, qz, qw, s, alive, tgt, lock, hp, maxHp] = row as [string, Role, number, number, number, number, number, number, number, number, number, string, number, number?, number?];
       let a = this.ai.get(id);
       if (!a || !this.dogfight.enemies.includes(a.e)) {
         if (!alive) continue;
-        a = { e: this.dogfight.addPuppet('ai', id, role), buf: [], seen: now, target: '', lock: 0 };
+        a = { e: this.dogfight.addPuppet('ai', id, role), buf: [], seen: now, target: '', lock: 0, hp: hp ?? 3 };
         a.e.pos.set(x, y, z);
         this.ai.set(id, a);
       }
       a.seen = now; a.target = tgt; a.lock = lock;
       a.e.role = role;
+      if (hp !== undefined) {
+        // the host says it took a hit: puff it here too
+        if (alive && a.e.alive && hp < a.hp) this.dogfight.hurtFx(a.e);
+        a.hp = hp; a.e.hp = Math.max(0, hp); if (maxHp) a.e.maxHp = maxHp;
+      }
       if (!alive) { if (a.e.alive) { a.e.alive = false; a.e.dying = 0.001; } continue; }
       a.buf.push({ at: now, p: new THREE.Vector3(x, y, z), q: new THREE.Quaternion(qx, qy, qz, qw), v: new THREE.Vector3(), s, b: 0 });
       if (a.buf.length > 12) a.buf.shift();
@@ -345,7 +359,7 @@ export class Online {
       if (alive && (!r.puppet || !r.puppet.alive || !this.dogfight.enemies.includes(r.puppet))) {
         if (r.puppet && this.dogfight.enemies.includes(r.puppet)) r.puppet.dying = 99;
         r.puppet = this.dogfight.addPuppet('human', r.id, 'hunter', PLAYER_PALETTES[colorIndex(r.id)]);
-        r.puppet.hp = 3;
+        r.puppet.hp = r.hp; r.puppet.maxHp = 3;
       }
       if (r.puppet) r.puppet.friendly = !!this.rules?.allies;
       if (alive && r.puppet) interp(r.puppet, r.buf, at);
@@ -380,7 +394,7 @@ export class Online {
       const lockE = df.locked ?? df.locking;
       this.net.send({
         t: 'st', p: arr(g.pos), q: [quat.x, quat.y, quat.z, quat.w].map(r4), v: arr(g.vel), s: r2(g.speed), b: r2(g.brake),
-        a: this.alive ? 1 : 0, c: inCloud ? 1 : 0, k: this.kills, d: this.deaths,
+        a: this.alive ? 1 : 0, h: this.hp, c: inCloud ? 1 : 0, k: this.kills, d: this.deaths,
         lk: lockE?.remote === 'human' ? lockE.netId : '', lp: df.locked ? 1 : r2(df.lockT),
       });
     }
@@ -394,7 +408,7 @@ export class Online {
           if (!e.alive && e.dying > 0.5) continue;
           const q = e.mesh.quaternion;
           l.push([this.aiId(e), e.role, r2(e.pos.x), r2(e.pos.y), r2(e.pos.z), r4(q.x), r4(q.y), r4(q.z), r4(q.w), r2(e.speed), e.alive ? 1 : 0,
-            e.targetId === 'me' ? this.myId : e.targetId, r2(e.dartLock / 1.6)]);
+            e.targetId === 'me' ? this.myId : e.targetId, r2(e.dartLock / 1.6), Math.max(0, e.hp), e.maxHp]);
         }
         this.net.send({ t: 'ai', l });
       }

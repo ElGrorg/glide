@@ -514,10 +514,17 @@ export class Dogfight {
   /** Online host: another player hit one of the AI birds. */
   damage(e: Enemy, amount: number, by: string, out: DogfightEvent[]) {
     if (!e.alive) return;
-    e.hp -= amount; e.flash = 0.12; e.alert = 3; e.jinkT = 0; e.lastHitBy = by;
+    e.hp -= amount; e.alert = 3; e.jinkT = 0; e.lastHitBy = by;
+    this.hurtFx(e);
+    if (e.hp <= 0) this.kill(e, out);
+  }
+
+  /** The puff of feathers (or shield splash in space) a bird lets out when it takes a hit. Online, for a
+   *  bird another machine owns, this plays once that machine reports the hit, so every player sees it. */
+  hurtFx(e: Enemy) {
+    e.flash = 0.12;
     if (isSpace()) sfx.shieldHit(e.mesh, e.pos.clone().addScaledVector(e.vel, -0.05).add(tmpA.randomDirection()), BOLT_MINE);
     else this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.2), 4, 6, 0.6);
-    if (e.hp <= 0) this.kill(e, out);
   }
 
   private spawn(g: Glider, role: Role) {
