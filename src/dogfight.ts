@@ -80,6 +80,34 @@ export function hitsObstacle(p: THREE.Vector3, pad = 0.3) {
   return false;
 }
 
+const sweepObs: Obstacle[] = [];
+/** How far (0..1) along the hop from `a` to `b` a shot first hits the ground, a tree, a rock, a pillar or an arch;
+ *  -1 if the way is clear. Steps every ~1 m so fast peas can't skip through a thin trunk in one frame. */
+export function shotImpact(a: THREE.Vector3, b: THREE.Vector3, pad = 0): number {
+  const len = a.distanceTo(b);
+  const steps = Math.max(1, Math.ceil(len));
+  const obs = obstaclesNear((a.x + b.x) / 2, (a.z + b.z) / 2, len / 2 + 5, sweepObs);
+  for (let i = 1; i <= steps; i++) {
+    const f = i / steps;
+    const x = a.x + (b.x - a.x) * f, y = a.y + (b.y - a.y) * f, z = a.z + (b.z - a.z) * f;
+    if (y < terrainHeight(x, z) + pad) return f;
+    for (const o of obs) if (obstacleGap(o, x, y, z) < pad) return f;
+  }
+  return -1;
+}
+
+const losA = new THREE.Vector3(), losB = new THREE.Vector3();
+/** True if nothing (ground, tree, rock, pillar, arch) blocks the straight line between two birds.
+ *  Trims a couple of metres off each end so a bird skimming the ground or a trunk still counts as seen. */
+export function inSight(a: THREE.Vector3, b: THREE.Vector3): boolean {
+  const len = a.distanceTo(b);
+  if (len < 5) return true;
+  const trim = 2 / len;
+  losA.lerpVectors(a, b, trim); losB.lerpVectors(a, b, 1 - trim);
+  return shotImpact(losA, losB) < 0;
+}
+const LOS_EVERY = 0.1; // re-check line of sight ten times a second (the sweep isn't free)
+
 const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpC = new THREE.Vector3();
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 
@@ -131,6 +159,9 @@ export class Enemy {
   /** Dart lock progress, seconds (hunters only), and reload timer. */
   dartLock = 0;
   dartCd = rand(3, 6);
+  /** Line of sight, re-checked every LOS_EVERY s: from this bird to its target, and from you to this bird. */
+  seesTgt = true; seesTgtT = 0;
+  mySight = true; mySightT = 0;
   heading = 0;
   /** Online play: 'ai' = a host-run bird mirrored on this machine, 'human' = another player. Puppets
    *  skip the brain here; their position comes over the network and their own machine decides hits. */
@@ -746,7 +777,13 @@ export class Dogfight {
         }
         // dart lock: keep you inside its cone, at range, out of the clouds, and it launches a dart
         e.dartCd -= dt;
-        const inCone = e.dir.angleTo(toPlayer) < DART_CONE && dist > DART_RANGE_MIN * rangeK() && dist < DART_RANGE_MAX * rangeK() && !inCloud;
+        let inCone = e.dir.angleTo(toPlayer) < DART_CONE && dist > DART_RANGE_MIN * rangeK() && dist < DART_RANGE_MAX * rangeK() && !inCloud;
+        // ...and in clear sight: go round a ridge, a pillar or a tree and the lock breaks outright
+        if (inCone) {
+          e.seesTgtT -= dt;
+          if (e.seesTgtT <= 0) { e.seesTgtT = LOS_EVERY; e.seesTgt = inSight(e.pos, g.pos); }
+          if (!e.seesTgt) { inCone = false; e.dartLock = 0; }
+        } else e.seesTgtT = 0; // check straight away the next time you're in its cone
         if (active && this.enemyDarts && e.dartCd <= 0 && inCone) {
           if (e.dartLock === 0 && isMe) out.push({ type: 'dartLocking' });
           e.dartLock += dt;
@@ -815,8 +852,14 @@ export class Dogfight {
       const d = tmpA.copy(e.pos).sub(g.pos); const dist = d.length();
       if (dist > LOCK_RANGE * rangeK() * 1.25) continue;
       const err = g.dir.angleTo(d);
-      if (e === this.locked && err < LOCK_KEEP) { best = e; break; }
-      if (dist < LOCK_RANGE * rangeK() && err < bestErr) { best = e; bestErr = err; }
+      const keep = e === this.locked && err < LOCK_KEEP;
+      if (!keep && !(dist < LOCK_RANGE * rangeK() && err < bestErr)) { e.mySightT = 0; continue; }
+      // only a bird in clear sight: lose it behind a ridge, a pillar or a tree and the lock breaks
+      e.mySightT -= dt;
+      if (e.mySightT <= 0) { e.mySightT = LOS_EVERY; e.mySight = inSight(g.pos, e.pos); }
+      if (!e.mySight) continue;
+      if (keep) { best = e; break; }
+      best = e; bestErr = err;
     }
     if (!active) best = null;
     if (best && best === this.locked) { /* keep */ }
@@ -869,9 +912,11 @@ export class Dogfight {
       }
       mprev.copy(d.pos);
       d.pos.addScaledVector(d.vel, dt);
-      let ended = d.pos.y < terrainHeight(d.pos.x, d.pos.z) || (space && hitsObstacle(d.pos, 0));
-      if (space && ended) sfx.explode(d.pos, ZERO, 0.35);
-      if (space && !ended) sfx.missileTrail(d.pos, tmpA.copy(d.vel).normalize());
+      // stopped by the ground or anything in the way (only birds before the impact point can be hit)
+      const hitF = shotImpact(mprev, d.pos);
+      if (hitF >= 0) d.pos.lerpVectors(mprev, d.pos, hitF);
+      let ended = false;
+      if (space && !ended && hitF < 0) sfx.missileTrail(d.pos, tmpA.copy(d.vel).normalize());
       for (const e of this.enemies) {
         if (!e.alive || ended) continue;
         if (segDist(mprev, d.pos, e.pos) < MY_DART_HIT_R) {
@@ -882,6 +927,11 @@ export class Dogfight {
           out.push({ type: 'hitEnemy', enemy: e });
           this.kill(e, out);
         }
+      }
+      if (!ended && hitF >= 0) {
+        ended = true;
+        if (space) sfx.explode(d.pos, ZERO, 0.35); else this.puffs.burst(d.pos, tmpA.set(0, 3, 0), 3, 8, 0.7);
+        out.push({ type: 'myDartMiss' });
       }
       if (ended) d.life = 0;
       else if (d.life <= 0) out.push({ type: 'myDartMiss' });
@@ -896,8 +946,10 @@ export class Dogfight {
       p.life -= dt;
       prev.copy(p.pos);
       p.pos.addScaledVector(p.vel, dt);
-      if (p.pos.y < terrainHeight(p.pos.x, p.pos.z)) { p.life = 0; }
-      else if (space && hitsObstacle(p.pos, 0)) { p.life = 0; sfx.impact(prev, p.enemy ? BOLT_THEIRS : BOLT_MINE); } // a laser splashes on a hull
+      // the ground, trees, rocks, pillars and arches stop peas; birds behind the impact point are safe
+      const hitF = shotImpact(prev, p.pos);
+      const blocked = hitF >= 0;
+      if (blocked) p.pos.lerpVectors(prev, p.pos, hitF);
       if (!p.enemy) {
         for (const e of this.enemies) {
           if (!e.alive || e.friendly) continue;
@@ -917,6 +969,11 @@ export class Dogfight {
         p.near = Math.min(p.near, d);
         if (g.trick && d < 3.5) { out.push({ type: 'dodged' }); p.life = 0; }   // a barrel roll shrugs off the burst
         else if (d < PLAYER_HIT_R) { if (this.hurtT <= 0) { out.push({ type: 'hitPlayer', by: p.owner }); this.hurtT = 0.8; } p.life = 0; }
+      }
+      if (blocked && p.life > 0) {
+        p.life = 0;
+        if (space) sfx.impact(p.pos, p.enemy ? BOLT_THEIRS : BOLT_MINE); // a laser splashes on a hull
+        else this.puffs.burst(p.pos, tmpA.set(0, 1.5, 0), 1.2, 3, 0.45);
       }
       if (p.life <= 0) p.mesh.visible = false;
       else { p.mesh.position.copy(p.pos); p.mesh.lookAt(tmpA.copy(p.pos).add(p.vel)); }
@@ -951,12 +1008,14 @@ export class Dogfight {
       if (!d.tracking) d.life = Math.min(d.life, 1.5);
       const prev = d.pos.clone(); // (segDist uses the tmp vectors itself)
       d.pos.addScaledVector(d.dir, d.speed * dt);
+      const hitF = shotImpact(prev, d.pos, 0.3); // ground or an obstacle in the way
+      if (hitF >= 0) d.pos.lerpVectors(prev, d.pos, hitF);
       if (d.tracking && active && segDist(prev, d.pos, g.pos) < DART_HIT_R) {
         out.push({ type: 'dartHit', by: d.by }); this.hurtT = 0.8; // a dart always lands, even right after a pea hit
         if (space) sfx.explode(d.pos, ZERO, 0.4); else this.puffs.burst(d.pos, tmpA.set(0, 2, 0), 5, 14, 0.8);
         this.removeDart(d); continue;
       }
-      if (d.pos.y < terrainHeight(d.pos.x, d.pos.z) + 0.3 || (space && hitsObstacle(d.pos, 0.3))) { // (in space: a ship)
+      if (hitF >= 0) {
         if (d.tracking) out.push({ type: 'dartShaken', how: 'ground' });
         if (space) sfx.explode(d.pos, ZERO, 0.35); else this.puffs.burst(d.pos, tmpA.set(0, 5, 0), 5, 14, 0.9);
         this.removeDart(d); continue;
