@@ -60,6 +60,7 @@
   .ret.lock { border-color: #fff; border-radius: 50%; border-width: 3px; }
   .ret.mylocking { border-color: #7af0ff; border-style: dashed; }
   .ret.mylocked { border-color: #7af0ff; border-radius: 50%; border-width: 3px; }
+  .ret.ally { border-style: dotted; opacity: .7; }
   .ret.dart { border-color: #ff3b2e; border-width: 3px; width: 22px; height: 22px; margin: -13px 0 0 -13px; background: rgba(255,59,46,.25); }
   /* lead marker: aim the gun cross at it */
   .lead { position: fixed; left: 0; top: 0; width: 18px; height: 18px; margin: -11px 0 0 -11px; border: 2px solid #ff5a4a; border-radius: 50%;
@@ -79,6 +80,8 @@
   #board div.me span { text-decoration: underline; }
   #board i { font-style: normal; min-width: 18px; text-align: right; color: #fff; }
   #board i.d { opacity: .6; }
+  #board div.teamrow { margin-top: 4px; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; }
+  #board div.teamrow i { color: inherit; }
   #feed { top: calc(76px + env(safe-area-inset-top)); left: 16px; font-size: 13px; font-weight: 700; line-height: 1.5; display: none; max-width: 45vw; }
   /* ---------- Overlay: title menu, lobby and crash screens ---------- */
   #overlay { position: fixed; inset: 0; display: flex; align-items: flex-start; justify-content: center; text-align: center; overflow-y: auto;
@@ -158,6 +161,8 @@
   .players { list-style: none; padding: 0; margin: 4px 0; display: flex; flex-wrap: wrap; gap: 6px; }
   .players li { display: flex; align-items: center; gap: 6px; font-weight: 800; font-size: 15px; padding: 6px 12px 6px 8px; border-radius: 999px; background: rgba(255,255,255,.1); }
   .players li i { width: 12px; height: 12px; border-radius: 50%; box-shadow: 0 0 0 2px rgba(255,255,255,.5); }
+  .players li.teamhead { flex-basis: 100%; background: none; padding: 6px 0 0; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; }
+  .players li.empty { background: none; font-size: 13px; font-weight: 600; opacity: .5; }
   .players li em { font-style: normal; font-size: 11px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; opacity: .6; }
   .panel .note { color: var(--accent); font-weight: 700; font-size: 14px; margin: 8px 6px; word-break: break-all; }
   .panel .wait { margin-top: 16px; opacity: .8; animation: pulse 1.8s ease-in-out infinite; }

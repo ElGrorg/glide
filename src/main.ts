@@ -10,7 +10,7 @@ import { Input } from './input';
 import { WindAudio } from './audio';
 import { Dogfight, MAX_DARTS, peaSpeed, peaLife, flapAmount, type DogfightEvent } from './dogfight';
 import { setWorldSeed } from './noise';
-import { Online, PLAYER_CSS, colorIndex, type MatchRules } from './online';
+import { Online, PLAYER_CSS, TEAM_CSS, TEAM_NAMES, colorIndex, type MatchRules } from './online';
 import { cleanCode, hasRoomBrowser, listRooms, type RoomInfo } from './net';
 import { DownCam, type Tracked } from './downcam';
 import { sfx } from './spacefx';
@@ -309,7 +309,7 @@ loadBest();
 /** The arena chosen for this match ("random" rolls one per match). */
 let arenaIdx = 0;
 
-const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'tilt', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
+const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'team', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'tilt', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
 const GO_ROW = MENU_ROWS.indexOf('go');
 let menuRow = inviteCode ? MENU_ROWS.indexOf('join') : GO_ROW;
 /** On a phone the Steering row (thumbs or tilt) follows Camera. */
@@ -320,7 +320,8 @@ function menuRows(): readonly string[] {
 function baseRows(): readonly string[] {
   const browser = hasRoomBrowser();
   if (settings.mode === 'online') return online.active
-    ? (online.isHost && online.phase === 'lobby' ? [...(browser ? ['vis'] : []), 'env', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go'] : online.phase === 'lobby' ? ['lead', 'downcam', 'view'] : [])
+    ? (online.isHost && online.phase === 'lobby' ? [...(browser ? ['vis'] : []), 'env', 'bots', 'allies', ...(settings.allies ? ['team'] : []), 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go']
+      : online.phase === 'lobby' ? [...(online.teams ? ['team'] : []), 'lead', 'downcam', 'view'] : [])
     : ['mode', ...(browser && openRooms.length ? ['rooms'] : []), 'join', ...(browser ? ['vis'] : []), 'host', 'lead', 'downcam', 'view', 'help'];
   return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
     : settings.mode === 'space' ? ['mode', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
@@ -483,13 +484,18 @@ function renderOnlineMenu() {
     body = `<p class="blurb center">${online.isHost ? 'Opening a room…' : `Joining room <b>${esc(online.code)}</b>…`}</p>
     <div class="btns"><button data-act="leave">Cancel</button></div>`;
   } else {
-    const players = online.roster().map((p) => `<li><i style="background:${PLAYER_CSS[colorIndex(p.id)]}"></i>${esc(p.name)}${p.id === online.myId ? ' <em>you</em>' : ''}${p.id === 'p0' ? ' <em>host</em>' : ''}</li>`).join('');
+    const li = (p: { id: string; name: string }) => `<li><i style="background:${PLAYER_CSS[colorIndex(p.id)]}"></i>${esc(p.name)}${p.id === online.myId ? ' <em>you</em>' : ''}${p.id === 'p0' ? ' <em>host</em>' : ''}</li>`;
+    // Team up: the players split into their two teams, and everyone picks theirs
+    const players = online.teams
+      ? TEAM_NAMES.map((tn, k) => `<li class="teamhead" style="color:${TEAM_CSS[k]}">${tn} team</li>${online.roster().filter((p) => p.team === k).map(li).join('') || '<li class="empty">nobody yet</li>'}`).join('')
+      : online.roster().map(li).join('');
+    const teamPick = online.teams ? pickRow(sel('team'), 'team', 'Your team', `<span style="color:${TEAM_CSS[online.team]}">${TEAM_NAMES[online.team]}</span>`, 'Teammates can\'t hit each other') : '';
     const match = online.isHost ? `
       ${sect('Match')}
       ${hasRoomBrowser() ? visRow(sel('vis')) : ''}
       ${pickRow(sel('env'), 'env', 'Arena', envName)}
       ${pickRow(sel('bots'), 'bots', 'AI birds', settings.bots ? `${settings.bots} per wave` : 'None')}
-      ${pickRow(sel('allies'), 'allies', 'Players', settings.allies ? 'Team up' : 'Free for all')}
+      ${pickRow(sel('allies'), 'allies', 'Players', settings.allies ? 'Team up' : 'Free for all', settings.allies ? 'Red vs Blue: everyone picks a team' : '')}
       ${pickRow(sel('myDarts'), 'myDarts', 'Player darts', onOff(settings.myDarts))}
       ${pickRow(sel('enemyDarts'), 'enemyDarts', 'AI darts', onOff(settings.enemyDarts))}` : '';
     const start = online.isHost ? `<button data-act="go" class="go-btn cta${sel('go')}">Start match</button>` : '<p class="blurb center wait">Waiting for the host to start…</p>';
@@ -498,7 +504,8 @@ function renderOnlineMenu() {
     <div class="btns"><button data-act="copy">Copy invite link</button><button data-act="leave">Leave</button></div>
     ${note}
     ${sect(`Players · ${online.roster().length}`)}
-    <ul class="players">${players}</ul>`;
+    <ul class="players">${players}</ul>
+    ${teamPick}`;
     if (compact) {
       // left: the room, who's in and the start button; right: the match settings
       hud.overlay.innerHTML = splitMenu(room + start, match + view, hint);
@@ -528,7 +535,7 @@ function onlineAction(act: string) {
   audio.start();
   onlineNote = '';
   const name = (settings.name || '').trim() || 'Bird';
-  if (act === 'host') { online.host(name, settings.public); renderMenu(); }
+  if (act === 'host') { online.host(name, settings.public, settings.allies); renderMenu(); }
   else if (act === 'join') {
     if (cleanCode(settings.code).length < 4) { onlineNote = 'Type the room code your friend gave you.'; renderMenu(); (document.getElementById('codeIn') as HTMLInputElement | null)?.focus(); return; }
     online.join(settings.code, name); renderMenu();
@@ -556,7 +563,8 @@ function menuChange(row: string, d: number) {
     if (m !== settings.mode) { const was = worldKind(settings.mode), now = worldKind(m); settings.mode = m; loadBest(); if (was !== now) queuePreview(); showControlsSafe(); }
   }
   else if (row === 'bots') settings.bots = THREE.MathUtils.clamp(settings.bots + d, 0, 12);
-  else if (row === 'allies') settings.allies = !settings.allies;
+  else if (row === 'allies') { settings.allies = !settings.allies; online.setTeams(settings.allies); }
+  else if (row === 'team') { if (online.teams) online.pickTeam(online.team ? 0 : 1); }
   else if (row === 'lead') settings.lead = !settings.lead;
   else if (row === 'help') settings.help = !settings.help;
   else if (row === 'downcam') settings.downcam = DOWNCAM_OPTS[(DOWNCAM_OPTS.indexOf(settings.downcam) + d + DOWNCAM_OPTS.length) % DOWNCAM_OPTS.length];
@@ -784,6 +792,14 @@ function respawnOnline() {
   placeCamera(true);
 }
 
+/** Another player's colour on the HUD: their team's in Team up, their own otherwise. */
+const humanCss = (id: string) => (online.teams && online.teamOf(id) >= 0 ? TEAM_CSS[online.teamOf(id)] : PLAYER_CSS[colorIndex(id)]);
+dogfight.isAlly = (owner) => online.phase === 'playing' && online.isAlly(owner);
+/** Team up with no AI birds: the score, team against team. */
+function teamBanner() {
+  const k = [0, 0]; for (const p of online.roster()) k[p.team ? 1 : 0] += p.kills;
+  return `${TEAM_NAMES[0].toUpperCase()} ${k[0]} · ${k[1]} ${TEAM_NAMES[1].toUpperCase()}`;
+}
 function myDartsOn() { return online.phase === 'playing' ? !!online.rules?.myDarts : settings.myDarts; }
 
 function multiplier() { return 1 + Math.min(combo, 8) * 0.5; }
@@ -1049,7 +1065,7 @@ function drawDogfightHud(show: boolean) {
       let ahead = dx * fx + dz * fz, right = dx * -fz + dz * fx;
       const d = Math.hypot(ahead, right), k = Math.min(1, d / RADAR_RANGE) * R / Math.max(d, 1e-3);
       ahead *= k; right *= k;
-      c.fillStyle = e.remote === 'human' ? PLAYER_CSS[colorIndex(e.netId)] : e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
+      c.fillStyle = e.remote === 'human' ? humanCss(e.netId) : e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
       c.beginPath(); c.arc(cx + right, cy - ahead, d > RADAR_RANGE ? 2.5 : 4, 0, Math.PI * 2); c.fill();
     }
     for (const d of dogfight.darts) {
@@ -1076,15 +1092,15 @@ function drawDogfightHud(show: boolean) {
     // with your darts switched off there's nothing to lock with, so no lock-on markings
     const myLock = myDartsOn() && e === dogfight.locked, myLocking = myDartsOn() && e === dogfight.locking;
     const mine = myLock ? ' mylocked' : myLocking ? ' mylocking' : '';
-    el.className = `ret ${e.role}${locking ? ' lock' : ''}${mine}`;
-    el.style.borderColor = e.remote === 'human' && !mine ? PLAYER_CSS[colorIndex(e.netId)] : '';
-    el.style.setProperty('--c', e.remote === 'human' && !mine ? PLAYER_CSS[colorIndex(e.netId)] : '');
+    el.className = `ret ${e.role}${locking ? ' lock' : ''}${mine}${e.friendly ? ' ally' : ''}`;
+    el.style.borderColor = e.remote === 'human' && !mine ? humanCss(e.netId) : '';
+    el.style.setProperty('--c', e.remote === 'human' && !mine ? humanCss(e.netId) : '');
     el.style.setProperty('--hp', `${Math.round(THREE.MathUtils.clamp(e.hp / e.maxHp, 0, 1) * 100)}%`);
     el.style.display = 'block';
     el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
     const dist = Math.round(e.pos.distanceTo(glider.pos));
     const who = e.remote === 'human' ? online.remotes.get(e.netId)?.name ?? '' : '';
-    (el.firstChild as HTMLElement).textContent = locking ? `LOCKING YOU ${dist} m` : myLock ? `LOCKED ${dist} m` : myLocking ? `LOCK ${Math.round(dogfight.lockT * 100)}%` : who ? `${who} · ${dist} m` : `${dist} m`;
+    (el.firstChild as HTMLElement).textContent = locking ? `LOCKING YOU ${dist} m` : myLock ? `LOCKED ${dist} m` : myLocking ? `LOCK ${Math.round(dogfight.lockT * 100)}%` : who ? `${who}${e.friendly ? ' · ally' : ''} · ${dist} m` : `${dist} m`;
   }
   // darts coming at you
   if (show) for (const d of dogfight.darts) {
@@ -1151,8 +1167,12 @@ function drawOnlineHud(dt: number) {
   if ((boardT -= dt) > 0) return;
   boardT = 0.25;
   const rows = online.roster().sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
-  $('board').innerHTML = `<b>ROOM ${esc(online.code)}</b>` + rows.map((p) =>
-    `<div style="color:${PLAYER_CSS[colorIndex(p.id)]}"${p.id === online.myId ? ' class="me"' : ''}><span>${esc(p.name)}</span><i>${p.kills}</i><i class="d">${p.deaths}</i></div>`).join('');
+  const row = (p: typeof rows[number]) =>
+    `<div style="color:${PLAYER_CSS[colorIndex(p.id)]}"${p.id === online.myId ? ' class="me"' : ''}><span>${esc(p.name)}</span><i>${p.kills}</i><i class="d">${p.deaths}</i></div>`;
+  // Team up: each team under its own heading with its total
+  $('board').innerHTML = `<b>ROOM ${esc(online.code)}</b>` + (online.teams
+    ? TEAM_NAMES.map((tn, k) => { const tm = rows.filter((p) => p.team === k); return tm.length ? `<div class="teamrow" style="color:${TEAM_CSS[k]}"><span>${tn}</span><i>${tm.reduce((a, p) => a + p.kills, 0)}</i><i class="d"></i></div>${tm.map(row).join('')}` : ''; }).join('')
+    : rows.map(row).join(''));
   while (feed.length && t - feed[0].t > 6) feed.shift();
   $('feed').innerHTML = feed.map((f) => `<div>${esc(f.text)}</div>`).join('');
 }
@@ -1186,7 +1206,7 @@ function drawLeads(on: boolean) {
       if (!el) { el = document.createElement('div'); el.className = 'lead'; $('rets').appendChild(el); leadEls.push(el); }
       n++;
       el.style.display = 'block';
-      el.style.borderColor = e.remote === 'human' ? PLAYER_CSS[colorIndex(e.netId)] : e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
+      el.style.borderColor = e.remote === 'human' ? humanCss(e.netId) : e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
       el.style.opacity = dist <= reach ? '1' : '0.4'; // faded: out of pea range for now
       el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
     }
@@ -1649,7 +1669,7 @@ function frame(now: number) {
   const alive = dogfight.enemies.filter((e) => e.alive && e.remote !== 'human').length;
   const rules = online.phase === 'playing' ? online.rules : null;
   hud.wave.textContent = rules && mode !== 'title'
-    ? rules.bots === 0 ? (rules.allies ? 'TEAM UP' : 'FREE FOR ALL') : dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`
+    ? rules.bots === 0 ? (rules.allies ? teamBanner() : 'FREE FOR ALL') : dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`
     : inArena && mode === 'flying'
     ? dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`
     : '';
