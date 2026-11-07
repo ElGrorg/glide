@@ -9,11 +9,14 @@ import * as THREE from 'three';
  * and straight after the render the live pose is put back.
  */
 
-const KEEP = 3.3;        // seconds of history kept
-const SHOW = 3.0;        // seconds shown
-const SLOW_LAST = 0.7;   // the last moments play in slow motion...
-const SLOW_RATE = 0.3;   // ...at this speed
-const HOLD = 0.6;        // then the final frame holds for a beat
+const SHOW = 4.0;        // seconds shown before the hit
+const AFTER = 1.0;       // ...and after it (it keeps recording while the replay plays, so you see yourself fall)
+const KEEP = SHOW + 0.4; // seconds of history kept
+const SLOW_BEFORE = 0.5; // the moment of the hit plays in slow motion...
+const SLOW_AFTER = 0.35;
+const SLOW_RATE = 0.35;  // ...at this speed
+const HOLD = 0.4;        // then the final frame holds for a beat
+const MIN_STEP = 1 / 40; // record at most 40 times a second (keeps memory down on fast screens)
 const FLOATS = 10;       // per node: position xyz, quaternion xyzw, scale xyz
 
 interface Frame {
@@ -85,6 +88,7 @@ export class DownCam {
   viewer: THREE.Object3D | null = null;
   me: THREE.Object3D | null = null;
   private t0 = 0;
+  private tHit = 0;
   private t1 = 0;
 
   // live state saved around each replayed render
@@ -101,10 +105,12 @@ export class DownCam {
 
   /** Record one frame (call once per frame, after the meshes have been placed). */
   record(t: number, tr: Tracked) {
-    if (this.playing) return;
-    if (this.frames.length && t <= this.frames[this.frames.length - 1].t) return;
+    // while the replay plays, keep recording up to a second after the hit (and keep what it's showing)
+    if (this.playing && t > this.t1 + MIN_STEP) return;
+    if (this.frames.length && t - this.frames[this.frames.length - 1].t < MIN_STEP) return;
     // drop old frames, keeping their puff buffers for reuse
-    while (this.frames.length > 2 && t - this.frames[1].t > KEEP) {
+    const before = this.playing ? this.t0 : t - KEEP;
+    while (this.frames.length > 2 && this.frames[1].t < before) {
       const old = this.frames.shift()!;
       if (old.puffs) this.spare.push(old.puffs);
     }
@@ -166,10 +172,11 @@ export class DownCam {
   start(me: THREE.Object3D, viewer: THREE.Object3D | null, show = SHOW) {
     if (!this.ready) return false;
     this.me = me; this.viewer = viewer;
-    this.t1 = this.frames[this.frames.length - 1].t;
-    this.t0 = Math.max(this.frames[0].t, this.t1 - show);
-    const span = this.t1 - this.t0, slow = Math.min(SLOW_LAST, span);
-    this.duration = (span - slow) + slow / SLOW_RATE + HOLD;
+    this.tHit = this.frames[this.frames.length - 1].t;
+    this.t0 = Math.max(this.frames[0].t, this.tHit - show);
+    this.t1 = this.tHit + AFTER;
+    const [fast1, slow, fast2] = this.spans();
+    this.duration = fast1 + slow / SLOW_RATE + fast2 + HOLD;
     this.elapsed = 0; this.playing = true; this.camInit = false;
     return true;
   }
@@ -179,12 +186,22 @@ export class DownCam {
   /** 0..1 progress through the replay. */
   get progress() { return this.duration ? Math.min(1, this.elapsed / this.duration) : 1; }
 
-  /** Recorded time for the current replay position: real speed, then slow motion at the end, then a hold. */
+    /** Recorded seconds before the slow motion, in it, and after it. */
+  private spans(): [number, number, number] {
+    const fast1 = Math.max(0, this.tHit - SLOW_BEFORE - this.t0);
+    const slow = Math.min(SLOW_BEFORE, this.tHit - this.t0) + SLOW_AFTER;
+    return [fast1, slow, this.t1 - this.tHit - SLOW_AFTER];
+  }
+
+  /** Recorded time for the current replay position: real speed, slow motion around the hit, real speed, then a hold. */
   private replayTime() {
-    const span = this.t1 - this.t0, slow = Math.min(SLOW_LAST, span), fast = span - slow;
-    const e = this.elapsed;
-    if (e < fast) return this.t0 + e;
-    return Math.min(this.t1, this.t0 + fast + (e - fast) * SLOW_RATE);
+    const [fast1, slow, fast2] = this.spans();
+    let e = this.elapsed, tt: number;
+    if (e < fast1) tt = this.t0 + e;
+    else if ((e -= fast1) < slow / SLOW_RATE) tt = this.t0 + fast1 + e * SLOW_RATE;
+    else tt = this.t0 + fast1 + slow + Math.min(fast2, e - slow / SLOW_RATE);
+    // never ahead of what has been recorded so far
+    return Math.min(tt, this.frames[this.frames.length - 1].t);
   }
 
   /** Advance the replay clock (real seconds). Returns false once it has finished. */
