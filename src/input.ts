@@ -98,6 +98,9 @@ export class Input {
     this.thrEl = document.getElementById('throttle');
     this.thrKnob = document.getElementById('thrKnob');
     addEventListener('deviceorientation', (e) => this.onOrientation(e));
+    // capture phase, so it runs even when a handler below stops the event
+    addEventListener('touchend', () => this.askMotion(), true);
+    addEventListener('click', () => this.askMotion(), true);
     const typing = (e: Event) => (e.target as HTMLElement | null)?.tagName === 'INPUT';
     addEventListener('keydown', (e) => {
       if (typing(e)) return; // typing a name or room code
@@ -246,11 +249,21 @@ export class Input {
     if (this.ori) { this.tiltZero = this.ori.pitch; this.zeroReq = false; } else this.zeroReq = true;
   }
   /** Ask for the motion sensors. iOS only lets a page do this from a tap, so call it from one. */
-  requestMotion(): Promise<boolean> {
+  /** Motion sensor access: iOS needs the player's OK, asked for from a tap ('unknown' until then). */
+  motion: 'unknown' | 'granted' | 'denied' = 'unknown';
+  onMotion: (() => void) | null = null;
+  private asking = false;
+  /** Ask for the motion sensors if tilt is on and we don't have them. Safari only shows its prompt when
+   *  this runs inside a touchend or click handler (not pointerup), so it's called from those. */
+  askMotion() {
+    if (!this.tilt || this.motion === 'granted' || this.asking) return;
     const D = (window as any).DeviceOrientationEvent;
-    if (!D) return Promise.resolve(false);
-    if (typeof D.requestPermission !== 'function') return Promise.resolve(true);
-    return D.requestPermission().then((r: string) => r === 'granted', () => false);
+    const done = (m: Input['motion']) => { if (m !== this.motion) { this.motion = m; this.onMotion?.(); } };
+    if (!D) { done('denied'); return; }
+    if (typeof D.requestPermission !== 'function') { done('granted'); return; }
+    this.asking = true;
+    D.requestPermission().then((r: string) => done(r === 'granted' ? 'granted' : 'denied'),
+      () => { /* not counted as a tap: try again on the next one */ }).finally(() => { this.asking = false; });
   }
   private slideThrottle(y: number) {
     const b = this.thrEl?.getBoundingClientRect();

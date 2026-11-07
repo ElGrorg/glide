@@ -291,6 +291,7 @@ if (!['endless', 'arena', 'space', 'online'].includes(settings.mode)) settings.m
 if (settings.view !== 'cockpit') settings.view = 'chase';
 settings.tilt = isTouch && settings.tilt === true;
 input.tilt = settings.tilt;
+input.onMotion = () => { if (mode === 'title') renderMenu(); };
 if (!DOWNCAM_OPTS.includes(settings.downcam)) settings.downcam = 'shot';
 settings.name = String(settings.name || '').slice(0, 16);
 // an invite link (?room=CODE) opens straight onto the online menu, ready to join
@@ -420,17 +421,11 @@ function visRow(sel: string) {
   return pickRow(sel, 'vis', 'Room', on ? 'Public' : 'Private', on ? 'Listed under Open rooms for anyone to join' : 'Hidden: friends join with the code or invite link');
 }
 function viewRow(sel: string) { return pickRow(sel, 'view', 'Camera', settings.view === 'cockpit' ? 'First person' : 'Chase', 'T / R3 switches in flight'); }
-let motionNote = '';
 function tiltRow(sel: string) {
   if (!isTouch) return '';
-  return pickRow(sel, 'tilt', 'Steering', settings.tilt ? 'Tilt' : 'Thumbs', motionNote || (settings.tilt ? 'Tilt the phone to fly · level is how you hold it at launch' : 'Thumb sticks · or switch to tilt (motion) steering'));
-}
-/** Motion steering needs the sensors; iOS asks the player once, and only from a tap. */
-function askMotion() {
-  input.requestMotion().then((ok) => {
-    const note = ok ? '' : 'Motion access was refused. Allow Motion & Orientation Access in Safari settings, then reload.';
-    if (note !== motionNote) { motionNote = note; if (mode === 'title') renderMenu(); }
-  });
+  return pickRow(sel, 'tilt', 'Steering', settings.tilt ? 'Tilt' : 'Thumbs', !settings.tilt ? 'Thumb sticks · or switch to tilt (motion) steering'
+    : input.motion === 'denied' ? 'Motion access is off. Quit and reopen Safari, then tap Tilt again and choose Allow'
+    : input.motion === 'unknown' ? 'Tap to allow motion access when Safari asks' : 'Tilt the phone to fly · level is how you hold it at launch');
 }
 function leadRow(sel: string) { return pickRow(sel, 'lead', 'Lead marker', onOff(settings.lead), `Shows where to aim your ${settings.mode === 'space' || isSpace() ? 'lasers' : 'peas'}`); }
 function downcamRow(sel: string) {
@@ -568,7 +563,7 @@ function menuChange(row: string, d: number) {
     const n = settings.mode === 'online' ? SPACE_ENV + 1 : ARENAS.length + 1;
     settings.env = (Math.min(settings.env, n - 1) + d + n) % n; queuePreview();
   }
-  else if (row === 'tilt') { settings.tilt = isTouch && !settings.tilt; input.tilt = settings.tilt; if (settings.tilt) askMotion(); else motionNote = ''; showControlsSafe(); }
+  else if (row === 'tilt') { settings.tilt = isTouch && !settings.tilt; input.tilt = settings.tilt; if (input.motion === 'denied') input.motion = 'unknown'; showControlsSafe(); }
   else if (row === 'view') settings.view = settings.view === 'cockpit' ? 'chase' : 'cockpit';
   else if (row === 'myDarts') settings.myDarts = !settings.myDarts;
   else if (row === 'enemyDarts') settings.enemyDarts = !settings.enemyDarts;
@@ -593,7 +588,7 @@ function menuAct(target: HTMLElement) {
   if (!act) return;
   audio.start();
   const [k, v] = act.split(':');
-  if (['go', 'host', 'join', 'joinroom'].includes(k)) { goLandscape(); if (settings.tilt) askMotion(); }
+  if (['go', 'host', 'join', 'joinroom'].includes(k)) goLandscape();
   if (k === 'joinroom') { settings.code = cleanCode(v); onlineAction('join'); return; }
   if (settings.mode === 'online' && ['host', 'join', 'leave', 'copy', 'go'].includes(k)) { onlineAction(k); return; }
   if (k === 'go') startReq = true;
