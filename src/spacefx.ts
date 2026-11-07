@@ -218,11 +218,12 @@ function shieldMat() {
     uniforms: { hit: { value: new THREE.Vector3(0, 0, 1) }, t: { value: 0 }, color: { value: new THREE.Color(0x66ccff) } },
     vertexShader: 'varying vec3 vN; varying vec3 vL; varying vec3 vV; void main(){ vL = normalize(position); vec4 w = modelMatrix * vec4(position,1.); vN = normalize(mat3(modelMatrix) * normal); vV = normalize(cameraPosition - w.xyz); gl_Position = projectionMatrix * viewMatrix * w; }',
     fragmentShader: `uniform vec3 hit; uniform float t; uniform vec3 color; varying vec3 vN; varying vec3 vL; varying vec3 vV;
+      float sq(float x){ return x * x; }
       void main(){
         float ang = acos(clamp(dot(vL, hit), -1., 1.));
-        float wave = exp(-pow((ang - t * 5.) * 3.5, 2.)) * (1. - t);
+        float wave = exp(-sq((ang - t * 5.) * 3.5)) * (1. - t);
         float core = exp(-ang * 4.) * (1. - t) * 1.6;
-        float rim = pow(1. - abs(dot(vN, vV)), 2.5) * .45 * (1. - t);
+        float rim = pow(max(1. - abs(dot(vN, vV)), 0.), 2.5) * .45 * (1. - t);
         float a = wave + core + rim;
         gl_FragColor = vec4(color * a, a);
       }`,

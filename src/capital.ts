@@ -432,7 +432,7 @@ function plumeMat(c: number) {
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false,
       uniforms: { c: { value: new THREE.Color(c) }, t: { value: 0 } },
       vertexShader: 'varying float vX; varying vec3 vN; varying vec3 vV; void main(){ vX = -position.x; vec4 w = modelMatrix * vec4(position,1.); vN = normalize(mat3(modelMatrix) * normal); vV = normalize(cameraPosition - w.xyz); gl_Position = projectionMatrix * viewMatrix * w; }',
-      fragmentShader: 'uniform vec3 c; uniform float t; varying float vX; varying vec3 vN; varying vec3 vV; void main(){ float edge = pow(abs(dot(vN, vV)), 1.5); float a = pow(1. - vX, 2.2) * edge * (.85 + .15 * sin(t * 40. + vX * 20.)); gl_FragColor = vec4(c * a * .9, a); }',
+      fragmentShader: 'uniform vec3 c; uniform float t; varying float vX; varying vec3 vN; varying vec3 vV; void main(){ float edge = pow(min(abs(dot(vN, vV)), 1.), 1.5); float a = pow(clamp(1. - vX, 0., 1.), 2.2) * edge * (.85 + .15 * sin(t * 40. + vX * 20.)); gl_FragColor = vec4(c * a * .9, a); }',
     });
     plumes.set(c, m);
   }

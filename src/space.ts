@@ -287,6 +287,7 @@ const SKY_R = 20000;
 
 /** GLSL: 3D value noise and a few octaves of it. */
 const NOISE_GLSL = `
+  float sq(float x){ return x * x; } // (GLSL's pow() is undefined for a negative base: NaN on Apple GPUs)
   float h3(vec3 p){ return fract(sin(dot(p, vec3(12.9898,78.233,37.719))) * 43758.5453); }
   float n3(vec3 p){ vec3 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
     return mix(mix(mix(h3(i),h3(i+vec3(1,0,0)),f.x),mix(h3(i+vec3(0,1,0)),h3(i+vec3(1,1,0)),f.x),f.y),
@@ -329,7 +330,7 @@ export class SpaceScene {
           void main(){
             vec3 p = vP * 2.6;
             float a = fbm(p + 3.1), b = fbm(p * 1.7 + 9.);
-            float band = exp(-pow(dot(vP, normalize(vec3(.35, 1., .25))) * 3.2, 2.));
+            float band = exp(-sq(dot(vP, normalize(vec3(.35, 1., .25))) * 3.2));
             vec3 c = vec3(.006, .008, .02);
             c += vec3(.05, .16, .22) * pow(smoothstep(.42, .82, a), 2.2) * (.4 + band);
             c += vec3(.22, .07, .26) * pow(smoothstep(.5, .9, b), 2.5) * .8;
@@ -409,8 +410,8 @@ export class SpaceScene {
           col += vec3(1., .62, .25) * city * (1. - smoothstep(-.25, .05, ndl)) * 1.4;
           // atmosphere: blue haze toward the limb, a warm band along the terminator
           float f = 1. - max(dot(n, vV), 0.);
-          col = mix(col, vec3(.3, .55, 1.) * (day + .05), pow(f, 2.6) * .85);
-          col += vec3(1., .45, .2) * exp(-pow(ndl * 7., 2.)) * pow(f, 1.5) * .35;
+          col = mix(col, vec3(.3, .55, 1.) * (day + .05), pow(max(f, 0.), 2.6) * .85);
+          col += vec3(1., .45, .2) * exp(-sq(ndl * 7.)) * pow(max(f, 0.), 1.5) * .35;
           gl_FragColor = vec4(col, 1.);
         }`,
     }));
