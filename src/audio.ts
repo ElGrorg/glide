@@ -68,6 +68,87 @@ export class WindAudio {
     o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.09);
   }
 
+  /** Space laser: a punchy zap (a falling saw and a square an octave down, plus a click of noise). Enemy bolts are lower. */
+  laser(enemy = false) {
+    if (!this.ctx || this.muted) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const f0 = (enemy ? 900 : 1500) * (0.95 + Math.random() * 0.1);
+    const out = ctx.createGain(); out.gain.setValueAtTime(enemy ? 0.05 : 0.065, t); out.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(5000, t); f.frequency.exponentialRampToValueAtTime(600, t + 0.16);
+    f.connect(out).connect(ctx.destination);
+    for (const [type, mul] of [['sawtooth', 1], ['square', 0.5]] as const) {
+      const o = ctx.createOscillator(); o.type = type;
+      o.frequency.setValueAtTime(f0 * mul, t); o.frequency.exponentialRampToValueAtTime(f0 * mul * 0.12, t + 0.16);
+      o.connect(f); o.start(t); o.stop(t + 0.19);
+    }
+    const n = ctx.createBufferSource(); n.buffer = this.noise;
+    const ng = ctx.createGain(); ng.gain.setValueAtTime(0.25, t); ng.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
+    n.connect(ng).connect(f); n.start(t, Math.random()); n.stop(t + 0.04);
+  }
+
+  /** An explosion: a deep thump and a roaring crackle, quieter and duller the further off it is. */
+  boom(size = 1, dist = 0) {
+    if (!this.ctx || this.muted) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const near = Math.min(1, 60 / Math.max(dist, 20)) * Math.min(1.3, size);
+    if (near < 0.04) return;
+    const len = 0.9 + size * 0.6;
+    const out = ctx.createGain(); out.gain.value = 0.55 * near;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(900 + 2600 * near, t); lp.frequency.exponentialRampToValueAtTime(120, t + len);
+    lp.connect(out).connect(ctx.destination);
+    const n = ctx.createBufferSource(); n.buffer = this.noise; n.playbackRate.value = 0.6;
+    const ng = ctx.createGain(); ng.gain.setValueAtTime(1, t); ng.gain.exponentialRampToValueAtTime(0.001, t + len);
+    n.connect(ng).connect(lp); n.start(t, Math.random()); n.stop(t + len);
+    const o = ctx.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(90, t); o.frequency.exponentialRampToValueAtTime(28, t + 0.6);
+    const og = ctx.createGain(); og.gain.setValueAtTime(0.9, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
+    o.connect(og).connect(out); o.start(t); o.stop(t + 0.75);
+  }
+
+  /** A bolt on your shields: a bright metallic crackle. */
+  shieldHit() {
+    if (!this.ctx || this.muted) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = 'triangle';
+    o.frequency.setValueAtTime(320, t); o.frequency.exponentialRampToValueAtTime(140, t + 0.25);
+    const g = ctx.createGain(); g.gain.setValueAtTime(0.14, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.32);
+    const n = ctx.createBufferSource(); n.buffer = this.noise;
+    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 2500;
+    const ng = ctx.createGain(); ng.gain.setValueAtTime(0.5, t); ng.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+    n.connect(hp).connect(ng).connect(ctx.destination); n.start(t, Math.random()); n.stop(t + 0.24);
+  }
+
+  private eng: { o1: OscillatorNode; o2: OscillatorNode; lp: BiquadFilterNode; g: GainNode; ng: GainNode; nf: BiquadFilterNode } | null = null;
+  /** Space fighter engine: a low two-oscillator drone that climbs with the throttle and roars on boost,
+   *  dropping to a hush when you cut the engines to drift. `on` false fades it out. */
+  engine(on: boolean, throttle: number, boost: number, drift: number) {
+    if (!this.ctx) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    if (!this.eng) {
+      const g = ctx.createGain(); g.gain.value = 0;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 2;
+      const o1 = ctx.createOscillator(); o1.type = 'sawtooth';
+      const o2 = ctx.createOscillator(); o2.type = 'sawtooth'; o2.detune.value = 14;
+      o1.connect(lp); o2.connect(lp); lp.connect(g).connect(ctx.destination);
+      const n = ctx.createBufferSource(); n.buffer = this.noise; n.loop = true;
+      const nf = ctx.createBiquadFilter(); nf.type = 'bandpass'; nf.Q.value = 0.8;
+      const ng = ctx.createGain(); ng.gain.value = 0;
+      n.connect(nf).connect(ng).connect(ctx.destination);
+      o1.start(); o2.start(); n.start();
+      this.eng = { o1, o2, lp, g, ng, nf };
+    }
+    const e = this.eng, live = on && !this.muted ? 1 : 0;
+    const cut = 1 - 0.75 * drift;
+    const f = 42 + throttle * 30 + boost * 26;
+    e.o1.frequency.setTargetAtTime(f, t, 0.15); e.o2.frequency.setTargetAtTime(f * 1.5, t, 0.15);
+    e.lp.frequency.setTargetAtTime(180 + throttle * 300 + boost * 900, t, 0.12);
+    e.g.gain.setTargetAtTime(live * (0.07 + boost * 0.07) * cut, t, 0.12);
+    e.nf.frequency.setTargetAtTime(500 + boost * 1400, t, 0.15);
+    e.ng.gain.setTargetAtTime(live * (0.02 + boost * 0.16) * cut, t, 0.1);
+  }
+
   /** Dart launch: a rising whoosh-chirp. */
   dart() {
     if (!this.ctx || this.muted) return;

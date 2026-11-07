@@ -1,16 +1,23 @@
 import * as THREE from 'three';
-import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, ARENAS, ARENA_R, ARENA_LID_R, arenaBarrier, setArena, getArena, type Obstacle } from './world';
+import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, ARENAS, ARENA_R, ARENA_LID_R, arenaBarrier, setArena, getArena, SPACE_ARENA, isSpace, type Obstacle } from './world';
+import { SpaceScene, buildField, holeThreaded, fleet, clearSpawnY, spaceEdge, grabPickup, boostPickups, SPACE_R, SPACE_CRUISE, SPACE_BOOST, PICKUP_FUEL } from './space';
+import { ShipMesh, type Craft } from './ship';
 import { route, BIOME_NAME } from './route';
 import { CloudPuffs } from './puffs';
 import { Gates, type GateEvent } from './gates';
-import { BirdMesh, Glider } from './bird';
+import { BirdMesh, Glider, PLAYER_COLORS } from './bird';
 import { Input } from './input';
 import { WindAudio } from './audio';
-import { Dogfight, MAX_DARTS, PEA_SPEED, PEA_LIFE, flapAmount, type DogfightEvent } from './dogfight';
+import { Dogfight, MAX_DARTS, peaSpeed, peaLife, flapAmount, type DogfightEvent } from './dogfight';
 import { setWorldSeed } from './noise';
-import { Online, PLAYER_CSS, colorIndex, type MatchRules } from './online';
+import { Online, PLAYER_CSS, TEAM_CSS, TEAM_NAMES, colorIndex, type MatchRules } from './online';
 import { cleanCode, hasRoomBrowser, listRooms, type RoomInfo } from './net';
 import { DownCam, type Tracked } from './downcam';
+import { sfx } from './spacefx';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 // ---------- Renderer, scene, camera ----------
 const SKY = new THREE.Color(0x9fd3f0);
@@ -27,10 +34,30 @@ scene.fog = new THREE.Fog(SKY, 140, 640);
 const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.3, 900);
 scene.add(camera);
 
-scene.add(new THREE.HemisphereLight(0xdff0ff, 0x5d7040, 2.0));
+// space is drawn through a bloom pass (lasers, engines, explosions and the sun glow) with filmic tone mapping;
+// the sky world draws straight to the screen as it always has
+const coarse = matchMedia('(pointer: coarse)').matches;
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: coarse ? 0 : 4 }));
+composer.setPixelRatio(Math.min(devicePixelRatio, coarse ? 1.5 : 2));
+composer.setSize(innerWidth, innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.75, 0.5, 0.95);
+// One NaN or infinite pixel would smear across the bloom's blur levels as big black blocks, so the glow
+// only ever reads finite, clamped colour.
+bloom.materialHighPassFilter.fragmentShader = bloom.materialHighPassFilter.fragmentShader.replace(/}\s*$/,
+  '  vec4 hp = gl_FragColor; bool ok = hp.r + hp.g + hp.b < 1e4 && hp.r + hp.g + hp.b > -1e4;\n  gl_FragColor = ok ? clamp(hp, 0., 64.) : vec4(0.);\n}');
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+function render() { if (lookSpace) composer.render(); else renderer.render(scene, camera); }
+
+const hemi = new THREE.HemisphereLight(0xdff0ff, 0x5d7040, 2.0);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff0d0, 2.4);
 sun.position.set(0.5, 1, 0.3);
 scene.add(sun);
+/** Space only: a cool fill light from the far side, so a hull's shadowed side never goes flat black. */
+const fill = new THREE.DirectionalLight(0x7d9cd8, 0);
+scene.add(fill);
 
 // gradient sky dome that follows the camera
 const sky = new THREE.Mesh(
@@ -54,8 +81,19 @@ const skyMat = () => (sky.material as THREE.ShaderMaterial).uniforms.bottom.valu
 const glider = new Glider();
 const dogfight = new Dogfight(scene, puffs);
 const online = new Online(dogfight);
-const bird = new BirdMesh();
+const birdMesh = new BirdMesh();
+const shipMesh = new ShipMesh(PLAYER_COLORS);
+shipMesh.trails = false;
+/** Your flyer: the bird, or in space your fighter. */
+let bird: Craft = birdMesh;
 scene.add(bird);
+const spaceScene = new SpaceScene(scene);
+const BOLT_RED = new THREE.Color(0xff3d6e);
+sfx.onBoom = (p, size) => {
+  const d = p.distanceTo(camera.position);
+  audio.boom(size, d);
+  if (mode !== 'title') shake = Math.max(shake, THREE.MathUtils.clamp(size * 30 / Math.max(d, 1), 0, 0.9));
+};
 
 // soft blob shadow: makes height above ground easy to read
 const shadow = new THREE.Mesh(
@@ -80,66 +118,214 @@ const streaks = new THREE.LineSegments(streakGeo, streakMat);
 streaks.frustumCulled = false;
 camera.add(streaks);
 
+// ---------- First-person view: a cockpit canopy frame in space, your own beak out front as a bird ----------
+const cockpit = new THREE.Group();
+{
+  const dark = new THREE.MeshBasicMaterial({ color: 0x1a1e26, fog: false });
+  const edge = new THREE.MeshBasicMaterial({ color: 0x39404d, fog: false });
+  const strut = (x0: number, y0: number, x1: number, y1: number, w: number, m: THREE.Material) => {
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    const b = new THREE.Mesh(new THREE.BoxGeometry(w, len, 0.01), m);
+    b.position.set((x0 + x1) / 2, (y0 + y1) / 2, -0.62);
+    b.rotation.z = Math.atan2(x1 - x0, y1 - y0) * -1;
+    cockpit.add(b);
+  };
+  // canopy bows sweeping up from the dash, meeting over your head, and the dash itself along the bottom
+  strut(-0.95, -0.42, -0.32, 0.55, 0.045, dark); strut(0.95, -0.42, 0.32, 0.55, 0.045, dark);
+  strut(-0.32, 0.55, 0.32, 0.55, 0.05, dark);
+  const dash = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.3, 0.01), dark); dash.position.set(0, -0.52, -0.62); cockpit.add(dash);
+  const lip = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.02, 0.01), edge); lip.position.set(0, -0.37, -0.615); cockpit.add(lip);
+  // two glowing displays set into the dash: a scope and a systems readout
+  const screen = (draw: (c: CanvasRenderingContext2D) => void, x: number, tint: number) => {
+    const cv = document.createElement('canvas'); cv.width = 128; cv.height = 56;
+    const c = cv.getContext('2d');
+    if (c) { c.fillStyle = '#050a10'; c.fillRect(0, 0, 128, 56); draw(c); }
+    const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.15, 0.066), new THREE.MeshBasicMaterial({ map: tex, color: new THREE.Color(tint).multiplyScalar(1.3), fog: false, toneMapped: false }));
+    m.position.set(x, -0.413, -0.614); cockpit.add(m);
+  };
+  screen((c) => {
+    c.strokeStyle = '#3fd8ff'; c.lineWidth = 1.5;
+    for (const r of [9, 18, 26]) { c.beginPath(); c.arc(64, 28, r, 0, Math.PI * 2); c.stroke(); }
+    c.beginPath(); c.moveTo(64, 0); c.lineTo(64, 56); c.moveTo(28, 28); c.lineTo(100, 28); c.stroke();
+    c.fillStyle = '#ff6a50'; for (const [x, y] of [[76, 16], [52, 36], [84, 34]]) c.fillRect(x, y, 4, 4);
+  }, -0.36, 0xbfefff);
+  screen((c) => {
+    c.fillStyle = '#ffc24a'; c.font = 'bold 10px monospace';
+    ['PWR', 'SHD', 'ENG', 'WPN'].forEach((l, i) => { c.fillText(l, 6, 13 + i * 13); c.fillRect(34, 5 + i * 13, 30 + ((i * 37) % 60), 7); });
+  }, 0.36, 0xffe2b0);
+  for (const o of cockpit.children) o.renderOrder = 10;
+}
+const beak = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.16, 4).rotateX(-Math.PI / 2), new THREE.MeshLambertMaterial({ color: 0xf2b630, flatShading: true }));
+beak.position.set(0, -0.3, -0.95);
+cockpit.visible = false; beak.visible = false;
+camera.add(cockpit, beak);
+
+// ---------- The two worlds: sky (birds) or space (fighters) ----------
+const SPACE_BG = new THREE.Color(0x020108);
+let lookSpace: boolean | null = null;
+/** Switch the scene, lighting, camera range and your flyer to suit the world getArena() is set to. */
+function applyLook() {
+  const sp = isSpace();
+  input.space = sp; glider.space = sp; dogfight.setLook(sp);
+  if (sp === lookSpace) return;
+  lookSpace = sp;
+  spaceScene.visible = sp; sky.visible = !sp;
+  scene.background = sp ? SPACE_BG : SKY;
+  camera.far = sp ? 40000 : 900; camera.updateProjectionMatrix();
+  renderer.toneMapping = sp ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  if (sp) {
+    // a cold fill from the stars and a blue bounce off the planet below; the sun does the real work
+    hemi.color.set(0x8090b8); hemi.groundColor.set(0x3a5a90); hemi.intensity = 1.7;
+    sun.color.set(0xfff0dc); sun.intensity = 3.4; sun.position.copy(spaceScene.sunDir);
+    fill.intensity = 0.8; fill.position.copy(spaceScene.sunDir).negate().setY(-0.3);
+    const fog = scene.fog as THREE.Fog; fog.near = 1e5; fog.far = 2e5;
+  } else {
+    hemi.color.set(0xdff0ff); hemi.groundColor.set(0x5d7040); hemi.intensity = 2.0;
+    sun.color.set(0xfff0d0); sun.intensity = 2.4; sun.position.set(0.5, 1, 0.3);
+    fill.intensity = 0;
+    const fog = scene.fog as THREE.Fog; fog.near = 140; fog.far = 640;
+  }
+  scene.remove(bird);
+  bird = sp ? shipMesh : birdMesh;
+  scene.add(bird);
+  document.body.classList.toggle('space', sp);
+  showControlsSafe();
+}
+
 // ---------- Input, audio, HUD ----------
 const input = new Input(document);
 const LAYOUT_NAMES = { flight: ['Flight sticks', 'left stick pitches, right stick rolls'], classic: ['Classic', 'one stick steers'], wings: ['Wing sticks', 'one stick per wing'] } as const;
 input.onSchemeChange = (sc) => { showControlsSafe(); popup(LAYOUT_NAMES[sc][0], LAYOUT_NAMES[sc][1]); };
 const audio = new WindAudio();
 const $ = (id: string) => document.getElementById(id)!;
-const hud = { wave: $('wave'), hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo'), skim: $('skim'), stats: $('stats'), darts: $('darts'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
+const hud = { wave: $('wave'), hp: $('hp'), warn: $('warn'), score: $('score'), combo: $('combo'), stats: $('stats'), darts: $('darts'), mist: $('mist'), edge: $('edge'), overlay: $('overlay') };
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
-const PAD_HELP = {
-  flight: 'Controller (<b>flight sticks</b>): left stick ↑↓ = dive / pull up · right stick ←→ = roll, both all the way round (bank holds when you let go)<br><b>RT</b>/<b>X</b> shoot · <b>Y</b> homing dart · <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
-  classic: 'Controller (<b>classic</b>): left stick steers, <b>RT</b>/<b>X</b> shoot, <b>Y</b> homing dart, <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
-  wings: 'Controller (<b>wing sticks</b>): left stick ↑↓ = left wing, right stick ↑↓ = right wing<br>both up = dive · both down = climb · one up, one down = sharp turn<br><b>RT</b>/<b>X</b> shoot · <b>Y</b> homing dart · <b>LT</b>/<b>A</b> brake · <b>Back</b> = next layout',
+// ---------- Phones play in landscape ----------
+// Held upright, a card asks you to turn the phone (index.html, #rotate) and a solo game waits for you.
+const portraitQ = matchMedia('(orientation: portrait) and (pointer: coarse)');
+/** Where the browser allows it (Android Chrome), go full screen and lock to landscape. iPhones can't lock,
+ *  so there the rotate card does the job. Called from a tap. */
+function goLandscape() {
+  if (!isTouch) return;
+  const el = document.documentElement as Partial<HTMLElement>;
+  const orient = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+  const lock = () => orient?.lock?.('landscape').catch(() => {});
+  try {
+    if (document.fullscreenElement) lock();
+    else if (el.requestFullscreen) el.requestFullscreen.call(document.documentElement, { navigationUI: 'hide' }).then(lock, () => {});
+  } catch { /* not allowed here (an iframe, an iPhone): the rotate card covers it */ }
+}
+const rotateEl = document.getElementById('rotate');
+if (rotateEl) {
+  if (isTouch && (document.documentElement as Partial<HTMLElement>).requestFullscreen && 'lock' in (screen.orientation ?? {})) rotateEl.classList.add('canlock');
+  rotateEl.addEventListener('click', goLandscape);
+}
+// Controls help: [keys, what they do] pairs, laid out as a key list in the menu's "Controls" panel.
+type Help = [string, string][];
+const kb = (...keys: string[]) => keys.map((x) => `<kbd>${x}</kbd>`).join('');
+const PAD_HELP: Record<string, Help> = {
+  flight: [[`Left stick ${kb('↑↓')}`, 'Dive / pull up (keep pulling to loop)'], [`Right stick ${kb('←→')}`, 'Roll, all the way round (bank holds)']],
+  classic: [['Left stick', 'Steer (keep pulling down to loop)']],
+  wings: [[`Left stick ${kb('↑↓')}`, 'Left wing'], [`Right stick ${kb('↑↓')}`, 'Right wing'], ['Both up / both down', 'Dive / climb'], ['One up, one down', 'Sharp turn']],
 };
-const KEYS_HELP = () => `<b>W/S</b> or <b>↑/↓</b> dive / pull up &nbsp; <b>A/D</b> or <b>←/→</b> ${input.scheme === 'flight' ? 'roll (bank holds)' : 'bank'} &nbsp; <b>Z/C</b> rudder &nbsp; <b>Space</b> air-brake &nbsp; <b>F</b> or click = shoot &nbsp; <b>R</b> or right-click = homing dart (hold your nose on a bird for 1 s to lock)<br>hold <b>S</b> to loop &nbsp; <b>V</b> = change layout`;
-const TOUCH_HELP = () => input.scheme === 'flight'
-  ? 'Left thumb: drag up to dive, down to pull up<br>Right thumb: drag ←→ to roll, all the way round if you like (the bank holds when you let go)<br>Hold <b>FIRE</b> to shoot<br>Hold your nose on a bird to lock, then tap <b>DART</b><br>Keep pulling down to loop'
-  : 'Drag on the <b>left</b> side to steer (up = dive, down = pull up)<br>Hold the <b>right</b> side to air-brake<br>Hold <b>FIRE</b> to shoot<br>Hold your nose on a bird to lock, then tap <b>DART</b><br>Keep pulling down to loop';
+const PAD_COMMON: Help = [[kb('RT') + ' / ' + kb('X'), 'Shoot'], [kb('Y'), 'Homing dart'], [kb('LT') + ' / ' + kb('A'), 'Air-brake'], [kb('Back'), 'Next stick layout'], [kb('R3'), 'First-person view']];
+const KEYS_HELP = (): Help => [
+  [kb('W', 'S') + ' / ' + kb('↑', '↓'), 'Dive / pull up (hold S to loop)'],
+  [kb('A', 'D') + ' / ' + kb('←', '→'), input.scheme === 'flight' ? 'Roll (bank holds)' : 'Bank'],
+  [kb('Z', 'C'), 'Rudder'], [kb('Space'), 'Air-brake'], [kb('F') + ' or click', 'Shoot'],
+  [kb('R') + ' or right-click', 'Homing dart (hold your nose on a bird for 1 s to lock)'], [kb('V'), 'Change layout'], [kb('T'), 'First-person view'],
+];
+// space fighters
+const SPACE_PAD: Help = [[`Left stick ${kb('↑↓')}`, 'Pitch'], [`Right stick ${kb('←→')}`, 'Roll'], 
+  [kb('RT') + ' / ' + kb('X'), 'Lasers'], [kb('Y'), 'Missile'], [kb('RB'), 'Boost'], [kb('LB'), 'Drift: slide and aim'], [kb('R3'), 'Cockpit view']];
+const SPACE_KEYS: Help = [[kb('W', 'S') + ' / ' + kb('↑', '↓'), 'Pitch'], [kb('A', 'D') + ' / ' + kb('←', '→'), 'Roll'], [kb('Z', 'C'), 'Yaw'],
+  [kb('Shift'), 'Boost'], [kb('Space'), 'Drift: slide and aim'], [kb('F') + ' or click', 'Lasers'],
+  [kb('R') + ' or right-click', 'Missile (hold your nose on a fighter for 1 s to lock)'], [kb('T'), 'Cockpit view']];
+const TILT_HELP: Help = [['Tilt the phone', 'Steer like a wheel: turn it to roll, tip the top away to dive, toward you to pull up'],
+  ['Level', 'However you hold the phone when you launch']];
+const SPACE_TOUCH = (): Help => [...(settings.tilt ? TILT_HELP : [['Left thumb ↑↓', 'Pitch'], ['Right thumb ←→', 'Roll']] as Help),
+  ['Left slider', 'Throttle: up boosts, the notch cruises, down drifts (it stays put)'],
+  ['Hold FIRE', 'Lasers'], ['Tap MSL', 'Missile, once your nose has locked a fighter'], ['Tap VIEW', 'Cockpit view']];
+const TOUCH_HELP = (): Help => settings.tilt
+  ? [...TILT_HELP, ['Hold anywhere else', 'Air-brake'], ['Hold FIRE', 'Shoot'], ['Tap DART', 'Homing dart, once your nose has locked a bird']]
+  : input.scheme === 'flight'
+  ? [['Left thumb ↑↓', 'Dive / pull up (keep pulling down to loop)'], ['Right thumb ←→', 'Roll, all the way round (bank holds)'], ['Hold FIRE', 'Shoot'], ['Tap DART', 'Homing dart, once your nose has locked a bird']]
+  : [['Drag left side', 'Steer: up dives, down pulls up'], ['Hold right side', 'Air-brake'], ['Hold FIRE', 'Shoot'], ['Tap DART', 'Homing dart, once your nose has locked a bird']];
+const helpList = (title: string, rows: Help) => `<h3>${title}</h3><dl class="keys">${rows.map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join('')}</dl>`;
 const showControls = () => {
-  $('controls').innerHTML = isTouch ? TOUCH_HELP() : `${KEYS_HELP()}<br>${PAD_HELP[input.scheme]}`;
+  const el = document.getElementById('controls');
+  if (!el) return;
+  if (settings.mode === 'space' || isSpace()) {
+    el.innerHTML = isTouch ? helpList('Touch', SPACE_TOUCH()) : input.activePad ? helpList('Controller', SPACE_PAD) + helpList('Keyboard &amp; mouse', SPACE_KEYS)
+      : helpList('Keyboard &amp; mouse', SPACE_KEYS) + helpList('Controller', SPACE_PAD);
+    return;
+  }
+  if (isTouch) { el.innerHTML = helpList('Touch', TOUCH_HELP()); return; }
+  const pad = helpList(`Controller · ${LAYOUT_NAMES[input.scheme][0].toLowerCase()}`, [...PAD_HELP[input.scheme], ...PAD_COMMON]);
+  const keys = helpList('Keyboard &amp; mouse', KEYS_HELP());
+  el.innerHTML = input.activePad ? pad + keys : keys + pad; // the controller first once one is plugged in
 };
-const showControlsSafe = () => { if (document.getElementById('controls')) showControls(); };
+const showControlsSafe = showControls;
 addEventListener('gamepadconnected', showControlsSafe);
-if (isTouch) { $('fire').style.display = 'flex'; $('dartBtn').style.display = 'flex'; }
+document.body.classList.toggle('touch', isTouch);
+if (isTouch) { $('fire').style.display = 'flex'; $('dartBtn').style.display = 'flex'; $('viewBtn').style.display = 'flex'; }
 
 // ---------- Game settings: endless downhill or arena ----------
-type GameMode = 'endless' | 'arena' | 'online';
+type GameMode = 'endless' | 'arena' | 'space' | 'online';
+type ViewSetting = 'chase' | 'cockpit';
+/** The online lobby's arena picker: the arenas, then Random, then Space. */
+const SPACE_ENV = ARENAS.length + 1;
 type DownCamSetting = 'shot' | 'all' | 'off';
 const DOWNCAM_OPTS: DownCamSetting[] = ['shot', 'all', 'off'];
 const settings = { mode: 'endless' as GameMode, env: ARENAS.length /* = random */, enemies: 3, myDarts: true, enemyDarts: true,
   /* online */ name: '', bots: 2, allies: false, code: '', public: true,
   /* HUD: lead marker showing where to aim your peas */ lead: true,
-  /* replay when you go down: 'shot' = shot down (or chased into the ground), 'all' = every crash too, 'off' */ downcam: 'shot' as DownCamSetting };
+  /* title menu: controls list open (open on a first visit) */ help: true,
+  /* replay when you go down: 'shot' = shot down (or chased into the ground), 'all' = every crash too, 'off' */ downcam: 'shot' as DownCamSetting,
+  /* camera: behind you, or first person */ view: 'chase' as ViewSetting,
+  /* phones: steer by tilting */ tilt: false };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('glide.settings') || '{}')); } catch { /* storage unavailable */ }
-settings.env = THREE.MathUtils.clamp(Math.round(settings.env) || 0, 0, ARENAS.length);
+settings.env = THREE.MathUtils.clamp(Math.round(settings.env) || 0, 0, SPACE_ENV);
 settings.enemies = THREE.MathUtils.clamp(Math.round(settings.enemies) || 3, 1, 12);
 settings.bots = THREE.MathUtils.clamp(Math.round(settings.bots) || 0, 0, 12);
-if (!['endless', 'arena', 'online'].includes(settings.mode)) settings.mode = 'endless';
+if (!['endless', 'arena', 'space', 'online'].includes(settings.mode)) settings.mode = 'endless';
+if (settings.view !== 'cockpit') settings.view = 'chase';
+settings.tilt = isTouch && settings.tilt === true;
+input.tilt = settings.tilt;
+input.onMotion = () => { if (mode === 'title') renderMenu(); };
 if (!DOWNCAM_OPTS.includes(settings.downcam)) settings.downcam = 'shot';
 settings.name = String(settings.name || '').slice(0, 16);
 // an invite link (?room=CODE) opens straight onto the online menu, ready to join
 const inviteCode = cleanCode(new URLSearchParams(location.search).get('room') || '');
 if (inviteCode) { settings.mode = 'online'; settings.code = inviteCode; }
 const saveSettings = () => { try { localStorage.setItem('glide.settings', JSON.stringify(settings)); } catch { /* ignore */ } };
-const bestKey = () => (settings.mode === 'arena' ? 'glide.best.arena' : settings.mode === 'online' ? 'glide.best.online' : 'glide.best');
+const bestKey = () => (settings.mode === 'arena' ? 'glide.best.arena' : settings.mode === 'space' ? 'glide.best.space' : settings.mode === 'online' ? 'glide.best.online' : 'glide.best');
 let best = 0;
 const loadBest = () => { try { best = Number(localStorage.getItem(bestKey()) || 0); } catch { best = 0; } };
 loadBest();
 /** The arena chosen for this match ("random" rolls one per match). */
 let arenaIdx = 0;
 
-const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go', 'vis', 'host', 'join', 'rooms'] as const;
+const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'team', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'tilt', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
 const GO_ROW = MENU_ROWS.indexOf('go');
 let menuRow = inviteCode ? MENU_ROWS.indexOf('join') : GO_ROW;
+/** On a phone the Steering row (thumbs or tilt) follows Camera. */
 function menuRows(): readonly string[] {
+  const rows = baseRows();
+  return isTouch ? rows.flatMap((r) => (r === 'view' ? ['view', 'tilt'] : [r])) : rows;
+}
+function baseRows(): readonly string[] {
   const browser = hasRoomBrowser();
   if (settings.mode === 'online') return online.active
-    ? (online.isHost && online.phase === 'lobby' ? [...(browser ? ['vis'] : []), 'env', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go'] : online.phase === 'lobby' ? ['lead', 'downcam'] : [])
-    : ['mode', 'lead', 'downcam', ...(browser && openRooms.length ? ['rooms'] : []), 'join', ...(browser ? ['vis'] : []), 'host'];
-  return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go'] : ['mode', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'go'];
+    ? (online.isHost && online.phase === 'lobby' ? [...(browser ? ['vis'] : []), 'env', 'bots', 'allies', ...(settings.allies ? ['team'] : []), 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go']
+      : online.phase === 'lobby' ? [...(online.teams ? ['team'] : []), 'lead', 'downcam', 'view'] : [])
+    : ['mode', ...(browser && openRooms.length ? ['rooms'] : []), 'join', ...(browser ? ['vis'] : []), 'host', 'lead', 'downcam', 'view', 'help'];
+  return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
+    : settings.mode === 'space' ? ['mode', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
+    : ['mode', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help'];
 }
 let onlineNote = '';
 
@@ -167,98 +353,174 @@ function roomListHtml() {
   const selRow = MENU_ROWS[menuRow] === 'rooms';
   return openRooms.map((r, i) => {
     const full = r.players >= r.max;
-    const where = r.phase === 'playing' ? `in a match${r.arena >= 0 && ARENAS[r.arena] ? ` · ${ARENAS[r.arena].name}` : ''}` : 'in the lobby';
+    const where = r.phase === 'playing' ? `in a match${r.arena === 99 ? ` · ${SPACE_ARENA.name} (space)` : r.arena >= 0 && ARENAS[r.arena] ? ` · ${ARENAS[r.arena].name}` : ''}` : 'in the lobby';
     return `<button class="room${selRow && i === roomSel ? ' sel' : ''}" data-act="joinroom:${esc(r.code)}"${full ? ' disabled' : ''}>
       <b>${esc(r.name)}'s room</b><span>${r.players}/${r.max} players · ${where}${full ? ' · full' : ''}</span></button>`;
   }).join('');
 }
 const esc = (s: string) => s.replace(/[<>&"]/g, '');
 const inviteLink = () => { const u = new URL(location.href); u.search = ''; u.hash = ''; u.searchParams.set('room', online.code); const sig = new URLSearchParams(location.search).get('signal'); if (sig) u.searchParams.set('signal', sig); return u.toString(); };
+/** Mode tabs on the title menu. A new mode only needs an entry here (plus its blurb and rows below). */
+const MODE_TABS: { id: GameMode; label: string }[] = [
+  { id: 'endless', label: 'Endless' }, { id: 'arena', label: 'Arena' }, { id: 'space', label: 'Space' }, { id: 'online', label: 'Online' },
+];
+const MODE_BLURB: Record<GameMode, string> = {
+  endless: 'An endless mountainside. Skim the ground, thread the trees, punch through the clouds, and shoot down the birds hunting you.',
+  arena: 'A walled-in basin to fight in, wave after wave. You flap to hold your speed, but climbing still costs it and diving still builds it.',
+  space: 'Space fighters in the middle of a capital-ship battle high above a planet. No air, no stalling: cruise, boost (grab the gold pickups to refill it), drift to swing your nose round. Run the carrier hangar bays and the tunnels through the cruisers, skim the hulls, and lead missiles into them.',
+  online: 'Fight in the arena with other players anywhere: join an open room, type a friend\'s code, or host your own.',
+};
+const onOff = (b: boolean) => (b ? 'On' : 'Off');
+const sect = (title: string) => `<h2 class="sect">${title}</h2>`;
+/** The bottom line: how to drive the menu on this device. */
+const menuHint = (fly: string) => (isTouch ? '' : `<p class="hint">${kb('↑', '↓')} choose · ${kb('←', '→')} change · ${kb('Enter')} / ${kb('A')} ${fly}</p>`);
+function helpRow(sel: string) {
+  return `<button class="opt toggle${sel}" data-act="help:1"><span class="lab">Controls</span><span class="chev">${settings.help ? 'Hide ▴' : 'Show ▾'}</span></button>
+    ${settings.help ? '<div class="controls" id="controls"></div>' : ''}`;
+}
+/** A phone on its side (landscape, not much height): the menu splits into two columns so it fits without
+ *  scrolling: the title and the main buttons on the left, the settings on the right. */
+const compactQ = matchMedia('(orientation: landscape) and (max-height: 540px)');
+compactQ.addEventListener?.('change', () => { if (!hud.overlay.classList.contains('hidden') && mode === 'title') renderMenu(); });
+const splitMenu = (left: string, right: string, hint = '') => `<div class="menu split">
+    <div class="col"><h1>Glide!</h1><div class="panel">${left}</div>${hint}</div>
+    <div class="panel col sets">${right}</div>
+  </div>`;
 function renderMenu() {
   if (settings.mode === 'online') { renderOnlineMenu(); return; }
   const rows = menuRows() as readonly string[];
   if (!rows.includes(MENU_ROWS[menuRow])) menuRow = GO_ROW;
   const sel = (r: string) => (MENU_ROWS[menuRow] === r ? ' sel' : '');
-  const envName = settings.env === ARENAS.length ? 'Random' : ARENAS[settings.env].name;
-  const envBlurb = settings.env === ARENAS.length ? 'a different arena every match' : ARENAS[settings.env].blurb;
-  const arena = settings.mode === 'arena';
-  hud.overlay.innerHTML = `<div class="menu">
+  const envName = settings.env >= ARENAS.length ? 'Random' : ARENAS[settings.env].name;
+  const envBlurb = settings.env >= ARENAS.length ? 'A different arena every match' : ARENAS[settings.env].blurb;
+  const arena = settings.mode === 'arena', space = settings.mode === 'space';
+  const dw = space ? 'missiles' : 'darts';
+  const head = `${modeRow(sel('mode'))}<p class="blurb">${MODE_BLURB[settings.mode]}</p>`;
+  const sets = `${arena ? `${sect('Match')}${pickRow(sel('env'), 'env', 'Arena', envName, envBlurb)}${pickRow(sel('enemies'), 'enemies', 'Enemies', `${settings.enemies} per wave`)}` : ''}
+      ${space ? `${sect('Match')}${pickRow(sel('enemies'), 'enemies', 'Enemies', `${settings.enemies} per wave`)}` : ''}
+      ${sect(space ? 'Missiles' : 'Darts')}
+      ${pickRow(sel('myDarts'), 'myDarts', `Your ${dw}`, onOff(settings.myDarts))}
+      ${pickRow(sel('enemyDarts'), 'enemyDarts', `Enemy ${dw}`, onOff(settings.enemyDarts))}
+      ${sect('View')}
+      ${leadRow(sel('lead'))}
+      ${downcamRow(sel('downcam'))}
+      ${viewRow(sel('view'))}${tiltRow(sel('tilt'))}`;
+  const cta = `<button data-act="go" class="go-btn cta${sel('go')}">Fly!</button>`;
+  hud.overlay.innerHTML = compactQ.matches ? splitMenu(head + cta, sets + helpRow(sel('help')), menuHint('fly')) : `<div class="menu side">
     <h1>Glide!</h1>
-    ${modeRow(sel('mode'))}
-    <p class="blurb">${arena
-      ? 'A walled-in basin to fight in. You flap to hold your speed, so the ground doesn\'t have to fall away: climbing still costs speed and diving still builds it. Clear a wave and the next one comes in.'
-      : 'An endless mountainside. Skim the ground, thread the trees, punch through the clouds, and shoot down the birds hunting you.'}</p>
-    ${arena ? `<div class="row pick${sel('env')}"><span class="lab">Arena</span><button data-act="env:-1">◀</button><b>${envName}</b><button data-act="env:1">▶</button></div>
-    <p class="blurb small">${envBlurb}</p>
-    <div class="row pick${sel('enemies')}"><span class="lab">Enemies</span><button data-act="enemies:-1">◀</button><b>${settings.enemies}</b><button data-act="enemies:1">▶</button></div>` : ''}
-    <div class="row pick${sel('myDarts')}"><span class="lab">Your darts</span><button data-act="myDarts:-1">◀</button><b>${settings.myDarts ? 'On' : 'Off'}</b><button data-act="myDarts:1">▶</button></div>
-    <div class="row pick${sel('enemyDarts')}"><span class="lab">Enemy darts</span><button data-act="enemyDarts:-1">◀</button><b>${settings.enemyDarts ? 'On' : 'Off'}</b><button data-act="enemyDarts:1">▶</button></div>
-    ${leadRow(sel('lead'))}
-    ${downcamRow(sel('downcam'))}
-    <div class="row${sel('go')}"><button data-act="go" class="go-btn">Fly!</button></div>
-    <div class="controls" id="controls"></div>
-    <p class="hint">${isTouch ? 'Tap to choose' : '↑↓ choose · ←→ change · Enter / A to fly'}</p>
+    <div class="panel">
+      ${head}
+      ${sets}
+      ${cta}
+      ${helpRow(sel('help'))}
+    </div>
+    ${menuHint('fly')}
   </div>`;
   showControls();
+  revealSel();
 }
+/** Keep the pad / keyboard selection on screen when the menu is taller than the window. */
+const revealSel = () => hud.overlay.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
 function visRow(sel: string) {
   const on = online.active ? online.isPublic : settings.public;
-  return `${pickRow(sel, 'vis', 'Room', on ? 'Public' : 'Private')}<p class="blurb small">${on ? 'Listed under Open rooms for anyone to join' : 'Hidden: friends join with the code or invite link'}</p>`;
+  return pickRow(sel, 'vis', 'Room', on ? 'Public' : 'Private', on ? 'Listed under Open rooms for anyone to join' : 'Hidden: friends join with the code or invite link');
 }
-function leadRow(sel: string) { return pickRow(sel, 'lead', 'Lead marker', settings.lead ? 'On' : 'Off'); }
+function viewRow(sel: string) { return pickRow(sel, 'view', 'Camera', settings.view === 'cockpit' ? 'First person' : 'Chase', 'T / R3 switches in flight'); }
+function tiltRow(sel: string) {
+  if (!isTouch) return '';
+  return pickRow(sel, 'tilt', 'Steering', settings.tilt ? 'Tilt' : 'Thumbs', !settings.tilt ? 'Thumb sticks · or switch to tilt (motion) steering'
+    : input.motion === 'denied' ? 'Motion access is off. Quit and reopen Safari, then tap Tilt again and choose Allow'
+    : input.motion === 'unknown' ? 'Tap to allow motion access when Safari asks' : 'Tilt the phone to fly · level is how you hold it at launch');
+}
+function leadRow(sel: string) { return pickRow(sel, 'lead', 'Lead marker', onOff(settings.lead), `Shows where to aim your ${settings.mode === 'space' || isSpace() ? 'lasers' : 'peas'}`); }
 function downcamRow(sel: string) {
-  return pickRow(sel, 'downcam', 'Down cam', { shot: 'When shot down', all: 'Every crash', off: 'Off' }[settings.downcam]);
+  return pickRow(sel, 'downcam', 'Down cam', { shot: 'When shot down', all: 'Every crash', off: 'Off' }[settings.downcam], 'Replay from your killer\'s view');
 }
 function modeRow(sel: string) {
-  const b = (m: GameMode, label: string) => `<button data-act="mode:${m}" class="${settings.mode === m ? 'on' : ''}">${label}</button>`;
-  return `<div class="row modes${sel}">${b('endless', 'Endless downhill')}${b('arena', 'Arena')}${b('online', 'Online')}</div>`;
+  return `<div class="tabs${sel}" role="tablist">${MODE_TABS.map((m) =>
+    `<button role="tab" data-act="mode:${m.id}" class="${settings.mode === m.id ? 'on' : ''}" aria-selected="${settings.mode === m.id}">${m.label}</button>`).join('')}</div>`;
 }
-function pickRow(sel: string, key: string, label: string, value: string) {
-  return `<div class="row pick${sel}"><span class="lab">${label}</span><button data-act="${key}:-1">◀</button><b>${value}</b><button data-act="${key}:1">▶</button></div>`;
+/** A setting: label (and an optional note) on the left, ◀ value ▶ on the right. Tapping the value steps it forward. */
+function pickRow(sel: string, key: string, label: string, value: string, note = '') {
+  return `<div class="opt${sel}"><span class="lab">${label}${note ? `<small>${note}</small>` : ''}</span>
+    <span class="ctl"><button data-act="${key}:-1" aria-label="Previous">◀</button><b data-act="${key}:1">${value}</b><button data-act="${key}:1" aria-label="Next">▶</button></span></div>`;
 }
 /** Online: the room menu (host or join), then the lobby once you're in a room. */
 function renderOnlineMenu() {
   const rows = menuRows();
   if (rows.length && !rows.includes(MENU_ROWS[menuRow])) menuRow = MENU_ROWS.indexOf(rows[rows.length - 1] as typeof MENU_ROWS[number]);
   const sel = (r: string) => (MENU_ROWS[menuRow] === r ? ' sel' : '');
-  const envName = settings.env === ARENAS.length ? 'Random' : ARENAS[settings.env].name;
+  const envName = settings.env === SPACE_ENV ? `${SPACE_ARENA.name} (space)` : settings.env === ARENAS.length ? 'Random' : ARENAS[settings.env].name;
+  const note = onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : '';
+  const compact = compactQ.matches;
+  const hint = online.active ? menuHint('start') : isTouch ? '' : `<p class="hint">${kb('↑', '↓')} choose · ${kb('Enter')} on a row to join or host · type to set your name</p>`;
+  const view = `${sect('View')}${leadRow(sel('lead'))}${downcamRow(sel('downcam'))}${viewRow(sel('view'))}${tiltRow(sel('tilt'))}`;
   let body = '';
   if (!online.active) {
+    const name = `<div class="opt"><label class="lab" for="nameIn">Your name</label><span class="ctl"><input id="nameIn" maxlength="16" placeholder="Bird" value="${esc(settings.name)}" autocomplete="off" spellcheck="false"></span></div>`;
+    const rooms = hasRoomBrowser() ? `${sect('Open rooms')}<div class="rooms${sel('rooms')}" id="roomList">${roomListHtml()}</div>` : '';
+    const join = `${sect('Join with a code')}
+    <div class="opt join${sel('join')}"><input id="codeIn" class="code" maxlength="8" placeholder="CODE" value="${esc(settings.code)}" autocomplete="off" autocapitalize="characters" spellcheck="false"><button data-act="join" class="go-btn">Join</button></div>
+    ${note}`;
+    const vis = hasRoomBrowser() ? visRow(sel('vis')) : '';
+    const host = `<button data-act="host" class="go-btn cta${sel('host')}">Host a room</button>`;
+    if (compact) {
+      // left: who you are and the two ways in; right: the open rooms and the settings
+      hud.overlay.innerHTML = splitMenu(`${modeRow(sel('mode'))}${name}${join}${host}`, `${rooms}${vis ? sect('Your room') + vis : ''}${view}${helpRow(sel('help'))}`, hint);
+      bindOnlineInputs();
+      return;
+    }
     body = `${modeRow(sel('mode'))}
-    <p class="blurb">${hasRoomBrowser() ? 'Fight in the arena with other players anywhere. Join an open room, type a friend\'s code, or host your own.' : 'Fight in the arena with friends anywhere: different houses, Wi-Fi or phone data. One of you hosts a room and shares its code; everyone else joins with it.'}</p>
-    <div class="row"><span class="lab">Your name</span><input id="nameIn" maxlength="16" placeholder="Bird" value="${esc(settings.name)}" autocomplete="off" spellcheck="false"></div>
-    ${leadRow(sel('lead'))}
-    ${downcamRow(sel('downcam'))}
-    ${hasRoomBrowser() ? `<p class="blurb small">Open rooms</p><div class="rooms" id="roomList">${roomListHtml()}</div>` : ''}
-    <div class="row${sel('join')}"><input id="codeIn" class="code" maxlength="8" placeholder="CODE" value="${esc(settings.code)}" autocomplete="off" autocapitalize="characters" spellcheck="false"><button data-act="join" class="go-btn">Join</button></div>
-    ${onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : ''}
-    ${hasRoomBrowser() ? visRow(sel('vis')) : ''}
-    <div class="row${sel('host')}"><button data-act="host" class="go-btn">Host a room</button></div>`;
+    <p class="blurb">${hasRoomBrowser() ? MODE_BLURB.online : 'Fight in the arena with friends anywhere: different houses, Wi-Fi or phone data. One of you hosts a room and shares its code; everyone else joins with it.'}</p>
+    ${name}
+    ${rooms}
+    ${join}
+    ${sect('Host your own')}
+    ${vis}
+    ${host}
+    ${view}
+    ${helpRow(sel('help'))}`;
   } else if (online.phase === 'connecting') {
-    body = `<p class="blurb">${online.isHost ? 'Opening a room…' : `Joining room <b>${esc(online.code)}</b>…`}</p>
-    <div class="row"><button data-act="leave">Cancel</button></div>`;
+    body = `<p class="blurb center">${online.isHost ? 'Opening a room…' : `Joining room <b>${esc(online.code)}</b>…`}</p>
+    <div class="btns"><button data-act="leave">Cancel</button></div>`;
   } else {
-    const players = online.roster().map((p) => `<li style="color:${PLAYER_CSS[colorIndex(p.id)]}">${esc(p.name)}${p.id === online.myId ? ' (you)' : ''}${p.id === 'p0' ? ' · host' : ''}</li>`).join('');
-    const hostSettings = online.isHost ? `
+    const li = (p: { id: string; name: string }) => `<li><i style="background:${PLAYER_CSS[colorIndex(p.id)]}"></i>${esc(p.name)}${p.id === online.myId ? ' <em>you</em>' : ''}${p.id === 'p0' ? ' <em>host</em>' : ''}</li>`;
+    // Team up: the players split into their two teams, and everyone picks theirs
+    const players = online.teams
+      ? TEAM_NAMES.map((tn, k) => `<li class="teamhead" style="color:${TEAM_CSS[k]}">${tn} team</li>${online.roster().filter((p) => p.team === k).map(li).join('') || '<li class="empty">nobody yet</li>'}`).join('')
+      : online.roster().map(li).join('');
+    const teamPick = online.teams ? pickRow(sel('team'), 'team', 'Your team', `<span style="color:${TEAM_CSS[online.team]}">${TEAM_NAMES[online.team]}</span>`, 'Teammates can\'t hit each other') : '';
+    const match = online.isHost ? `
+      ${sect('Match')}
       ${hasRoomBrowser() ? visRow(sel('vis')) : ''}
       ${pickRow(sel('env'), 'env', 'Arena', envName)}
       ${pickRow(sel('bots'), 'bots', 'AI birds', settings.bots ? `${settings.bots} per wave` : 'None')}
-      ${pickRow(sel('allies'), 'allies', 'Players', settings.allies ? 'Team up' : 'Free for all')}
-      ${pickRow(sel('myDarts'), 'myDarts', 'Player darts', settings.myDarts ? 'On' : 'Off')}
-      ${pickRow(sel('enemyDarts'), 'enemyDarts', 'AI darts', settings.enemyDarts ? 'On' : 'Off')}
-      ${leadRow(sel('lead'))}
-    ${downcamRow(sel('downcam'))}
-      <div class="row${sel('go')}"><button data-act="go" class="go-btn">Start match</button></div>` : `${leadRow(sel('lead'))}
-    ${downcamRow(sel('downcam'))}<p class="blurb">Waiting for the host to start…</p>`;
-    body = `<p class="blurb small">Room code</p>
+      ${pickRow(sel('allies'), 'allies', 'Players', settings.allies ? 'Team up' : 'Free for all', settings.allies ? 'Red vs Blue: everyone picks a team' : '')}
+      ${pickRow(sel('myDarts'), 'myDarts', 'Player darts', onOff(settings.myDarts))}
+      ${pickRow(sel('enemyDarts'), 'enemyDarts', 'AI darts', onOff(settings.enemyDarts))}` : '';
+    const start = online.isHost ? `<button data-act="go" class="go-btn cta${sel('go')}">Start match</button>` : '<p class="blurb center wait">Waiting for the host to start…</p>';
+    const room = `<p class="sect center">Room code</p>
     <div class="roomcode">${esc(online.code)}</div>
-    <div class="row"><button data-act="copy">Copy invite link</button><button data-act="leave">Leave</button></div>
-    ${onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : ''}
+    <div class="btns"><button data-act="copy">Copy invite link</button><button data-act="leave">Leave</button></div>
+    ${note}
+    ${sect(`Players · ${online.roster().length}`)}
     <ul class="players">${players}</ul>
-    ${hostSettings}`;
+    ${teamPick}`;
+    if (compact) {
+      // left: the room, who's in and the start button; right: the match settings
+      hud.overlay.innerHTML = splitMenu(room + start, match + view, hint);
+      bindOnlineInputs();
+      return;
+    }
+    body = `${room}${match}${view}${start}`;
   }
-  hud.overlay.innerHTML = `<div class="menu"><h1>Glide!</h1>${body}
-    <p class="hint">${isTouch ? 'Tap to choose' : online.active ? '↑↓ choose · ←→ change · Enter to start' : 'Type a name · Enter on a row to host or join'}</p></div>`;
+  hud.overlay.innerHTML = `<div class="menu side"><h1>Glide!</h1><div class="panel">${body}</div>
+    ${hint}</div>`;
+  bindOnlineInputs();
+}
+function bindOnlineInputs() {
+  showControls();
+  revealSel();
   if (browsing() && !roomsLive) refreshRooms();
   const nameIn = document.getElementById('nameIn') as HTMLInputElement | null;
   const codeIn = document.getElementById('codeIn') as HTMLInputElement | null;
@@ -273,7 +535,7 @@ function onlineAction(act: string) {
   audio.start();
   onlineNote = '';
   const name = (settings.name || '').trim() || 'Bird';
-  if (act === 'host') { online.host(name, settings.public); renderMenu(); }
+  if (act === 'host') { online.host(name, settings.public, settings.allies); renderMenu(); }
   else if (act === 'join') {
     if (cleanCode(settings.code).length < 4) { onlineNote = 'Type the room code your friend gave you.'; renderMenu(); (document.getElementById('codeIn') as HTMLInputElement | null)?.focus(); return; }
     online.join(settings.code, name); renderMenu();
@@ -285,44 +547,67 @@ function onlineAction(act: string) {
     if (!navigator.clipboard) { onlineNote = `Invite link: ${link}`; renderMenu(); }
   } else if (act === 'go' && online.isHost && online.phase === 'lobby') {
     const rules: MatchRules = { seed: (Math.random() * 2 ** 31) | 0, arena: settings.env < ARENAS.length ? settings.env : Math.floor(Math.random() * ARENAS.length),
-      bots: settings.bots, myDarts: settings.myDarts, enemyDarts: settings.enemyDarts, allies: settings.allies };
+      bots: settings.bots, myDarts: settings.myDarts, enemyDarts: settings.enemyDarts, allies: settings.allies, space: settings.env === SPACE_ENV };
     online.start(rules);
   }
 }
 let previewTimer = 0;
 /** Rebuild the world behind the title so it shows the chosen mode / arena. */
 function queuePreview() { clearTimeout(previewTimer); previewTimer = window.setTimeout(() => { if (mode === 'title') spawn(true); }, 220); }
-const MODES: GameMode[] = ['endless', 'arena', 'online'];
+const MODES: GameMode[] = MODE_TABS.map((m) => m.id);
+/** Which world the title shows behind the menu: 0 = mountain, 1 = an arena, 2 = space. */
+const worldKind = (m: GameMode) => (m === 'endless' ? 0 : m === 'space' || (m === 'online' && settings.env === SPACE_ENV) ? 2 : 1);
 function menuChange(row: string, d: number) {
   if (row === 'mode') {
     const m = MODES[THREE.MathUtils.clamp(MODES.indexOf(settings.mode) + d, 0, MODES.length - 1)];
-    if (m !== settings.mode) { const wasArena = settings.mode !== 'endless', nowArena = m !== 'endless'; settings.mode = m; loadBest(); if (wasArena !== nowArena) queuePreview(); }
+    if (m !== settings.mode) { const was = worldKind(settings.mode), now = worldKind(m); settings.mode = m; loadBest(); if (was !== now) queuePreview(); showControlsSafe(); }
   }
   else if (row === 'bots') settings.bots = THREE.MathUtils.clamp(settings.bots + d, 0, 12);
-  else if (row === 'allies') settings.allies = !settings.allies;
+  else if (row === 'allies') { settings.allies = !settings.allies; online.setTeams(settings.allies); }
+  else if (row === 'team') { if (online.teams) online.pickTeam(online.team ? 0 : 1); }
   else if (row === 'lead') settings.lead = !settings.lead;
+  else if (row === 'help') settings.help = !settings.help;
   else if (row === 'downcam') settings.downcam = DOWNCAM_OPTS[(DOWNCAM_OPTS.indexOf(settings.downcam) + d + DOWNCAM_OPTS.length) % DOWNCAM_OPTS.length];
   else if (row === 'vis') { if (online.active) online.setPublic(!online.isPublic); else settings.public = !settings.public; }
   else if (row === 'rooms') { if (openRooms.length) roomSel = (roomSel + d + openRooms.length) % openRooms.length; }
-  else if (row === 'env') { settings.env = (settings.env + d + ARENAS.length + 1) % (ARENAS.length + 1); queuePreview(); }
+  else if (row === 'env') {
+    // the online lobby can also pick space; the offline arena menu can't (space has its own mode)
+    const n = settings.mode === 'online' ? SPACE_ENV + 1 : ARENAS.length + 1;
+    settings.env = (Math.min(settings.env, n - 1) + d + n) % n; queuePreview();
+  }
+  else if (row === 'tilt') { settings.tilt = isTouch && !settings.tilt; input.tilt = settings.tilt; if (input.motion === 'denied') input.motion = 'unknown'; showControlsSafe(); }
+  else if (row === 'view') settings.view = settings.view === 'cockpit' ? 'chase' : 'cockpit';
   else if (row === 'myDarts') settings.myDarts = !settings.myDarts;
   else if (row === 'enemyDarts') settings.enemyDarts = !settings.enemyDarts;
   else if (row === 'enemies') settings.enemies = THREE.MathUtils.clamp(settings.enemies + d, 1, 12);
   saveSettings(); renderMenu();
 }
 let startReq = false, menuReq = false;
+// The mouse acts on press. A finger acts when it lifts without having moved, so dragging to scroll the menu
+// never flips a setting on the way.
+let tap: { id: number; x: number; y: number } | null = null;
 hud.overlay.addEventListener('pointerdown', (e) => {
-  const act = (e.target as HTMLElement).closest('[data-act]')?.getAttribute('data-act');
+  if (e.pointerType === 'mouse') menuAct(e.target as HTMLElement);
+  else tap = { id: e.pointerId, x: e.clientX, y: e.clientY };
+});
+hud.overlay.addEventListener('pointerup', (e) => {
+  if (tap && tap.id === e.pointerId && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) < 14) menuAct(e.target as HTMLElement);
+  tap = null;
+});
+hud.overlay.addEventListener('pointercancel', () => { tap = null; });
+function menuAct(target: HTMLElement) {
+  const act = target.closest('[data-act]')?.getAttribute('data-act');
   if (!act) return;
   audio.start();
   const [k, v] = act.split(':');
+  if (['go', 'host', 'join', 'joinroom'].includes(k)) goLandscape();
   if (k === 'joinroom') { settings.code = cleanCode(v); onlineAction('join'); return; }
   if (settings.mode === 'online' && ['host', 'join', 'leave', 'copy', 'go'].includes(k)) { onlineAction(k); return; }
   if (k === 'go') startReq = true;
   else if (k === 'menu') menuReq = true;
   else if (k === 'mode') { menuRow = 0; menuChange('mode', MODES.indexOf(v as GameMode) - MODES.indexOf(settings.mode)); }
   else { menuRow = MENU_ROWS.indexOf(k as typeof MENU_ROWS[number]); menuChange(k, Number(v)); }
-});
+}
 function goToMenu() {
   if (online.phase === 'playing') online.leave();
   mode = 'title';
@@ -355,7 +640,7 @@ let score = 0, combo = 0, comboTimer = 0, slowmo = 0, crashTimer = 0, shake = 0;
 let startZ = 0;
 const near = new Map<string, { gap: number; type: string }>(); // obstacle id -> closest gap while passing
 const prevPos = new THREE.Vector3();
-let waterSkim = false, trickMinClear = 99, loopMinClear = 99, tunnelChain = 0, inCanyonRun = false, wasInCloud = false;
+let trickMinClear = 99, loopMinClear = 99, tunnelChain = 0, inCanyonRun = false, wasInCloud = false;
 let inLoop = false;
 let waveClearedT = 0, outOfBounds = 0;
 let hp = 3, hpRegen = 0, hitFlash = 0, dodgeCd = 0, warnBeep = 0, dartHint = 0;
@@ -432,14 +717,22 @@ function endDownCam() {
 function resetDownCam() { downcam.clear(); downcamReq = null; downcamEl.classList.remove('on'); respawnAt = 3; downcamEndT = 0; }
 
 function spawn(fresh = true) {
+  input.recenter(); input.setThrottle(0);
   const arena = settings.mode !== 'endless';
+  const space = worldKind(settings.mode) === 2;
   dogfight.spawning = true; dogfight.targets = [];
   // "random" rolls a new arena each fresh match
-  if (arena) arenaIdx = settings.env < ARENAS.length ? settings.env : fresh || !getArena() ? Math.floor(Math.random() * ARENAS.length) : arenaIdx;
-  const arenaChanged = (arena ? ARENAS[arenaIdx] : null) !== getArena();
-  setArena(arena ? ARENAS[arenaIdx] : null);
-  if (fresh || arenaChanged) { setWorldSeed((Math.random() * 2 ** 31) | 0); route.reset(); world.reset(); }
-  if (arena) {
+  if (arena && !space) arenaIdx = settings.env < ARENAS.length ? settings.env : fresh || !getArena() || isSpace() ? Math.floor(Math.random() * ARENAS.length) : arenaIdx;
+  const env = space ? SPACE_ARENA : arena ? ARENAS[arenaIdx] : null;
+  const arenaChanged = env !== getArena();
+  setArena(env);
+  applyLook();
+  if (fresh || arenaChanged) { setWorldSeed((Math.random() * 2 ** 31) | 0); route.reset(); world.reset(); if (space) { buildField(); spaceScene.rebuild(); } }
+  if (space) {
+    // fly in from the east end of the open lane between the two fleets, at a height with a clear run ahead
+    const x = SPACE_R * 0.75;
+    glider.reset(x, clearSpawnY(x, 0, tmp.set(-1, 0, 0)), 0, Math.PI / 2);
+  } else if (arena) {
     // fly in from the south side of the basin, toward the middle
     const z = ARENA_R * 0.7;
     let ground = 0;
@@ -469,8 +762,10 @@ function spawn(fresh = true) {
 function startOnlineMatch(rules: MatchRules) {
   clearTimeout(previewTimer);
   arenaIdx = THREE.MathUtils.clamp(rules.arena, 0, ARENAS.length - 1);
-  setArena(ARENAS[arenaIdx]);
+  setArena(rules.space ? SPACE_ARENA : ARENAS[arenaIdx]);
+  applyLook();
   setWorldSeed(rules.seed); route.reset(rules.seed % 1000000); world.reset();
+  if (rules.space) { buildField(); spaceScene.rebuild(); }
   puffs.clear(); gates.reset();
   dogfight.playerDarts = rules.myDarts; dogfight.enemyDarts = rules.enemyDarts;
   dogfight.reset();
@@ -482,6 +777,7 @@ function startOnlineMatch(rules: MatchRules) {
 }
 /** Online: back into the air at a random spot on the rim, with full feathers and darts. The fight carries on. */
 function respawnOnline() {
+  input.recenter(); input.setThrottle(0);
   const sp = online.spawnPoint();
   glider.reset(sp.x, sp.y, sp.z, sp.heading);
   startZ = glider.pos.z; prevPos.copy(glider.pos);
@@ -496,6 +792,14 @@ function respawnOnline() {
   placeCamera(true);
 }
 
+/** Another player's colour on the HUD: their team's in Team up, their own otherwise. */
+const humanCss = (id: string) => (online.teams && online.teamOf(id) >= 0 ? TEAM_CSS[online.teamOf(id)] : PLAYER_CSS[colorIndex(id)]);
+dogfight.isAlly = (owner) => online.phase === 'playing' && online.isAlly(owner);
+/** Team up with no AI birds: the score, team against team. */
+function teamBanner() {
+  const k = [0, 0]; for (const p of online.roster()) k[p.team ? 1 : 0] += p.kills;
+  return `${TEAM_NAMES[0].toUpperCase()} ${k[0]} · ${k[1]} ${TEAM_NAMES[1].toUpperCase()}`;
+}
 function myDartsOn() { return online.phase === 'playing' ? !!online.rules?.myDarts : settings.myDarts; }
 
 function multiplier() { return 1 + Math.min(combo, 8) * 0.5; }
@@ -507,10 +811,11 @@ function addCloseCall(gap: number, label: string) {
   const veryClose = gap < 1.2;
   // flying dangerously pays: a slipstream speed kick and a chunk of dart recharge, more the closer you cut it
   const kick = veryClose ? 7 : 3 + (3.5 - gap) * 1.2;
-  glider.speed = Math.min(95, glider.speed + kick);
+  // (space: no slipstream off a hull in a vacuum, and boost only comes from pickups)
+  if (!isSpace()) glider.speed = Math.min(95, glider.speed + kick);
   const refilled = dogfight.chargeDart(veryClose ? 0.5 : 0.25);
-  const perks = `+${Math.round(kick * 3.6)} km/h${refilled ? ' · DART RELOADED' : ''}`;
-  popup(veryClose ? `INSANE! +${pts}` : `Close call +${pts}`, `${label} · ${gap.toFixed(1)} m · ${perks}`);
+  const perks = isSpace() ? (refilled ? 'MISSILE RELOADED' : '') : `+${Math.round(kick * 3.6)} km/h${refilled ? ' · DART RELOADED' : ''}`;
+  popup(veryClose ? `INSANE! +${pts}` : `Close call +${pts}`, `${label} · ${gap.toFixed(1)} m${perks ? ` · ${perks}` : ''}`);
   if (refilled) audio.beep(1600, 0.1, 0.07);
   audio.whoosh(veryClose ? 1 : 0.6);
   rumble(veryClose ? 0.8 : 0.4, 120);
@@ -562,6 +867,17 @@ function startFall(shot: boolean, wall: boolean) {
 }
 function updateFall(dt: number) {
   const p = glider.pos;
+  if (isSpace() && !fallSettled) {
+    // no gravity: the wreck drifts on, tumbling end over end and trailing smoke, until it hits something
+    fallVel.multiplyScalar(Math.exp(-0.25 * dt));
+    p.addScaledVector(fallVel, dt);
+    fallSpin += dt * 3;
+    if (fallVel.lengthSq() > 0.25) fallDir.copy(fallVel).normalize().applyAxisAngle(WORLD_UP, Math.sin(fallSpin * 0.7) * 0.6).normalize();
+    const ground = terrainHeight(p.x, p.z) + 0.45;
+    if (p.y < ground) { p.y = ground; fallVel.set(0, 0, 0); fallSettled = true; puffs.burst(p, tmp.set(0, 3, 0), 8, 20, 1.2); }
+    glider.speed = fallVel.length();
+    return;
+  }
   if (!fallSettled) {
     fallVel.y -= 18 * dt;
     fallVel.multiplyScalar(Math.exp(-0.3 * dt));
@@ -589,7 +905,9 @@ function poseFall() {
 
 function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall = false) {
   mode = 'crashed'; crashTimer = 0; shake = 1;
+  if (isSpace() && title === 'Crunch!') title = wall ? 'Kaboom!' : 'Planetfall!';
   startFall(how !== 'crash', wall);
+  if (isSpace()) sfx.explode(glider.pos, glider.vel, 1.3); // blown apart
   audio.thud(); rumble(1, 300);
   // whoever hit you in the last few seconds gets the credit (and the down cam watches from their bird)
   const by = how !== 'crash' || t - lastHitT < 6 ? lastAttacker : '';
@@ -598,7 +916,7 @@ function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall 
     // online: no game over, you're straight back in
     online.downed(by, how);
     const who = by && by !== 'ai' ? esc(online.nameOf(by)) : by === 'ai' ? 'a wild bird' : '';
-    hud.overlay.innerHTML = `<div><h1>${title}</h1>${who ? `<p>by <b>${who}</b></p>` : ''}<p>${online.kills} down · ${online.deaths} time${online.deaths === 1 ? '' : 's'} downed</p><div class="go" id="respawnIn">Back in the air in 3…</div><div class="row"><button data-act="menu">${isTouch ? 'Leave room' : 'Leave room (Esc)'}</button></div></div>`;
+    hud.overlay.innerHTML = `<div class="menu"><h1>${title}</h1><div class="panel center">${who ? `<p>by <b>${who}</b></p>` : ''}<p class="big">${online.kills} down · ${online.deaths} time${online.deaths === 1 ? '' : 's'} downed</p><div class="go" id="respawnIn">Back in the air in 3…</div><div class="btns"><button data-act="menu">${isTouch ? 'Leave room' : 'Leave room (Esc)'}</button></div></div></div>`;
     setTimeout(() => { if (mode === 'crashed' && !downcam.playing) hud.overlay.classList.remove('hidden'); }, 500);
     return;
   }
@@ -609,7 +927,7 @@ function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall 
   const what = getArena()
     ? `${getArena()!.name} · wave ${Math.max(1, dogfight.wave)} · ${dogfight.kills} shot down`
     : `${dist} m downhill${dogfight.kills ? ` · ${dogfight.kills} shot down` : ''}`;
-  hud.overlay.innerHTML = `<div><h1>${title}</h1><p><b>${final}</b> points · ${what}</p><p>${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div><div class="row"><button data-act="menu">${isTouch ? 'Menu' : 'Menu (Esc / B)'}</button></div></div>`;
+  hud.overlay.innerHTML = `<div class="menu"><h1>${title}</h1><div class="panel center"><p class="score"><b>${final}</b><span>points</span></p><p>${what}</p><p class="best${isBest ? ' new' : ''}">${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div><div class="btns"><button data-act="menu">${isTouch ? 'Menu' : 'Menu (Esc / B)'}</button></div></div></div>`;
   setTimeout(() => { if (mode === 'crashed' && !downcam.playing) hud.overlay.classList.remove('hidden'); }, 700);
 }
 
@@ -643,10 +961,11 @@ function onDogfight(ev: DogfightEvent) {
       lastAttacker = ev.by; lastHitT = t;
       if (online.phase === 'playing' && ev.by !== 'ai') online.net.send({ t: 'hitok', to: ev.by }); // a hit marker for them
       hp--; hpRegen = 0; hitFlash = 1; shake = Math.max(shake, 0.6);
-      rumble(0.9, 180); audio.thud();
-      puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.3), 3, 10, 0.5);
+      rumble(0.9, 180);
+      if (isSpace()) { audio.shieldHit(); sfx.shieldHit(bird, tmp.randomDirection().multiplyScalar(3).add(glider.pos), BOLT_RED, 4.6); }
+      else { audio.thud(); puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.3), 3, 10, 0.5); }
       if (hp <= 0) crash('Shot down!', 'pea');
-      else popup('Hit!', `${hp} feather${hp > 1 ? 's' : ''} left`);
+      else popup('Hit!', isSpace() ? (hp > 1 ? 'shields down: hull taking fire' : 'HULL CRITICAL') : `${hp} feather${hp > 1 ? 's' : ''} left`);
       break;
     case 'dodged':
       if (dodgeCd <= 0) { const pts = Math.round(50 * multiplier()); score += pts; popup(`Dodged! +${pts}`, 'rolled through the shots'); dodgeCd = 0.8; }
@@ -682,8 +1001,8 @@ function onDogfight(ev: DogfightEvent) {
       // a dart is a one-hit kill, whatever feathers you have left
       hp = 0; hpRegen = 0; hitFlash = 1; shake = Math.max(shake, 0.9);
       rumble(1, 260); audio.thud();
-      puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.3), 4, 16, 0.7);
-      crash('Darted!', 'dart');
+      if (!isSpace()) puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.3), 4, 16, 0.7);
+      crash(isSpace() ? 'Missile hit!' : 'Darted!', 'dart');
       break;
     case 'netHit': online.netHit(ev.enemy, ev.weapon); break;
     case 'netDart': online.sendDart(ev.to, ev.pos, ev.dir, ev.speed, ev.ai ? 'ai' : online.myId); break;
@@ -701,21 +1020,27 @@ const RADAR_RANGE = 300;
 const rets: HTMLElement[] = [];
 function drawDogfightHud(show: boolean) {
   radar.style.opacity = show ? '1' : '0';
-  hud.hp.textContent = show ? '♥'.repeat(Math.max(0, hp)) + '♡'.repeat(Math.max(0, 3 - hp)) : '';
+  if (isSpace()) {
+    // space: hull integrity as three bars
+    const key = show ? `s${hp}` : '';
+    if (hud.hp.dataset.k !== key) { hud.hp.dataset.k = key; hud.hp.innerHTML = show ? `HULL ${Array.from({ length: 3 }, (_, i) => `<i${i < hp ? '' : ' class="off"'}></i>`).join('')}` : ''; }
+    hud.hp.classList.toggle('crit', hp === 1);
+  } else { hud.hp.dataset.k = ''; hud.hp.textContent = show ? '♥'.repeat(Math.max(0, hp)) + '♡'.repeat(Math.max(0, 3 - hp)) : ''; }
   // dart ammo: one pip per dart, the next one fills as it recharges
   hud.darts.style.opacity = show && myDartsOn() ? '1' : '0';
   if (show && myDartsOn()) {
     const pips = Array.from({ length: MAX_DARTS }, (_, i) =>
       i < dogfight.dartsLeft ? '<i></i>' : i === dogfight.dartsLeft ? `<i class="cd" style="--p:${Math.round(dogfight.dartCharge * 100)}%"></i>` : '<i class="off"></i>').join('');
-    hud.darts.innerHTML = `${pips}<b>DARTS${dogfight.locked && dogfight.dartsLeft ? ' · R' : ''}</b>`;
+    hud.darts.innerHTML = `${pips}<b>${isSpace() ? 'MISSILES' : 'DARTS'}${dogfight.locked && dogfight.dartsLeft ? ' · R' : ''}</b>`;
     hud.darts.classList.toggle('ready', !!dogfight.locked && dogfight.dartsLeft > 0);
-    $('dartBtn').textContent = `DART ${dogfight.dartsLeft}`;
+    $('dartBtn').textContent = `${isSpace() ? 'MSL' : 'DART'} ${dogfight.dartsLeft}`;
     $('dartBtn').classList.toggle('dim', !dogfight.locked || dogfight.dartsLeft === 0);
   }
   const threat = show ? Math.max(dogfight.tailThreat, dogfight.dartLockProgress) : 0;
   hud.warn.style.opacity = mode === 'flying' && glider.stalled ? String(0.6 + 0.4 * Math.sin(t * 16)) : threat > 0 ? String((0.55 + 0.45 * Math.sin(t * (8 + threat * 14))) * Math.min(1, 0.4 + threat)) : '0';
-  hud.warn.textContent = mode === 'flying' && glider.stalled ? '▼ STALL: DIVE TO GAIN SPEED ▼' : !show ? '' : dogfight.dartIncoming < Infinity ? `▲ DART ${Math.round(dogfight.dartIncoming)} m: BREAK! ▲`
-    : dogfight.dartLockProgress > 0 ? `▼ DART LOCK ${Math.round(dogfight.dartLockProgress * 100)}% ▼`
+  const DW = isSpace() ? 'MISSILE' : 'DART';
+  hud.warn.textContent = mode === 'flying' && glider.stalled ? '▼ STALL: DIVE TO GAIN SPEED ▼' : !show ? '' : dogfight.dartIncoming < Infinity ? `▲ ${DW} ${Math.round(dogfight.dartIncoming)} m: BREAK! ▲`
+    : dogfight.dartLockProgress > 0 ? `▼ ${DW} LOCK ${Math.round(dogfight.dartLockProgress * 100)}% ▼`
     : threat > 0.7 ? '▼ IN ITS SIGHTS: BREAK! ▼' : '▼ ON YOUR TAIL ▼';
 
   // radar: you in the middle, nose up the screen
@@ -740,7 +1065,7 @@ function drawDogfightHud(show: boolean) {
       let ahead = dx * fx + dz * fz, right = dx * -fz + dz * fx;
       const d = Math.hypot(ahead, right), k = Math.min(1, d / RADAR_RANGE) * R / Math.max(d, 1e-3);
       ahead *= k; right *= k;
-      c.fillStyle = e.remote === 'human' ? PLAYER_CSS[colorIndex(e.netId)] : e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
+      c.fillStyle = e.remote === 'human' ? humanCss(e.netId) : e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
       c.beginPath(); c.arc(cx + right, cy - ahead, d > RADAR_RANGE ? 2.5 : 4, 0, Math.PI * 2); c.fill();
     }
     for (const d of dogfight.darts) {
@@ -767,13 +1092,15 @@ function drawDogfightHud(show: boolean) {
     // with your darts switched off there's nothing to lock with, so no lock-on markings
     const myLock = myDartsOn() && e === dogfight.locked, myLocking = myDartsOn() && e === dogfight.locking;
     const mine = myLock ? ' mylocked' : myLocking ? ' mylocking' : '';
-    el.className = `ret ${e.role}${locking ? ' lock' : ''}${mine}`;
-    el.style.borderColor = e.remote === 'human' && !mine ? PLAYER_CSS[colorIndex(e.netId)] : '';
+    el.className = `ret ${e.role}${locking ? ' lock' : ''}${mine}${e.friendly ? ' ally' : ''}`;
+    el.style.borderColor = e.remote === 'human' && !mine ? humanCss(e.netId) : '';
+    el.style.setProperty('--c', e.remote === 'human' && !mine ? humanCss(e.netId) : '');
+    el.style.setProperty('--hp', `${Math.round(THREE.MathUtils.clamp(e.hp / e.maxHp, 0, 1) * 100)}%`);
     el.style.display = 'block';
     el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
     const dist = Math.round(e.pos.distanceTo(glider.pos));
     const who = e.remote === 'human' ? online.remotes.get(e.netId)?.name ?? '' : '';
-    (el.firstChild as HTMLElement).textContent = locking ? `LOCKING YOU ${dist} m` : myLock ? `LOCKED ${dist} m` : myLocking ? `LOCK ${Math.round(dogfight.lockT * 100)}%` : who ? `${who} · ${dist} m` : `${dist} m`;
+    (el.firstChild as HTMLElement).textContent = locking ? `LOCKING YOU ${dist} m` : myLock ? `LOCKED ${dist} m` : myLocking ? `LOCK ${Math.round(dogfight.lockT * 100)}%` : who ? `${who}${e.friendly ? ' · ally' : ''} · ${dist} m` : `${dist} m`;
   }
   // darts coming at you
   if (show) for (const d of dogfight.darts) {
@@ -785,10 +1112,49 @@ function drawDogfightHud(show: boolean) {
     n++;
     el.className = 'ret dart'; el.style.display = 'block';
     el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px) rotate(45deg)`;
-    (el.firstChild as HTMLElement).textContent = `DART ${Math.round(d.pos.distanceTo(glider.pos))} m`;
+    (el.firstChild as HTMLElement).textContent = `${isSpace() ? 'MISSILE' : 'DART'} ${Math.round(d.pos.distanceTo(glider.pos))} m`;
   }
   for (let i = n; i < rets.length; i++) rets[i].style.display = 'none';
   drawLeads(show && settings.lead);
+  drawSpaceHud(show && isSpace());
+}
+
+// ---------- Space HUD: the flight reticle and the off-screen arrows ----------
+const sret = $('sret'), offs: HTMLElement[] = [];
+const sretThr = $('sretThr'), sretFuel = $('sretFuel'), sretSpd = $('sretSpd');
+const ARC = 78.54; // a quarter of the reticle's circle
+const camLocal = new THREE.Vector3();
+function drawSpaceHud(show: boolean) {
+  sret.style.display = show ? 'block' : 'none';
+  let n = 0;
+  if (show) {
+    // the reticle sits where your guns converge, out ahead of the nose
+    const v = tmp.copy(glider.pos).addScaledVector(glider.dir, 250).project(camera);
+    sret.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
+    const thr = THREE.MathUtils.clamp((glider.speed - 22) / (SPACE_BOOST - 22), 0, 1);
+    sretThr.setAttribute('stroke-dasharray', `${(thr * ARC).toFixed(1)} 400`);
+    sretThr.classList.toggle('boosting', glider.boost > 0.2);
+    sretFuel.setAttribute('stroke-dasharray', `${(glider.boostFuel * ARC).toFixed(1)} 400`);
+    sretFuel.classList.toggle('low', glider.boostFuel < 0.15);
+    sret.classList.toggle('drift', glider.brake > 0.3);
+    sretSpd.textContent = String(Math.round(glider.speed * 3.6));
+    // fighters (and missiles) you can't see: an arrow round the reticle pointing the way to turn
+    const R = Math.min(innerWidth, innerHeight) * 0.36, cx = innerWidth / 2, cy = innerHeight / 2;
+    const arrow = (p: THREE.Vector3, cls: string) => {
+      camLocal.copy(p).applyMatrix4(camera.matrixWorldInverse);
+      const pr = tmp.copy(p).project(camera);
+      if (camLocal.z < 0 && Math.abs(pr.x) < 0.95 && Math.abs(pr.y) < 0.9) return; // on screen
+      let el = offs[n];
+      if (!el) { el = document.createElement('div'); $('offs').appendChild(el); offs.push(el); }
+      n++;
+      const a = Math.atan2(camLocal.y, camLocal.x);
+      el.className = `offarrow ${cls}`; el.style.display = 'block';
+      el.style.transform = `translate(${cx + Math.cos(a) * R}px, ${cy - Math.sin(a) * R}px) rotate(${Math.PI / 2 - a}rad)`;
+    };
+    for (const e of dogfight.enemies) if (e.alive) arrow(e.pos, e === dogfight.locked ? 'locked' : e.role);
+    for (const d of dogfight.darts) if (d.tracking) arrow(d.pos, 'dart');
+  }
+  for (let i = n; i < offs.length; i++) offs[i].style.display = 'none';
 }
 
 // ---------- Online HUD: scoreboard and kill feed ----------
@@ -801,8 +1167,12 @@ function drawOnlineHud(dt: number) {
   if ((boardT -= dt) > 0) return;
   boardT = 0.25;
   const rows = online.roster().sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
-  $('board').innerHTML = `<b>ROOM ${esc(online.code)}</b>` + rows.map((p) =>
-    `<div style="color:${PLAYER_CSS[colorIndex(p.id)]}"${p.id === online.myId ? ' class="me"' : ''}><span>${esc(p.name)}</span><i>${p.kills}</i><i class="d">${p.deaths}</i></div>`).join('');
+  const row = (p: typeof rows[number]) =>
+    `<div style="color:${PLAYER_CSS[colorIndex(p.id)]}"${p.id === online.myId ? ' class="me"' : ''}><span>${esc(p.name)}</span><i>${p.kills}</i><i class="d">${p.deaths}</i></div>`;
+  // Team up: each team under its own heading with its total
+  $('board').innerHTML = `<b>ROOM ${esc(online.code)}</b>` + (online.teams
+    ? TEAM_NAMES.map((tn, k) => { const tm = rows.filter((p) => p.team === k); return tm.length ? `<div class="teamrow" style="color:${TEAM_CSS[k]}"><span>${tn}</span><i>${tm.reduce((a, p) => a + p.kills, 0)}</i><i class="d"></i></div>${tm.map(row).join('')}` : ''; }).join('')
+    : rows.map(row).join(''));
   while (feed.length && t - feed[0].t > 6) feed.shift();
   $('feed').innerHTML = feed.map((f) => `<div>${esc(f.text)}</div>`).join('');
 }
@@ -819,15 +1189,16 @@ function drawLeads(on: boolean) {
   let n = 0;
   if (on) {
     const muzzle = tmp.copy(glider.pos).addScaledVector(glider.dir, 1.6);
-    const reach = (PEA_SPEED + glider.speed) * PEA_LIFE; // how far a pea flies
+    const reach = (peaSpeed() + glider.speed) * peaLife(); // how far a pea flies
     for (const e of dogfight.enemies) {
       if (!e.alive || e.friendly) continue;
       leadRel.copy(e.pos).sub(muzzle);
       const dist = leadRel.length();
       if (dist > LEAD_RANGE || dist < 4) continue;
       leadV.copy(e.dir).multiplyScalar(e.speed).sub(glider.vel); // its motion relative to you
-      let tt = dist / PEA_SPEED;
-      for (let i = 0; i < 4; i++) tt = leadP.copy(leadRel).addScaledVector(leadV, tt).length() / PEA_SPEED;
+      const ps = peaSpeed();
+      let tt = dist / ps;
+      for (let i = 0; i < 4; i++) tt = leadP.copy(leadRel).addScaledVector(leadV, tt).length() / ps;
       leadP.copy(leadRel).addScaledVector(leadV, tt).add(muzzle);
       const v = leadP.project(camera);
       if (v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05) continue;
@@ -835,7 +1206,7 @@ function drawLeads(on: boolean) {
       if (!el) { el = document.createElement('div'); el.className = 'lead'; $('rets').appendChild(el); leadEls.push(el); }
       n++;
       el.style.display = 'block';
-      el.style.borderColor = e.remote === 'human' ? PLAYER_CSS[colorIndex(e.netId)] : e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
+      el.style.borderColor = e.remote === 'human' ? humanCss(e.netId) : e.role === 'hunter' ? '#ff5a4a' : '#ffb347';
       el.style.opacity = dist <= reach ? '1' : '0.4'; // faded: out of pea range for now
       el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
     }
@@ -873,10 +1244,27 @@ function rotateToward(cur: THREE.Vector3, want: THREE.Vector3, axis: THREE.Vecto
   cur.copy(a).applyAxisAngle(axis, ang * k);
 }
 
+/** First person: you're sitting in it. Only while flying (a crash goes back to the chase camera to watch). */
+const firstPerson = () => settings.view === 'cockpit' && mode === 'flying';
 function placeCamera(snap = false, dt = 0.016, lift = 0) {
   const g = glider;
+  const fp = firstPerson();
+  cockpit.visible = fp && isSpace(); beak.visible = fp && !isSpace();
+  if (fp) {
+    // eye just above and behind the nose; the view turns exactly with your flyer
+    camera.quaternion.copy(bird.quaternion);
+    camera.up.set(0, 1, 0).applyQuaternion(camera.quaternion);
+    camera.position.copy(g.pos).addScaledVector(camera.up, isSpace() ? 0.42 : 0.3).addScaledVector(g.dir, isSpace() ? -0.4 : 0.6);
+    if (shake > 0) camera.position.addScaledVector(tmp.set(Math.random() - 0.5, Math.random() - 0.5, 0).applyQuaternion(camera.quaternion), shake * 0.25);
+    const fov = THREE.MathUtils.clamp(74 + (g.speed - (isSpace() ? SPACE_CRUISE : 30)) * 0.35, 68, 96);
+    camera.fov += (fov - camera.fov) * Math.min(1, 3 * dt);
+    camera.updateProjectionMatrix();
+    // keep the chase camera's state current, so switching back doesn't swoop in from somewhere old
+    camPos.copy(g.pos).addScaledVector(g.dir, -10); camLook.copy(g.pos).addScaledVector(g.dir, 10); camFwd.copy(g.dir); camUp.copy(camera.up);
+    return;
+  }
   // how much of the climb the camera should follow: none in a normal glide, all of it past ~50 degrees
-  const steepWant = g.looping || g.trick?.type === 'half' ? 1 : THREE.MathUtils.smoothstep(g.free ? Math.abs(g.pitch) : g.pitch, 0.55, 0.95);
+  const steepWant = g.space || g.looping || g.trick?.type === 'half' ? 1 : THREE.MathUtils.smoothstep(g.free ? Math.abs(g.pitch) : g.pitch, 0.55, 0.95);
   camSteep = snap ? steepWant : camSteep + (steepWant - camSteep) * Math.min(1, 4 * dt);
 
   // forward: a normal glide keeps the horizon in view; steep flight follows the actual flight path
@@ -891,7 +1279,8 @@ function placeCamera(snap = false, dt = 0.016, lift = 0) {
   tmpE.set(g.pitch, g.heading, g.trick?.type === 'half' ? -g.spin : 0, 'YXZ');
   const birdUp = g.free ? tmpUp.copy(g.up) : tmpUp.set(0, 1, 0).applyQuaternion(tmpQ.setFromEuler(tmpE));
   // free flight: the camera rolls most of the way with the bird (never through zero, so it can't flip)
-  const upWant = g.free ? birdUp.clone().multiplyScalar(0.7).addScaledVector(WORLD_UP, 0.3)
+  // (space: there's no "down" to keep level with, so the camera rolls all the way with the ship)
+  const upWant = g.space ? birdUp.clone() : g.free ? birdUp.clone().multiplyScalar(0.7).addScaledVector(WORLD_UP, 0.3)
     : camSteep > 0.999 ? birdUp.clone() : birdUp.clone().multiplyScalar(camSteep).addScaledVector(WORLD_UP, 1 - camSteep);
   if (upWant.lengthSq() < 1e-4) upWant.copy(birdUp);
   upWant.normalize();
@@ -899,7 +1288,7 @@ function placeCamera(snap = false, dt = 0.016, lift = 0) {
   else rotateToward(camUp, upWant, camFwd, 1 - Math.exp(-7 * dt));
   camUp.projectOnPlane(camFwd).normalize();
 
-  const dist = 8.5 + camSteep * 2.5 + Math.max(0, g.speed - 30) * 0.06;
+  const dist = g.space ? 10 + Math.max(0, g.speed - SPACE_CRUISE) * 0.05 : 8.5 + camSteep * 2.5 + Math.max(0, g.speed - 30) * 0.06;
   const want = g.pos.clone().addScaledVector(camFwd, -dist).addScaledVector(camUp, 2.6 + lift);
   const ground = terrainHeight(want.x, want.z) + 1.8;
   if (want.y < ground) want.y = ground;
@@ -912,7 +1301,7 @@ function placeCamera(snap = false, dt = 0.016, lift = 0) {
   camera.up.copy(camUp);
   camera.lookAt(camLook);
   if (!g.free) camera.rotateZ(-g.roll * 0.35);
-  const fov = THREE.MathUtils.clamp(62 + (g.speed - 25) * 0.55, 60, 98);
+  const fov = g.space ? THREE.MathUtils.clamp(66 + (g.speed - SPACE_CRUISE) * 0.45, 60, 92) : THREE.MathUtils.clamp(62 + (g.speed - 25) * 0.55, 60, 98);
   camera.fov += (fov - camera.fov) * Math.min(1, 3 * dt);
   camera.updateProjectionMatrix();
 }
@@ -950,11 +1339,15 @@ function frame(now: number) {
   let dt = Math.min(0.05, (now - last) / 1000);
   const realDt = dt;
   last = now;
+  // phone held upright: a solo game holds still behind the rotate card (an online match can't wait)
+  if (portraitQ.matches && mode === 'flying' && online.phase !== 'playing') { input.poll(); render(); return; }
   input.lockScheme = online.active ? 'flight' : null; // online: everyone flies the same layout
   const inp = input.poll();
+  document.body.classList.toggle('flying', mode === 'flying');
   onlineEvents();
 
   if (inp.anyPress) audio.start();
+  if (inp.view && mode !== 'title') { settings.view = settings.view === 'cockpit' ? 'chase' : 'cockpit'; saveSettings(); }
   const nav = inp.nav;
   if (mode === 'title') {
     const rows = menuRows() as readonly string[];
@@ -965,7 +1358,8 @@ function frame(now: number) {
       renderMenu();
     }
     if (nav.x && MENU_ROWS[menuRow] !== 'go' && rows.includes(MENU_ROWS[menuRow])) menuChange(MENU_ROWS[menuRow], nav.x);
-    if (settings.mode === 'online') {
+    if (nav.ok && MENU_ROWS[menuRow] === 'help' && rows.includes('help')) menuChange('help', 1); // A / Enter opens the controls list
+    else if (settings.mode === 'online') {
       const row = MENU_ROWS[menuRow];
       if (nav.ok && rows.includes(row) && ['host', 'join', 'go'].includes(row)) onlineAction(row);
       if (nav.ok && row === 'rooms' && openRooms[roomSel] && openRooms[roomSel].players < openRooms[roomSel].max) { settings.code = openRooms[roomSel].code; onlineAction('join'); }
@@ -1004,15 +1398,31 @@ function frame(now: number) {
       glider.steerToward(wind.dir, Math.min(1, 1.5 * dt));
     }
     const finished = glider.step(dt, inp);
+    // space: flying through a carrier's hangar bay or a cruiser's tunnel pays; boost pickups refill the tank
+    if (isSpace()) {
+      const th = holeThreaded(prevPos, glider.pos);
+      if (th) {
+        const pts = Math.round((th.kind === 'hangar' ? 450 : 300) * multiplier());
+        score += pts; combo++; comboTimer = 4;
+        dogfight.chargeDart(0.35);
+        popup(th.kind === 'hangar' ? `Hangar run +${pts}` : `Through the hull +${pts}`, 'missile charged');
+        audio.whoosh(1); rumble(0.5, 120);
+      }
+      if (mode === 'flying' && grabPickup(glider.pos)) {
+        glider.boostFuel = Math.min(1, glider.boostFuel + PICKUP_FUEL);
+        popup('Boost +', `tank ${Math.round(glider.boostFuel * 100)}%`);
+        audio.beep(1400, 0.08, 0.08); setTimeout(() => audio.beep(2100, 0.1, 0.07), 70); rumble(0.3, 60);
+      }
+    }
     online.preUpdate();
     for (const ev of dogfight.update(dt, t, glider, inp.fire, inp.dart && myDartsOn(), true, wasInCloud)) onDogfight(ev);
-    online.postUpdate(dt, glider, bird.quaternion, wasInCloud);
+    online.hp = hp; online.postUpdate(dt, glider, bird.quaternion, wasInCloud);
     spawnShield -= dt;
     if (dogfight.myDartThisFrame) { audio.dart(); rumble(0.3, 80); }
     if (dogfight.locked && dogfight.locked !== wasLocked) audio.beep(1900, 0.12, 0.07);
     wasLocked = dogfight.locked;
-    if (dogfight.shotThisFrame) audio.pew();
-    if (dogfight.enemyShotThisFrame) audio.pew(true);
+    if (dogfight.shotThisFrame) isSpace() ? audio.laser() : audio.pew();
+    if (dogfight.enemyShotThisFrame) isSpace() ? audio.laser(true) : audio.pew(true);
     warnBeep -= dt;
     if (dogfight.dartIncoming < Infinity) {
       // incoming dart: beeps speed up as it closes
@@ -1021,6 +1431,7 @@ function frame(now: number) {
       if (warnBeep <= 0) { audio.beep(1250, 0.06, 0.06); warnBeep = 0.35 - 0.25 * dogfight.dartLockProgress; }
     } else if (dogfight.tailThreat > 0 && warnBeep <= 0) { audio.beep(dogfight.tailThreat > 0.7 ? 1100 : 820, 0.07, 0.06); warnBeep = dogfight.tailThreat > 0.7 ? 0.18 : 0.6; }
     if (glider.stalled) shake = Math.max(shake, 0.15); // buffeting as the wings stall
+    if (isSpace() && glider.boost > 0.3) shake = Math.max(shake, 0.07 * glider.boost); // the airframe hums on a full burn
     dartHint -= dt; dodgeCd -= dt; hitFlash = Math.max(0, hitFlash - dt * 2.5);
     if (hp < 3 && (hpRegen += dt) > 20) { hp++; hpRegen = 0; popup('Feather regrown', `${hp}/3`); }
     // a loop starts when the nose comes steeply up (used for the low-loop bonus)
@@ -1031,6 +1442,7 @@ function frame(now: number) {
     const ground = terrainHeight(p.x, p.z);
     clearance = p.y - ground;
     if (clearance < 0.45) { p.y = ground + 0.45; crash(); }
+    const crunch = isSpace() ? 'Kaboom!' : 'Crunch!';
 
     // obstacles: collision + close calls
     obstaclesNear(p.x, p.z, 14, nearby);
@@ -1038,11 +1450,11 @@ function frame(now: number) {
     const seen = new Set<string>();
     for (const o of nearby) {
       const gap = obstacleGap(o, p.x, p.y, p.z) - 0.5; // bird radius
-      if (gap < 0 && mode === 'flying') { crash('Crunch!', 'crash', true); break; }
+      if (gap < 0 && mode === 'flying') { crash(crunch, 'crash', true); break; }
       if (gap < 6) {
         seen.add(o.id);
         const prev = near.get(o.id);
-        near.set(o.id, { gap: prev === undefined ? gap : Math.min(prev.gap, gap), type: o.type });
+        near.set(o.id, { gap: prev === undefined ? gap : Math.min(prev.gap, gap), type: o.type === 'box' ? 'hull' : o.type });
       }
     }
     if (mode === 'flying') for (const [id, nr] of near) {
@@ -1073,7 +1485,7 @@ function frame(now: number) {
     outOfBounds = 0;
     if (inArena) {
       const r = Math.hypot(p.x, p.z) || 1;
-      outOfBounds = THREE.MathUtils.clamp((r - (ARENA_LID_R - 80)) / 80, 0, 1);
+      outOfBounds = isSpace() ? spaceEdge(p) : THREE.MathUtils.clamp((r - (ARENA_LID_R - 80)) / 80, 0, 1);
       if (arenaBarrier(p) > 0) {
         // pressing into it scrubs speed, so it's no free ride round the rim
         const into = Math.max(0, (glider.dir.x * p.x + glider.dir.z * p.z) / r);
@@ -1102,11 +1514,10 @@ function frame(now: number) {
       const wp = new THREE.Vector3(p.x, terrainHeight(p.x, p.z) + 0.3, p.z);
       for (let i = 0; i < n; i++) puffs.burst(wp, glider.vel.clone().multiplyScalar(0.15).setY(4), 3, 1, 0.5);
     }
-    waterSkim = onWater;
     // ground skim
     if (clearance < 5 && mode === 'flying') {
       score += dt * (5 - clearance) * glider.speed * 0.35 * multiplier();
-      if (dogfight.chargeDart(dt * 0.08 * (5 - clearance) / 5)) { popup('Dart reloaded', 'skimming the ground'); audio.beep(1600, 0.1, 0.07); }
+      if (dogfight.chargeDart(dt * 0.08 * (5 - clearance) / 5)) { popup('Dart reloaded'); audio.beep(1600, 0.1, 0.07); }
       comboTimer = Math.max(comboTimer, 1.5);
     }
 
@@ -1143,7 +1554,7 @@ function frame(now: number) {
     crashTimer += dt;
     online.preUpdate();
     for (const ev of dogfight.update(dt, t, glider, false, false, false)) if (online.phase === 'playing') onDogfight(ev);
-    online.postUpdate(dt, glider, bird.quaternion, false);
+    online.hp = hp; online.postUpdate(dt, glider, bird.quaternion, false);
     updateFall(dt);
   } else {
     // title: gentle demo glide that hovers in place
@@ -1153,7 +1564,8 @@ function frame(now: number) {
   puffs.update(dt, camera.position);
 
   // sky and fog shift with the environment you're flying through
-  {
+  if (isSpace()) spaceScene.update(dt, camera.position);
+  else {
     const nb = nearestBranch(glider.pos.x, glider.pos.z);
     const target = SKY_COLOR[nb.parent].clone().lerp(SKY_COLOR[nb.biome], nb.t);
     skyNow.lerp(target, Math.min(1, dt * 0.8));
@@ -1166,6 +1578,7 @@ function frame(now: number) {
   }
 
   glider.applyTo(bird);
+  bird.visible = !firstPerson() && !(isSpace() && mode === 'crashed'); // (in space your fighter went up in the fireball)
   if (mode === 'crashed') { poseFall(); bird.animate(t, 0.1, glider.speed, 0.6, 0); } // limp wings, like a downed AI bird
   else bird.animate(t, glider.brake, glider.speed, glider.tuck, flapAmount(glider.speed, glider.brake));
 
@@ -1173,6 +1586,7 @@ function frame(now: number) {
   const gp = glider.pos;
   const gy = terrainHeight(gp.x, gp.z);
   const h = gp.y - gy;
+  shadow.visible = !isSpace();
   shadow.position.set(gp.x, gy + 0.35, gp.z);
   shadow.scale.setScalar(1.3 + h * 0.03);
   (shadow.material as THREE.MeshBasicMaterial).opacity = THREE.MathUtils.clamp(0.5 - h * 0.012, 0, 0.5);
@@ -1182,10 +1596,19 @@ function frame(now: number) {
   if (!inArena) gates.update(gp.z, t);
 
   placeCamera(false, dt, mode === 'crashed' ? Math.min(10, crashTimer * 8) : 0);
+  // (a fixed camera for screenshots and tests: window.__glide.camOverride = { pos: [x, y, z], look: [x, y, z] })
+  const co = (window as any).__glide?.camOverride;
+  if (co) { camera.position.fromArray(co.pos); camera.up.set(0, 1, 0); camera.lookAt(tmp.fromArray(co.look)); if (co.fov) { camera.fov = co.fov; camera.updateProjectionMatrix(); } }
 
   // down cam: keep recording; once you go down, show the recording instead of the live scene
   const trk = trackedNow();
-  if (mode !== 'title') downcam.record(t, trk);
+  if (mode !== 'title') {
+    // first person hides your own bird from your camera, but the replay is watched from outside: record it anyway
+    const hidden = !bird.visible;
+    bird.visible = true;
+    downcam.record(t, trk);
+    bird.visible = !hidden;
+  }
   if (downcamReq) { if (mode === 'crashed') beginDownCam(downcamReq.by, downcamReq.how); downcamReq = null; }
   let replaying = false;
   if (downcam.playing) {
@@ -1197,9 +1620,12 @@ function frame(now: number) {
     }
   }
   sky.position.copy(camera.position);
+  spaceScene.backdrop.position.copy(camera.position);
 
   // streaks
-  const sp = THREE.MathUtils.clamp((glider.speed - 30) / 35, 0, 1);
+  // (space: dust streaks show how fast you're going even with nothing near; brighter on boost)
+  const sp = isSpace() ? 0.2 + 0.8 * THREE.MathUtils.clamp((glider.speed - SPACE_CRUISE) / (SPACE_BOOST - SPACE_CRUISE), 0, 1)
+    : THREE.MathUtils.clamp((glider.speed - 30) / 35, 0, 1);
   streakMat.opacity = mode === 'flying' ? sp * 0.55 : 0;
   if (streakMat.opacity > 0) {
     for (let i = 0; i < STREAKS; i++) {
@@ -1218,31 +1644,40 @@ function frame(now: number) {
   hud.edge.style.opacity = replaying ? '0' : String(Math.max(danger * 0.7, hitFlash));
   hud.edge.style.boxShadow = hitFlash > danger * 0.7 ? 'inset 0 0 140px 40px rgba(255, 40, 40, .85)' : '';
   drawDogfightHud(mode === 'flying');
-  if (isTouch) { const d = mode === 'flying' ? 'flex' : 'none'; $('fire').style.display = d; $('dartBtn').style.display = myDartsOn() ? d : 'none'; }
+  if (isTouch) { const d = mode === 'flying' ? 'flex' : 'none'; $('fire').style.display = d; $('dartBtn').style.display = myDartsOn() ? d : 'none'; $('viewBtn').style.display = d; }
+  $('pipper').style.display = firstPerson() && !replaying && !isSpace() ? 'block' : 'none';
+  // space: boost fuel gauge
+  const boostEl = $('boost');
+  boostEl.style.display = 'none'; // (space: the boost gauge is on the reticle now)
+  if (isSpace()) {
+    (boostEl.firstChild as HTMLElement).style.width = `${Math.round(glider.boostFuel * 100)}%`;
+    boostEl.classList.toggle('on', glider.boost > 0.2);
+    boostEl.classList.toggle('low', glider.boostFuel < 0.15);
+  }
   if (outOfBounds > 0 && mode === 'flying' && hud.warn.style.opacity === '0') {
-    hud.warn.textContent = '◀ NO WAY OVER THE WALL: TURN BACK ▶';
+    hud.warn.textContent = isSpace() ? '◀ LEAVING THE BATTLE: TURN BACK ▶' : '◀ NO WAY OVER THE WALL: TURN BACK ▶';
     hud.warn.style.opacity = String(0.5 + 0.5 * Math.sin(t * 10));
   }
-  hud.skim.textContent = danger > 0 ? (waterSkim ? 'WATER SKIM' : 'SKIM') : 'CANYON RUN';
-  hud.skim.style.opacity = String(danger > 0 ? 0.6 + danger * 0.4 : inCanyonRun && mode === 'flying' ? 0.7 : 0);
   hud.score.textContent = mode === 'title' || replaying ? '' : String(Math.floor(score));
   hud.combo.style.opacity = combo > 0 && mode === 'flying' ? '1' : '0';
   hud.combo.textContent = `combo x${multiplier().toFixed(1)}`;
   hud.stats.textContent = mode === 'flying'
-    ? `${Math.round(glider.speed * 3.6)} km/h · ${Math.max(0, Math.round(clearance))} m up · ${inArena ? getArena()!.name : `${Math.round(startZ - gp.z)} m`}`
+    ? isSpace() ? `${Math.round(glider.speed * 3.6)} km/h · ${getArena()!.name}`
+    : `${Math.round(glider.speed * 3.6)} km/h · ${Math.max(0, Math.round(clearance))} m up · ${inArena ? getArena()!.name : `${Math.round(startZ - gp.z)} m`}`
     : '';
   waveClearedT -= dt;
   const alive = dogfight.enemies.filter((e) => e.alive && e.remote !== 'human').length;
   const rules = online.phase === 'playing' ? online.rules : null;
   hud.wave.textContent = rules && mode !== 'title'
-    ? rules.bots === 0 ? (rules.allies ? 'TEAM UP' : 'FREE FOR ALL') : dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`
+    ? rules.bots === 0 ? (rules.allies ? teamBanner() : 'FREE FOR ALL') : dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`
     : inArena && mode === 'flying'
     ? dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`
     : '';
-  audio.update(glider.speed, mist, mode === 'flying');
+  audio.update(glider.speed, mist, mode === 'flying' && !isSpace()); // (no wind in space)
+  audio.engine(isSpace() && mode === 'flying', THREE.MathUtils.clamp((glider.speed - 22) / (SPACE_BOOST - 22), 0, 1), glider.boost, glider.brake);
   drawOnlineHud(dt);
 
-  renderer.render(scene, camera);
+  render();
   if (replaying) downcam.restore(trk);
 }
 requestAnimationFrame(frame);
@@ -1251,8 +1686,9 @@ addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
 });
-(window as any).__glide = { settings, glider, dogfight, world, gates, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
+(window as any).__glide = { settings, input, glider, dogfight, world, gates, spaceScene, fleet, obstacleGap, boostPickups, isSpace, camera, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
 
 // ?debug exposes the game objects to the console (used for the two-browser online tests)
 if (new URLSearchParams(location.search).has('debug')) {
