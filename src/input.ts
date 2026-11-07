@@ -399,9 +399,9 @@ export class Input {
       const rt = gp.buttons[7]?.value ?? 0, lt = gp.buttons[6]?.value ?? 0;
       const a = gp.buttons[0]?.pressed ? 1 : 0;
       if (this.space) {
-        // space: LT brakes, A or either bumper boosts, and the right stick is a throttle (up boost, down brake)
-        brake = Math.max(brake, lt, ry > 0.3 ? ry : 0);
-        boost = Math.max(boost, a, gp.buttons[4]?.pressed || gp.buttons[5]?.pressed ? 1 : 0, ry < -0.3 ? -ry : 0);
+        // space: the bumpers are the throttle (RB boosts, LB drifts); the sticks only steer
+        if (gp.buttons[4]?.pressed) brake = 1;
+        if (gp.buttons[5]?.pressed) boost = 1;
       } else brake = Math.max(brake, lt, a);
       fire ||= rt > 0.3 || !!gp.buttons[2]?.pressed;
       gp.buttons.forEach((b, i) => {

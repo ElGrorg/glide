@@ -239,8 +239,8 @@ const KEYS_HELP = (): Help => [
   [kb('R') + ' or right-click', 'Homing dart (hold your nose on a bird for 1 s to lock)'], [kb('V'), 'Change layout'], [kb('T'), 'First-person view'],
 ];
 // space fighters
-const SPACE_PAD: Help = [[`Left stick ${kb('↑↓')}`, 'Pitch'], [`Right stick ${kb('←→')}`, 'Roll'], [`Right stick ${kb('↑')} / ${kb('↓')}`, 'Boost / drift'],
-  [kb('RT') + ' / ' + kb('X'), 'Lasers'], [kb('Y'), 'Missile'], [kb('A') + ' / ' + kb('LB') + ' / ' + kb('RB'), 'Boost'], [kb('LT'), 'Drift: slide and aim'], [kb('R3'), 'Cockpit view']];
+const SPACE_PAD: Help = [[`Left stick ${kb('↑↓')}`, 'Pitch'], [`Right stick ${kb('←→')}`, 'Roll'], 
+  [kb('RT') + ' / ' + kb('X'), 'Lasers'], [kb('Y'), 'Missile'], [kb('RB'), 'Boost'], [kb('LB'), 'Drift: slide and aim'], [kb('R3'), 'Cockpit view']];
 const SPACE_KEYS: Help = [[kb('W', 'S') + ' / ' + kb('↑', '↓'), 'Pitch'], [kb('A', 'D') + ' / ' + kb('←', '→'), 'Roll'], [kb('Z', 'C'), 'Yaw'],
   [kb('Shift'), 'Boost'], [kb('Space'), 'Drift: slide and aim'], [kb('F') + ' or click', 'Lasers'],
   [kb('R') + ' or right-click', 'Missile (hold your nose on a fighter for 1 s to lock)'], [kb('T'), 'Cockpit view']];
