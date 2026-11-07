@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeNoise2D, hash2 } from './noise';
 import { route, type Biome, type LiveBranch } from './route';
-import { planetHeight, spaceBarrier, shipPartsNear, spaceGap } from './space';
+import { SPACE_VOID, spaceBarrier, shipPartsNear, spaceGap } from './space';
 
 // ---------- Terrain shape: an endless downhill mountainside ----------
 // Forward is -Z. The ground falls away by SLOPE metres per metre travelled.
@@ -178,7 +178,7 @@ export function riverAt(x: number, z: number, nb?: LiveBranch): number {
 }
 
 export function terrainHeight(x: number, z: number): number {
-  if (arena) return arena.id === 'space' ? planetHeight(x, z) : arenaHeight(x, z);
+  if (arena) return arena.id === 'space' ? SPACE_VOID : arenaHeight(x, z);
   const lv = route.live(z, liveTmp);
   // valleys: the nearest open valley wins; closed valleys rise back into the mountainside.
   // Valleys narrow into gorges and open into wide plains along the run.
@@ -294,6 +294,8 @@ export interface Obstacle {
   kind?: TreeKind; biome?: Biome;
   /** space (a box of a ship's hull): centre height, heading (ax, az) and half sizes along / up / across */
   cy?: number; ax?: number; az?: number; hx?: number; hy?: number; hz?: number;
+  /** space: a block's cross-section at its stern / bow ends [height scale, width scale, drop], and its rounded long edges */
+  ta?: number[]; tb?: number[]; rr?: number[];
 }
 
 export const TREE_CELL = 13;
