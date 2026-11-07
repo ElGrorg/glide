@@ -216,6 +216,18 @@
   #viewBtn { position: fixed; left: 50%; margin-left: -28px; bottom: calc(14px + env(safe-area-inset-bottom)); width: 56px; height: 36px; border-radius: 10px;
     border: 2px solid rgba(255,255,255,.6); background: rgba(20,40,60,.35); display: none; pointer-events: none;
     align-items: center; justify-content: center; font-weight: 900; font-size: 12px; letter-spacing: 1px; }
+  /* touch throttle (space): a slider down the left edge, boost at the top, cruise in the notch, drift at the bottom */
+  #throttle { position: fixed; left: calc(14px + env(safe-area-inset-left)); top: 26vh; bottom: calc(108px + env(safe-area-inset-bottom)); width: 34px;
+    border-radius: 17px; border: 2px solid rgba(160,230,255,.55); display: none; pointer-events: none;
+    background: linear-gradient(180deg, rgba(255,200,80,.32) 0%, rgba(20,40,60,.3) 44%, rgba(20,40,60,.3) 56%, rgba(90,170,255,.32) 100%); }
+  body.touch.space.flying #throttle { display: block; }
+  #throttle b { position: absolute; left: 50%; transform: translateX(-50%); font-size: 9px; font-weight: 900; letter-spacing: 1px; color: rgba(255,255,255,.7); }
+  #throttle b.up { top: -16px; } #throttle b.dn { bottom: -16px; }
+  #throttle .notch { position: absolute; left: -6px; right: -6px; top: 50%; height: 2px; margin-top: -1px; background: rgba(255,255,255,.6); }
+  #thrKnob { position: absolute; left: -5px; right: -5px; top: 50%; height: 22px; margin-top: -11px; border-radius: 8px;
+    background: rgba(200,240,255,.85); box-shadow: 0 0 10px rgba(120,220,255,.6); }
+  #throttle.boosting #thrKnob { background: #ffd36a; box-shadow: 0 0 12px rgba(255,190,60,.8); }
+  #throttle.drifting #thrKnob { background: #8fc8ff; box-shadow: 0 0 12px rgba(90,170,255,.8); }
   /* ---------- Safe areas: in landscape the notch and the rounded corners sit at the sides ---------- */
   #stats, #hp, #darts, #feed, #boost { margin-left: env(safe-area-inset-left); }
   #wave, #board, #radar, #fire, #dartBtn { margin-right: env(safe-area-inset-right); }
@@ -307,6 +319,7 @@
   <div id="fire">FIRE</div>
   <div id="dartBtn">DART</div>
   <div id="viewBtn">VIEW</div>
+  <div id="throttle"><b class="up">BOOST</b><i class="notch"></i><div id="thrKnob"></div><b class="dn">DRIFT</b></div>
   <div id="boost" class="hud"><i></i><b>BOOST</b></div>
   <div id="pipper"></div>
   <div id="sret"><svg viewBox="0 0 140 140">

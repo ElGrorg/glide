@@ -240,9 +240,14 @@ const SPACE_PAD: Help = [[`Left stick ${kb('↑↓')}`, 'Pitch'], [`Right stick 
 const SPACE_KEYS: Help = [[kb('W', 'S') + ' / ' + kb('↑', '↓'), 'Pitch'], [kb('A', 'D') + ' / ' + kb('←', '→'), 'Roll'], [kb('Z', 'C'), 'Yaw'],
   [kb('Shift'), 'Boost'], [kb('Space'), 'Drift: slide and aim'], [kb('F') + ' or click', 'Lasers'],
   [kb('R') + ' or right-click', 'Missile (hold your nose on a fighter for 1 s to lock)'], [kb('T'), 'Cockpit view']];
-const SPACE_TOUCH: Help = [['Left thumb ↑↓', 'Pitch'], ['Right thumb ←→', 'Roll'], ['Right thumb ↑ / ↓', 'Boost / drift'],
+const TILT_HELP: Help = [['Tilt the phone', 'Steer like a wheel: turn it to roll, tip the top away to dive, toward you to pull up'],
+  ['Level', 'However you hold the phone when you launch']];
+const SPACE_TOUCH = (): Help => [...(settings.tilt ? TILT_HELP : [['Left thumb ↑↓', 'Pitch'], ['Right thumb ←→', 'Roll']] as Help),
+  ['Left slider', 'Throttle: up boosts, the notch cruises, down drifts (it stays put)'],
   ['Hold FIRE', 'Lasers'], ['Tap MSL', 'Missile, once your nose has locked a fighter'], ['Tap VIEW', 'Cockpit view']];
-const TOUCH_HELP = (): Help => input.scheme === 'flight'
+const TOUCH_HELP = (): Help => settings.tilt
+  ? [...TILT_HELP, ['Hold anywhere else', 'Air-brake'], ['Hold FIRE', 'Shoot'], ['Tap DART', 'Homing dart, once your nose has locked a bird']]
+  : input.scheme === 'flight'
   ? [['Left thumb ↑↓', 'Dive / pull up (keep pulling down to loop)'], ['Right thumb ←→', 'Roll, all the way round (bank holds)'], ['Hold FIRE', 'Shoot'], ['Tap DART', 'Homing dart, once your nose has locked a bird']]
   : [['Drag left side', 'Steer: up dives, down pulls up'], ['Hold right side', 'Air-brake'], ['Hold FIRE', 'Shoot'], ['Tap DART', 'Homing dart, once your nose has locked a bird']];
 const helpList = (title: string, rows: Help) => `<h3>${title}</h3><dl class="keys">${rows.map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join('')}</dl>`;
@@ -250,7 +255,7 @@ const showControls = () => {
   const el = document.getElementById('controls');
   if (!el) return;
   if (settings.mode === 'space' || isSpace()) {
-    el.innerHTML = isTouch ? helpList('Touch', SPACE_TOUCH) : input.activePad ? helpList('Controller', SPACE_PAD) + helpList('Keyboard &amp; mouse', SPACE_KEYS)
+    el.innerHTML = isTouch ? helpList('Touch', SPACE_TOUCH()) : input.activePad ? helpList('Controller', SPACE_PAD) + helpList('Keyboard &amp; mouse', SPACE_KEYS)
       : helpList('Keyboard &amp; mouse', SPACE_KEYS) + helpList('Controller', SPACE_PAD);
     return;
   }
@@ -261,6 +266,7 @@ const showControls = () => {
 };
 const showControlsSafe = showControls;
 addEventListener('gamepadconnected', showControlsSafe);
+document.body.classList.toggle('touch', isTouch);
 if (isTouch) { $('fire').style.display = 'flex'; $('dartBtn').style.display = 'flex'; $('viewBtn').style.display = 'flex'; }
 
 // ---------- Game settings: endless downhill or arena ----------
@@ -275,13 +281,16 @@ const settings = { mode: 'endless' as GameMode, env: ARENAS.length /* = random *
   /* HUD: lead marker showing where to aim your peas */ lead: true,
   /* title menu: controls list open (open on a first visit) */ help: true,
   /* replay when you go down: 'shot' = shot down (or chased into the ground), 'all' = every crash too, 'off' */ downcam: 'shot' as DownCamSetting,
-  /* camera: behind you, or first person */ view: 'chase' as ViewSetting };
+  /* camera: behind you, or first person */ view: 'chase' as ViewSetting,
+  /* phones: steer by tilting */ tilt: false };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('glide.settings') || '{}')); } catch { /* storage unavailable */ }
 settings.env = THREE.MathUtils.clamp(Math.round(settings.env) || 0, 0, SPACE_ENV);
 settings.enemies = THREE.MathUtils.clamp(Math.round(settings.enemies) || 3, 1, 12);
 settings.bots = THREE.MathUtils.clamp(Math.round(settings.bots) || 0, 0, 12);
 if (!['endless', 'arena', 'space', 'online'].includes(settings.mode)) settings.mode = 'endless';
 if (settings.view !== 'cockpit') settings.view = 'chase';
+settings.tilt = isTouch && settings.tilt === true;
+input.tilt = settings.tilt;
 if (!DOWNCAM_OPTS.includes(settings.downcam)) settings.downcam = 'shot';
 settings.name = String(settings.name || '').slice(0, 16);
 // an invite link (?room=CODE) opens straight onto the online menu, ready to join
@@ -295,10 +304,15 @@ loadBest();
 /** The arena chosen for this match ("random" rolls one per match). */
 let arenaIdx = 0;
 
-const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
+const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'tilt', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
 const GO_ROW = MENU_ROWS.indexOf('go');
 let menuRow = inviteCode ? MENU_ROWS.indexOf('join') : GO_ROW;
+/** On a phone the Steering row (thumbs or tilt) follows Camera. */
 function menuRows(): readonly string[] {
+  const rows = baseRows();
+  return isTouch ? rows.flatMap((r) => (r === 'view' ? ['view', 'tilt'] : [r])) : rows;
+}
+function baseRows(): readonly string[] {
   const browser = hasRoomBrowser();
   if (settings.mode === 'online') return online.active
     ? (online.isHost && online.phase === 'lobby' ? [...(browser ? ['vis'] : []), 'env', 'bots', 'allies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go'] : online.phase === 'lobby' ? ['lead', 'downcam', 'view'] : [])
@@ -384,7 +398,7 @@ function renderMenu() {
       ${sect('View')}
       ${leadRow(sel('lead'))}
       ${downcamRow(sel('downcam'))}
-      ${viewRow(sel('view'))}`;
+      ${viewRow(sel('view'))}${tiltRow(sel('tilt'))}`;
   const cta = `<button data-act="go" class="go-btn cta${sel('go')}">Fly!</button>`;
   hud.overlay.innerHTML = compactQ.matches ? splitMenu(head + cta, sets + helpRow(sel('help')), menuHint('fly')) : `<div class="menu side">
     <h1>Glide!</h1>
@@ -406,6 +420,18 @@ function visRow(sel: string) {
   return pickRow(sel, 'vis', 'Room', on ? 'Public' : 'Private', on ? 'Listed under Open rooms for anyone to join' : 'Hidden: friends join with the code or invite link');
 }
 function viewRow(sel: string) { return pickRow(sel, 'view', 'Camera', settings.view === 'cockpit' ? 'First person' : 'Chase', 'T / R3 switches in flight'); }
+let motionNote = '';
+function tiltRow(sel: string) {
+  if (!isTouch) return '';
+  return pickRow(sel, 'tilt', 'Steering', settings.tilt ? 'Tilt' : 'Thumbs', motionNote || (settings.tilt ? 'Tilt the phone to fly · level is how you hold it at launch' : 'Thumb sticks · or switch to tilt (motion) steering'));
+}
+/** Motion steering needs the sensors; iOS asks the player once, and only from a tap. */
+function askMotion() {
+  input.requestMotion().then((ok) => {
+    const note = ok ? '' : 'Motion access was refused. Allow Motion & Orientation Access in Safari settings, then reload.';
+    if (note !== motionNote) { motionNote = note; if (mode === 'title') renderMenu(); }
+  });
+}
 function leadRow(sel: string) { return pickRow(sel, 'lead', 'Lead marker', onOff(settings.lead), `Shows where to aim your ${settings.mode === 'space' || isSpace() ? 'lasers' : 'peas'}`); }
 function downcamRow(sel: string) {
   return pickRow(sel, 'downcam', 'Down cam', { shot: 'When shot down', all: 'Every crash', off: 'Off' }[settings.downcam], 'Replay from your killer\'s view');
@@ -428,7 +454,7 @@ function renderOnlineMenu() {
   const note = onlineNote ? `<p class="note">${esc(onlineNote)}</p>` : '';
   const compact = compactQ.matches;
   const hint = online.active ? menuHint('start') : isTouch ? '' : `<p class="hint">${kb('↑', '↓')} choose · ${kb('Enter')} on a row to join or host · type to set your name</p>`;
-  const view = `${sect('View')}${leadRow(sel('lead'))}${downcamRow(sel('downcam'))}${viewRow(sel('view'))}`;
+  const view = `${sect('View')}${leadRow(sel('lead'))}${downcamRow(sel('downcam'))}${viewRow(sel('view'))}${tiltRow(sel('tilt'))}`;
   let body = '';
   if (!online.active) {
     const name = `<div class="opt"><label class="lab" for="nameIn">Your name</label><span class="ctl"><input id="nameIn" maxlength="16" placeholder="Bird" value="${esc(settings.name)}" autocomplete="off" spellcheck="false"></span></div>`;
@@ -542,6 +568,7 @@ function menuChange(row: string, d: number) {
     const n = settings.mode === 'online' ? SPACE_ENV + 1 : ARENAS.length + 1;
     settings.env = (Math.min(settings.env, n - 1) + d + n) % n; queuePreview();
   }
+  else if (row === 'tilt') { settings.tilt = isTouch && !settings.tilt; input.tilt = settings.tilt; if (settings.tilt) askMotion(); else motionNote = ''; showControlsSafe(); }
   else if (row === 'view') settings.view = settings.view === 'cockpit' ? 'chase' : 'cockpit';
   else if (row === 'myDarts') settings.myDarts = !settings.myDarts;
   else if (row === 'enemyDarts') settings.enemyDarts = !settings.enemyDarts;
@@ -566,7 +593,7 @@ function menuAct(target: HTMLElement) {
   if (!act) return;
   audio.start();
   const [k, v] = act.split(':');
-  if (['go', 'host', 'join', 'joinroom'].includes(k)) goLandscape();
+  if (['go', 'host', 'join', 'joinroom'].includes(k)) { goLandscape(); if (settings.tilt) askMotion(); }
   if (k === 'joinroom') { settings.code = cleanCode(v); onlineAction('join'); return; }
   if (settings.mode === 'online' && ['host', 'join', 'leave', 'copy', 'go'].includes(k)) { onlineAction(k); return; }
   if (k === 'go') startReq = true;
@@ -683,6 +710,7 @@ function endDownCam() {
 function resetDownCam() { downcam.clear(); downcamReq = null; downcamEl.classList.remove('on'); respawnAt = 3; downcamEndT = 0; }
 
 function spawn(fresh = true) {
+  input.recenter(); input.setThrottle(0);
   const arena = settings.mode !== 'endless';
   const space = worldKind(settings.mode) === 2;
   dogfight.spawning = true; dogfight.targets = [];
@@ -742,6 +770,7 @@ function startOnlineMatch(rules: MatchRules) {
 }
 /** Online: back into the air at a random spot on the rim, with full feathers and darts. The fight carries on. */
 function respawnOnline() {
+  input.recenter(); input.setThrottle(0);
   const sp = online.spawnPoint();
   glider.reset(sp.x, sp.y, sp.z, sp.heading);
   startZ = glider.pos.z; prevPos.copy(glider.pos);
@@ -1295,6 +1324,7 @@ function frame(now: number) {
   if (portraitQ.matches && mode === 'flying' && online.phase !== 'playing') { input.poll(); render(); return; }
   input.lockScheme = online.active ? 'flight' : null; // online: everyone flies the same layout
   const inp = input.poll();
+  document.body.classList.toggle('flying', mode === 'flying');
   onlineEvents();
 
   if (inp.anyPress) audio.start();
@@ -1639,7 +1669,7 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
   composer.setSize(innerWidth, innerHeight);
 });
-(window as any).__glide = { settings, glider, dogfight, world, gates, spaceScene, fleet, obstacleGap, boostPickups, isSpace, camera, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
+(window as any).__glide = { settings, input, glider, dogfight, world, gates, spaceScene, fleet, obstacleGap, boostPickups, isSpace, camera, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
 
 // ?debug exposes the game objects to the console (used for the two-browser online tests)
 if (new URLSearchParams(location.search).has('debug')) {
