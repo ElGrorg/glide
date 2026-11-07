@@ -1450,7 +1450,13 @@ function frame(now: number) {
 
   // down cam: keep recording; once you go down, show the recording instead of the live scene
   const trk = trackedNow();
-  if (mode !== 'title') downcam.record(t, trk);
+  if (mode !== 'title') {
+    // first person hides your own bird from your camera, but the replay is watched from outside: record it anyway
+    const hidden = !bird.visible;
+    bird.visible = true;
+    downcam.record(t, trk);
+    bird.visible = !hidden;
+  }
   if (downcamReq) { if (mode === 'crashed') beginDownCam(downcamReq.by, downcamReq.how); downcamReq = null; }
   let replaying = false;
   if (downcam.playing) {
