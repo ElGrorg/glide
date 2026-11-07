@@ -186,6 +186,33 @@
   #pipper { position: fixed; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px; border: 2px solid rgba(140,255,170,.85); border-radius: 50%;
     pointer-events: none; display: none; box-shadow: 0 0 4px rgba(0,0,0,.4); }
   #pipper::after { content: ''; position: absolute; left: 15px; top: 15px; width: 4px; height: 4px; border-radius: 50%; background: rgba(140,255,170,.95); }
+  /* space HUD: a flight reticle out ahead of your nose with throttle (left) and boost fuel (right) arcs,
+     corner brackets on targets with a shield bar, arrows round the reticle pointing to fighters off screen */
+  #sret { position: fixed; left: 0; top: 0; width: 140px; height: 140px; margin: -70px 0 0 -70px; pointer-events: none; display: none; }
+  #sret svg { width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 0 3px rgba(80,200,255,.45)); }
+  #sret .t { fill: none; stroke: rgba(160,230,255,.22); stroke-width: 4; }
+  #sret .f { fill: none; stroke: #8fe6ff; stroke-width: 4; }
+  #sret .f.fuel { stroke: #ffc94a; } #sret .f.fuel.low { stroke: #ff5a4a; } #sret .f.boosting { stroke: #fff; }
+  #sret .r { fill: none; stroke: rgba(190,240,255,.85); stroke-width: 1.6; }
+  #sret text { fill: rgba(200,240,255,.9); font: 800 9px system-ui, sans-serif; letter-spacing: 1.5px; }
+  #sret.drift .r { stroke: #ffc94a; }
+  .offarrow { position: fixed; left: 0; top: 0; width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent;
+    border-bottom: 12px solid #ff5a4a; margin: -6px 0 0 -7px; pointer-events: none; display: none; filter: drop-shadow(0 0 3px rgba(0,0,0,.6)); }
+  .offarrow.prey { border-bottom-color: #ffb347; } .offarrow.dart { border-bottom-color: #fff; } .offarrow.locked { border-bottom-color: #7af0ff; }
+  body.space .ret:not(.dart) { border: none; border-radius: 0; box-shadow: none; width: 34px; height: 34px; margin: -17px 0 0 -17px; --c: #ff5a4a;
+    background: linear-gradient(var(--c),var(--c)) 0 0/9px 2px no-repeat, linear-gradient(var(--c),var(--c)) 0 0/2px 9px no-repeat,
+      linear-gradient(var(--c),var(--c)) 100% 0/9px 2px no-repeat, linear-gradient(var(--c),var(--c)) 100% 0/2px 9px no-repeat,
+      linear-gradient(var(--c),var(--c)) 0 100%/9px 2px no-repeat, linear-gradient(var(--c),var(--c)) 0 100%/2px 9px no-repeat,
+      linear-gradient(var(--c),var(--c)) 100% 100%/9px 2px no-repeat, linear-gradient(var(--c),var(--c)) 100% 100%/2px 9px no-repeat;
+    filter: drop-shadow(0 0 2px rgba(0,0,0,.7)); }
+  body.space .ret.prey { --c: #ffb347; } body.space .ret.lock { --c: #fff; } body.space .ret.mylocking { --c: #7af0ff; }
+  body.space .ret.mylocked { --c: #7af0ff; border: 2px solid #7af0ff; border-radius: 50%; }
+  body.space .ret:not(.dart)::after { content: ''; position: absolute; left: 3px; right: 3px; bottom: -8px; height: 3px; background: linear-gradient(90deg, var(--c) var(--hp, 100%), rgba(255,255,255,.18) var(--hp, 100%)); }
+  body.space .ret span { color: var(--c, #fff); letter-spacing: 1px; }
+  body.space #hp { padding-top: 6px; font-size: 12px; font-weight: 900; letter-spacing: 2px; color: #8fe6ff; display: flex; gap: 4px; align-items: center; }
+  body.space #hp i { width: 26px; height: 8px; border-radius: 2px; background: #8fe6ff; box-shadow: 0 0 6px rgba(80,200,255,.6); }
+  body.space #hp i.off { background: rgba(255,255,255,.15); box-shadow: none; }
+  body.space #hp.crit i:not(.off) { background: #ff5a4a; box-shadow: 0 0 8px #ff5a4a; }
   #viewBtn { position: fixed; left: 50%; margin-left: -28px; bottom: calc(14px + env(safe-area-inset-bottom)); width: 56px; height: 36px; border-radius: 10px;
     border: 2px solid rgba(255,255,255,.6); background: rgba(20,40,60,.35); display: none; pointer-events: none;
     align-items: center; justify-content: center; font-weight: 900; font-size: 12px; letter-spacing: 1px; }
@@ -282,6 +309,20 @@
   <div id="viewBtn">VIEW</div>
   <div id="boost" class="hud"><i></i><b>BOOST</b></div>
   <div id="pipper"></div>
+  <div id="sret"><svg viewBox="0 0 140 140">
+    <circle class="t" cx="70" cy="70" r="50" stroke-dasharray="78.54 400" stroke-dashoffset="-117.8"/>
+    <circle class="f" id="sretThr" cx="70" cy="70" r="50" stroke-dasharray="40 400" stroke-dashoffset="-117.8"/>
+    <g transform="translate(140 0) scale(-1 1)">
+      <circle class="t" cx="70" cy="70" r="50" stroke-dasharray="78.54 400" stroke-dashoffset="-117.8"/>
+      <circle class="f fuel" id="sretFuel" cx="70" cy="70" r="50" stroke-dasharray="40 400" stroke-dashoffset="-117.8"/>
+    </g>
+    <circle class="r" cx="70" cy="70" r="20" stroke-dasharray="21.4 10" stroke-dashoffset="10.7"/>
+    <path class="r" d="M70 44 V52 M70 88 V96 M44 70 H52 M88 70 H96"/>
+    <circle cx="70" cy="70" r="1.8" fill="#bff0ff"/>
+    <text id="sretSpd" x="20" y="122" text-anchor="middle">0</text>
+    <text x="120" y="122" text-anchor="middle">BOOST</text>
+  </svg></div>
+  <div id="offs"></div>
   <div id="rets"></div>
   <div id="gunCross"></div>
   <div id="stick"><div id="knob"></div></div>

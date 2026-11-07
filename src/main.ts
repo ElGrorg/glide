@@ -13,6 +13,11 @@ import { setWorldSeed } from './noise';
 import { Online, PLAYER_CSS, colorIndex, type MatchRules } from './online';
 import { cleanCode, hasRoomBrowser, listRooms, type RoomInfo } from './net';
 import { DownCam, type Tracked } from './downcam';
+import { sfx } from './spacefx';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 // ---------- Renderer, scene, camera ----------
 const SKY = new THREE.Color(0x9fd3f0);
@@ -29,11 +34,26 @@ scene.fog = new THREE.Fog(SKY, 140, 640);
 const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.3, 900);
 scene.add(camera);
 
+// space is drawn through a bloom pass (lasers, engines, explosions and the sun glow) with filmic tone mapping;
+// the sky world draws straight to the screen as it always has
+const coarse = matchMedia('(pointer: coarse)').matches;
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: coarse ? 0 : 4 }));
+composer.setPixelRatio(Math.min(devicePixelRatio, coarse ? 1.5 : 2));
+composer.setSize(innerWidth, innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.75, 0.5, 0.95);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+function render() { if (lookSpace) composer.render(); else renderer.render(scene, camera); }
+
 const hemi = new THREE.HemisphereLight(0xdff0ff, 0x5d7040, 2.0);
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff0d0, 2.4);
 sun.position.set(0.5, 1, 0.3);
 scene.add(sun);
+/** Space only: a cool fill light from the far side, so a hull's shadowed side never goes flat black. */
+const fill = new THREE.DirectionalLight(0x7d9cd8, 0);
+scene.add(fill);
 
 // gradient sky dome that follows the camera
 const sky = new THREE.Mesh(
@@ -59,10 +79,17 @@ const dogfight = new Dogfight(scene, puffs);
 const online = new Online(dogfight);
 const birdMesh = new BirdMesh();
 const shipMesh = new ShipMesh(PLAYER_COLORS);
+shipMesh.trails = false;
 /** Your flyer: the bird, or in space your fighter. */
 let bird: Craft = birdMesh;
 scene.add(bird);
 const spaceScene = new SpaceScene(scene);
+const BOLT_RED = new THREE.Color(0xff3d6e);
+sfx.onBoom = (p, size) => {
+  const d = p.distanceTo(camera.position);
+  audio.boom(size, d);
+  if (mode !== 'title') shake = Math.max(shake, THREE.MathUtils.clamp(size * 30 / Math.max(d, 1), 0, 0.9));
+};
 
 // soft blob shadow: makes height above ground easy to read
 const shadow = new THREE.Mesh(
@@ -123,13 +150,18 @@ function applyLook() {
   spaceScene.visible = sp; sky.visible = !sp;
   scene.background = sp ? SPACE_BG : SKY;
   camera.far = sp ? 40000 : 900; camera.updateProjectionMatrix();
+  renderer.toneMapping = sp ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+  renderer.toneMappingExposure = 1.05;
   if (sp) {
-    hemi.color.set(0x7a80c8); hemi.groundColor.set(0xa0508a); hemi.intensity = 1.15;
-    sun.color.set(0xfff2dc); sun.intensity = 3.2; sun.position.copy(spaceScene.sunDir);
+    // a cold fill from the stars and a blue bounce off the planet below; the sun does the real work
+    hemi.color.set(0x8090b8); hemi.groundColor.set(0x3a5a90); hemi.intensity = 1.7;
+    sun.color.set(0xfff0dc); sun.intensity = 3.4; sun.position.copy(spaceScene.sunDir);
+    fill.intensity = 0.8; fill.position.copy(spaceScene.sunDir).negate().setY(-0.3);
     const fog = scene.fog as THREE.Fog; fog.near = 1e5; fog.far = 2e5;
   } else {
     hemi.color.set(0xdff0ff); hemi.groundColor.set(0x5d7040); hemi.intensity = 2.0;
     sun.color.set(0xfff0d0); sun.intensity = 2.4; sun.position.set(0.5, 1, 0.3);
+    fill.intensity = 0;
     const fog = scene.fog as THREE.Fog; fog.near = 140; fog.far = 640;
   }
   scene.remove(bird);
@@ -778,7 +810,6 @@ function updateFall(dt: number) {
     p.addScaledVector(fallVel, dt);
     fallSpin += dt * 3;
     if (fallVel.lengthSq() > 0.25) fallDir.copy(fallVel).normalize().applyAxisAngle(WORLD_UP, Math.sin(fallSpin * 0.7) * 0.6).normalize();
-    if (Math.random() < 30 * dt) puffs.burst(p, tmp.set(0, 0, 0), 2, 1, 0.7);
     const ground = terrainHeight(p.x, p.z) + 0.45;
     if (p.y < ground) { p.y = ground; fallVel.set(0, 0, 0); fallSettled = true; puffs.burst(p, tmp.set(0, 3, 0), 8, 20, 1.2); }
     glider.speed = fallVel.length();
@@ -813,7 +844,7 @@ function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall 
   mode = 'crashed'; crashTimer = 0; shake = 1;
   if (isSpace() && title === 'Crunch!') title = wall ? 'Kaboom!' : 'Planetfall!';
   startFall(how !== 'crash', wall);
-  if (isSpace()) puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.15), 10, 26, 1.2); // blown apart
+  if (isSpace()) sfx.explode(glider.pos, glider.vel, 1.3); // blown apart
   audio.thud(); rumble(1, 300);
   // whoever hit you in the last few seconds gets the credit (and the down cam watches from their bird)
   const by = how !== 'crash' || t - lastHitT < 6 ? lastAttacker : '';
@@ -867,10 +898,11 @@ function onDogfight(ev: DogfightEvent) {
       lastAttacker = ev.by; lastHitT = t;
       if (online.phase === 'playing' && ev.by !== 'ai') online.net.send({ t: 'hitok', to: ev.by }); // a hit marker for them
       hp--; hpRegen = 0; hitFlash = 1; shake = Math.max(shake, 0.6);
-      rumble(0.9, 180); audio.thud();
-      puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.3), 3, 10, 0.5);
+      rumble(0.9, 180);
+      if (isSpace()) { audio.shieldHit(); sfx.shieldHit(bird, tmp.randomDirection().multiplyScalar(3).add(glider.pos), BOLT_RED, 4.6); }
+      else { audio.thud(); puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.3), 3, 10, 0.5); }
       if (hp <= 0) crash('Shot down!', 'pea');
-      else popup('Hit!', `${hp} feather${hp > 1 ? 's' : ''} left`);
+      else popup('Hit!', isSpace() ? (hp > 1 ? 'shields down: hull taking fire' : 'HULL CRITICAL') : `${hp} feather${hp > 1 ? 's' : ''} left`);
       break;
     case 'dodged':
       if (dodgeCd <= 0) { const pts = Math.round(50 * multiplier()); score += pts; popup(`Dodged! +${pts}`, 'rolled through the shots'); dodgeCd = 0.8; }
@@ -906,8 +938,8 @@ function onDogfight(ev: DogfightEvent) {
       // a dart is a one-hit kill, whatever feathers you have left
       hp = 0; hpRegen = 0; hitFlash = 1; shake = Math.max(shake, 0.9);
       rumble(1, 260); audio.thud();
-      puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.3), 4, 16, 0.7);
-      crash('Darted!', 'dart');
+      if (!isSpace()) puffs.burst(glider.pos, glider.vel.clone().multiplyScalar(0.3), 4, 16, 0.7);
+      crash(isSpace() ? 'Missile hit!' : 'Darted!', 'dart');
       break;
     case 'netHit': online.netHit(ev.enemy, ev.weapon); break;
     case 'netDart': online.sendDart(ev.to, ev.pos, ev.dir, ev.speed, ev.ai ? 'ai' : online.myId); break;
@@ -925,7 +957,12 @@ const RADAR_RANGE = 300;
 const rets: HTMLElement[] = [];
 function drawDogfightHud(show: boolean) {
   radar.style.opacity = show ? '1' : '0';
-  hud.hp.textContent = show ? '♥'.repeat(Math.max(0, hp)) + '♡'.repeat(Math.max(0, 3 - hp)) : '';
+  if (isSpace()) {
+    // space: hull integrity as three bars
+    const key = show ? `s${hp}` : '';
+    if (hud.hp.dataset.k !== key) { hud.hp.dataset.k = key; hud.hp.innerHTML = show ? `HULL ${Array.from({ length: 3 }, (_, i) => `<i${i < hp ? '' : ' class="off"'}></i>`).join('')}` : ''; }
+    hud.hp.classList.toggle('crit', hp === 1);
+  } else { hud.hp.dataset.k = ''; hud.hp.textContent = show ? '♥'.repeat(Math.max(0, hp)) + '♡'.repeat(Math.max(0, 3 - hp)) : ''; }
   // dart ammo: one pip per dart, the next one fills as it recharges
   hud.darts.style.opacity = show && myDartsOn() ? '1' : '0';
   if (show && myDartsOn()) {
@@ -994,6 +1031,8 @@ function drawDogfightHud(show: boolean) {
     const mine = myLock ? ' mylocked' : myLocking ? ' mylocking' : '';
     el.className = `ret ${e.role}${locking ? ' lock' : ''}${mine}`;
     el.style.borderColor = e.remote === 'human' && !mine ? PLAYER_CSS[colorIndex(e.netId)] : '';
+    el.style.setProperty('--c', e.remote === 'human' && !mine ? PLAYER_CSS[colorIndex(e.netId)] : '');
+    el.style.setProperty('--hp', `${Math.round(THREE.MathUtils.clamp(e.hp / e.maxHp, 0, 1) * 100)}%`);
     el.style.display = 'block';
     el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
     const dist = Math.round(e.pos.distanceTo(glider.pos));
@@ -1014,6 +1053,45 @@ function drawDogfightHud(show: boolean) {
   }
   for (let i = n; i < rets.length; i++) rets[i].style.display = 'none';
   drawLeads(show && settings.lead);
+  drawSpaceHud(show && isSpace());
+}
+
+// ---------- Space HUD: the flight reticle and the off-screen arrows ----------
+const sret = $('sret'), offs: HTMLElement[] = [];
+const sretThr = $('sretThr'), sretFuel = $('sretFuel'), sretSpd = $('sretSpd');
+const ARC = 78.54; // a quarter of the reticle's circle
+const camLocal = new THREE.Vector3();
+function drawSpaceHud(show: boolean) {
+  sret.style.display = show ? 'block' : 'none';
+  let n = 0;
+  if (show) {
+    // the reticle sits where your guns converge, out ahead of the nose
+    const v = tmp.copy(glider.pos).addScaledVector(glider.dir, 250).project(camera);
+    sret.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px)`;
+    const thr = THREE.MathUtils.clamp((glider.speed - 22) / (SPACE_BOOST - 22), 0, 1);
+    sretThr.setAttribute('stroke-dasharray', `${(thr * ARC).toFixed(1)} 400`);
+    sretThr.classList.toggle('boosting', glider.boost > 0.2);
+    sretFuel.setAttribute('stroke-dasharray', `${(glider.boostFuel * ARC).toFixed(1)} 400`);
+    sretFuel.classList.toggle('low', glider.boostFuel < 0.15);
+    sret.classList.toggle('drift', glider.brake > 0.3);
+    sretSpd.textContent = String(Math.round(glider.speed * 3.6));
+    // fighters (and missiles) you can't see: an arrow round the reticle pointing the way to turn
+    const R = Math.min(innerWidth, innerHeight) * 0.36, cx = innerWidth / 2, cy = innerHeight / 2;
+    const arrow = (p: THREE.Vector3, cls: string) => {
+      camLocal.copy(p).applyMatrix4(camera.matrixWorldInverse);
+      const pr = tmp.copy(p).project(camera);
+      if (camLocal.z < 0 && Math.abs(pr.x) < 0.95 && Math.abs(pr.y) < 0.9) return; // on screen
+      let el = offs[n];
+      if (!el) { el = document.createElement('div'); $('offs').appendChild(el); offs.push(el); }
+      n++;
+      const a = Math.atan2(camLocal.y, camLocal.x);
+      el.className = `offarrow ${cls}`; el.style.display = 'block';
+      el.style.transform = `translate(${cx + Math.cos(a) * R}px, ${cy - Math.sin(a) * R}px) rotate(${Math.PI / 2 - a}rad)`;
+    };
+    for (const e of dogfight.enemies) if (e.alive) arrow(e.pos, e === dogfight.locked ? 'locked' : e.role);
+    for (const d of dogfight.darts) if (d.tracking) arrow(d.pos, 'dart');
+  }
+  for (let i = n; i < offs.length; i++) offs[i].style.display = 'none';
 }
 
 // ---------- Online HUD: scoreboard and kill feed ----------
@@ -1195,7 +1273,7 @@ function frame(now: number) {
   const realDt = dt;
   last = now;
   // phone held upright: a solo game holds still behind the rotate card (an online match can't wait)
-  if (portraitQ.matches && mode === 'flying' && online.phase !== 'playing') { input.poll(); renderer.render(scene, camera); return; }
+  if (portraitQ.matches && mode === 'flying' && online.phase !== 'playing') { input.poll(); render(); return; }
   input.lockScheme = online.active ? 'flight' : null; // online: everyone flies the same layout
   const inp = input.poll();
   onlineEvents();
@@ -1431,7 +1509,7 @@ function frame(now: number) {
   }
 
   glider.applyTo(bird);
-  bird.visible = !firstPerson();
+  bird.visible = !firstPerson() && !(isSpace() && mode === 'crashed'); // (in space your fighter went up in the fireball)
   if (mode === 'crashed') { poseFall(); bird.animate(t, 0.1, glider.speed, 0.6, 0); } // limp wings, like a downed AI bird
   else bird.animate(t, glider.brake, glider.speed, glider.tuck, flapAmount(glider.speed, glider.brake));
 
@@ -1449,6 +1527,9 @@ function frame(now: number) {
   if (!inArena) gates.update(gp.z, t);
 
   placeCamera(false, dt, mode === 'crashed' ? Math.min(10, crashTimer * 8) : 0);
+  // (a fixed camera for screenshots and tests: window.__glide.camOverride = { pos: [x, y, z], look: [x, y, z] })
+  const co = (window as any).__glide?.camOverride;
+  if (co) { camera.position.fromArray(co.pos); camera.up.set(0, 1, 0); camera.lookAt(tmp.fromArray(co.look)); if (co.fov) { camera.fov = co.fov; camera.updateProjectionMatrix(); } }
 
   // down cam: keep recording; once you go down, show the recording instead of the live scene
   const trk = trackedNow();
@@ -1495,10 +1576,10 @@ function frame(now: number) {
   hud.edge.style.boxShadow = hitFlash > danger * 0.7 ? 'inset 0 0 140px 40px rgba(255, 40, 40, .85)' : '';
   drawDogfightHud(mode === 'flying');
   if (isTouch) { const d = mode === 'flying' ? 'flex' : 'none'; $('fire').style.display = d; $('dartBtn').style.display = myDartsOn() ? d : 'none'; $('viewBtn').style.display = d; }
-  $('pipper').style.display = firstPerson() && !replaying ? 'block' : 'none';
+  $('pipper').style.display = firstPerson() && !replaying && !isSpace() ? 'block' : 'none';
   // space: boost fuel gauge
   const boostEl = $('boost');
-  boostEl.style.display = isSpace() && mode === 'flying' && !replaying ? 'flex' : 'none';
+  boostEl.style.display = 'none'; // (space: the boost gauge is on the reticle now)
   if (isSpace()) {
     (boostEl.firstChild as HTMLElement).style.width = `${Math.round(glider.boostFuel * 100)}%`;
     boostEl.classList.toggle('on', glider.boost > 0.2);
@@ -1512,7 +1593,7 @@ function frame(now: number) {
   hud.combo.style.opacity = combo > 0 && mode === 'flying' ? '1' : '0';
   hud.combo.textContent = `combo x${multiplier().toFixed(1)}`;
   hud.stats.textContent = mode === 'flying'
-    ? isSpace() ? `${Math.round(glider.speed * 3.6)} km/h · ${Math.max(0, Math.round(clearance))} m above the planet · ${getArena()!.name}`
+    ? isSpace() ? `${Math.round(glider.speed * 3.6)} km/h · ${getArena()!.name}`
     : `${Math.round(glider.speed * 3.6)} km/h · ${Math.max(0, Math.round(clearance))} m up · ${inArena ? getArena()!.name : `${Math.round(startZ - gp.z)} m`}`
     : '';
   waveClearedT -= dt;
@@ -1523,10 +1604,11 @@ function frame(now: number) {
     : inArena && mode === 'flying'
     ? dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`
     : '';
-  audio.update(isSpace() ? glider.speed * 0.45 : glider.speed, mist, mode === 'flying'); // (space: just a low engine rumble)
+  audio.update(glider.speed, mist, mode === 'flying' && !isSpace()); // (no wind in space)
+  audio.engine(isSpace() && mode === 'flying', THREE.MathUtils.clamp((glider.speed - 22) / (SPACE_BOOST - 22), 0, 1), glider.boost, glider.brake);
   drawOnlineHud(dt);
 
-  renderer.render(scene, camera);
+  render();
   if (replaying) downcam.restore(trk);
 }
 requestAnimationFrame(frame);
@@ -1535,6 +1617,7 @@ addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
 });
 (window as any).__glide = { settings, glider, dogfight, world, gates, spaceScene, fleet, boostPickups, isSpace, camera, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
 

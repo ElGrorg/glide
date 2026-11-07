@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { BirdMesh, MAX_LIFT_G, type BirdPalette, type Glider } from './bird'; // MAX_LIFT_G: same hardest pull as yours
 import { terrainHeight, nearestBranch, cruiseThrust, skimThrust, getArena, obstaclesNear, obstacleGap, ARENA_R, CRUISE_SPEED, arenaBarrier, isSpace, type Obstacle } from './world';
 import { ShipMesh, type Craft } from './ship';
-import { SPACE_CRUISE, SPACE_BOOST, SPACE_PITCH_RATE, SPACE_R, SPACE_CEIL, SPACE_SPAWN_Y, LASER_SPEED, LASER_LIFE, MISSILE_SPEED, PICKUP_FUEL, spaceTurnMul, stepSpaceVel, stepFuel, nearestPickup, grabPickup } from './space';
+import { sfx } from './spacefx';
+import { SPACE_CRUISE, SPACE_BOOST, SPACE_PITCH_RATE, SPACE_R, SPACE_CEIL, SPACE_FLOOR, SPACE_SPAWN_Y, LASER_SPEED, LASER_LIFE, MISSILE_SPEED, PICKUP_FUEL, spaceTurnMul, stepSpaceVel, stepFuel, nearestPickup, grabPickup } from './space';
 import type { CloudPuffs } from './puffs';
 
 // Dogfights: enemy birds that either hunt you (spawn behind) or flee from you (spawn ahead).
@@ -11,6 +12,9 @@ import type { CloudPuffs } from './puffs';
 export type Role = 'hunter' | 'prey';
 const G = 9.8;
 const UP = new THREE.Vector3(0, 1, 0);
+const ZERO = new THREE.Vector3();
+/** Laser colours in space: yours green, theirs red. */
+const BOLT_MINE = new THREE.Color(0x5dff7a), BOLT_THEIRS = new THREE.Color(0xff3d6e);
 // Enemy birds fly on the same energy rules as you: gravity along the path, drag, air-brake,
 // a turn limited by how much lift their speed gives them, and a stall when they get too slow.
 const DRAG = 0.0016, BRAKE_DRAG = 0.0065, MAX_SPEED = 115;
@@ -143,8 +147,10 @@ export class Enemy {
     const pal = palette ?? (role === 'hunter' ? (isSpace() ? HUNTER_SHIP : HUNTER_COLORS) : PREY_COLORS);
     this.mesh = isSpace() ? new ShipMesh(pal) : new BirdMesh(pal);
     this.hp = role === 'hunter' ? 4 : 3;
+    this.maxHp = this.hp;
     scene.add(this.mesh);
   }
+  maxHp = 3;
   get vel() { return isSpace() && this.sv.lengthSq() > 1 ? tmpB.copy(this.sv) : tmpB.copy(this.dir).multiplyScalar(this.speed); }
 
   /** Steer, keep clear of the ground, move. */
@@ -231,10 +237,7 @@ export class Enemy {
     if (this.sv.lengthSq() < 1) this.sv.copy(this.dir).multiplyScalar(Math.max(this.speed, SPACE_CRUISE));
     // where it's actually going (while drifting that isn't where the nose points)
     const mv = tmpC.copy(this.sv).normalize();
-    // the planet: stay well up off it (it can still be chased down into it)
-    const la = tmpA.copy(this.pos).addScaledVector(mv, this.speed * 1.5);
-    const short = terrainHeight(la.x, la.z) + minClear + 25 - la.y;
-    if (short > 0) { want.y = Math.max(want.y, Math.min(0.8, short * 0.04)); }
+    void minClear;
     want.normalize();
     // ship hulls: look ahead and steer out along the way the hull surface faces (round it, or through the hole)
     let avoiding = false;
@@ -263,6 +266,7 @@ export class Enemy {
       const r = Math.hypot(ahead.x, ahead.z) || 1;
       if (r > SPACE_R - 80) { const k = THREE.MathUtils.clamp((r - SPACE_R + 80) / 80, 0, 1.5); want.x -= (ahead.x / r) * k; want.z -= (ahead.z / r) * k; }
       if (ahead.y > SPACE_CEIL - 90) want.y -= THREE.MathUtils.clamp((ahead.y - SPACE_CEIL + 90) / 60, 0, 1.5);
+      if (ahead.y < SPACE_FLOOR + 90) want.y += THREE.MathUtils.clamp((SPACE_FLOOR + 90 - ahead.y) / 60, 0, 1.5);
       want.normalize();
     }
     // low on boost and nothing better to do: go and grab a pickup
@@ -426,9 +430,10 @@ export class Dogfight {
       this.peas.push({ mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, enemy, near: 99, owner: '' });
     }
     this.peaLook = { geo, mine, theirs };
-    const lgeo = new THREE.CylinderGeometry(0.17, 0.17, 9, 5).rotateX(Math.PI / 2);
-    const bolt = (c: number) => new THREE.MeshBasicMaterial({ color: c, fog: false, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
-    this.laserLook = { geo: lgeo, mine: bolt(0x5dff7a), theirs: bolt(0xff3d6e) };
+    // laser bolts: a thin core, over-bright so the bloom gives it a coloured halo
+    const lgeo = new THREE.CylinderGeometry(0.11, 0.11, 8, 6).rotateX(Math.PI / 2);
+    const bolt = (c: THREE.Color) => new THREE.MeshBasicMaterial({ color: c.clone().multiplyScalar(4), fog: false, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+    this.laserLook = { geo: lgeo, mine: bolt(BOLT_MINE), theirs: bolt(BOLT_THEIRS) };
   }
 
   private peaLook: { geo: THREE.BufferGeometry; mine: THREE.Material; theirs: THREE.Material };
@@ -491,6 +496,7 @@ export class Dogfight {
     if (!p) return;
     p.pos.copy(from); p.vel.copy(vel); p.life = peaLife(); p.near = 99; p.owner = owner;
     p.mesh.visible = true;
+    if (isSpace()) sfx.muzzle(from, vel.clone().multiplyScalar(0.9), enemy ? BOLT_THEIRS : BOLT_MINE);
     if (relay) this.onShot?.(from, vel, owner);
   }
 
@@ -509,7 +515,8 @@ export class Dogfight {
   damage(e: Enemy, amount: number, by: string, out: DogfightEvent[]) {
     if (!e.alive) return;
     e.hp -= amount; e.flash = 0.12; e.alert = 3; e.jinkT = 0; e.lastHitBy = by;
-    this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.2), 4, 6, 0.6);
+    if (isSpace()) sfx.shieldHit(e.mesh, e.pos.clone().addScaledVector(e.vel, -0.05).add(tmpA.randomDirection()), BOLT_MINE);
+    else this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.2), 4, 6, 0.6);
     if (e.hp <= 0) this.kill(e, out);
   }
 
@@ -617,11 +624,8 @@ export class Dogfight {
         // falling, spinning, shedding feathers
         e.dying += dt;
         if (isSpace()) {
-          // no falling in space: it drifts on, tumbling and trailing smoke, then blows apart
-          e.spin += 5 * dt; e.speed *= Math.exp(-0.5 * dt);
-          e.pos.addScaledVector(e.dir, e.speed * dt);
-          if (Math.random() < 30 * dt) this.puffs.burst(e.pos, tmpA.set(0, 0, 0), 2, 1, 0.7);
-          if (e.dying > 1.6 && e.dying < 90) { this.puffs.burst(e.pos, tmpA.set(0, 0, 0), 14, 30, 1.3); e.dying = 99; }
+          // no falling in space: it goes up in a fireball, its wreckage tumbling on along its path
+          if (e.dying < 90) { sfx.explode(e.pos, e.vel, 1); e.mesh.visible = false; e.dying = 99; }
           continue;
         }
         e.dir.y = Math.max(-0.95, e.dir.y - 0.9 * dt); e.dir.normalize();
@@ -630,6 +634,7 @@ export class Dogfight {
         if (Math.random() < 30 * dt) this.puffs.burst(e.pos, tmpA.set(0, 2, 0), 2, 1, 0.7);
         continue;
       }
+      if (isSpace() && e.hp < e.maxHp) sfx.damaged(e.pos, e.vel, 1 - e.hp / e.maxHp, dt);
       if (e.remote) continue; // flown by the network
       // online: chase the closest player (sticking with its current one unless another is much closer)
       const tgt = this.pickTarget(e, me, meActive, meInCloud);
@@ -830,6 +835,7 @@ export class Dogfight {
       }
     }
     const mprev = new THREE.Vector3();
+    const space = isSpace();
     for (const d of this.myDarts) {
       if (d.life <= 0) continue;
       d.life -= dt;
@@ -854,14 +860,16 @@ export class Dogfight {
       }
       mprev.copy(d.pos);
       d.pos.addScaledVector(d.vel, dt);
-      let ended = d.pos.y < terrainHeight(d.pos.x, d.pos.z) || (isSpace() && hitsObstacle(d.pos, 0));
+      let ended = d.pos.y < terrainHeight(d.pos.x, d.pos.z) || (space && hitsObstacle(d.pos, 0));
+      if (space && ended) sfx.explode(d.pos, ZERO, 0.35);
+      if (space && !ended) sfx.missileTrail(d.pos, tmpA.copy(d.vel).normalize());
       for (const e of this.enemies) {
         if (!e.alive || ended) continue;
         if (segDist(mprev, d.pos, e.pos) < MY_DART_HIT_R) {
           ended = true;
           if (e.remote) { if (e.remote === 'ai') out.push({ type: 'netHit', enemy: e, weapon: 'dart' }); continue; }
           e.hp = 0; e.flash = 0.2; e.lastHitBy = 'me';
-          this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.2), 6, 10, 0.7);
+          if (!space) this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.2), 6, 10, 0.7);
           out.push({ type: 'hitEnemy', enemy: e });
           this.kill(e, out);
         }
@@ -874,14 +882,13 @@ export class Dogfight {
 
     // ---- peas
     const prev = new THREE.Vector3();
-    const space = isSpace();
     for (const p of this.peas) {
       if (p.life <= 0) continue;
       p.life -= dt;
       prev.copy(p.pos);
       p.pos.addScaledVector(p.vel, dt);
       if (p.pos.y < terrainHeight(p.pos.x, p.pos.z)) { p.life = 0; }
-      else if (space && hitsObstacle(p.pos, 0)) { p.life = 0; this.puffs.burst(p.pos, tmpA.set(0, 0, 0), 3, 2, 0.35); } // a laser splashes on a hull
+      else if (space && hitsObstacle(p.pos, 0)) { p.life = 0; sfx.impact(prev, p.enemy ? BOLT_THEIRS : BOLT_MINE); } // a laser splashes on a hull
       if (!p.enemy) {
         for (const e of this.enemies) {
           if (!e.alive || e.friendly) continue;
@@ -889,7 +896,8 @@ export class Dogfight {
             // another machine's bird: tell it (AI birds) or let that player's own copy of the pea decide
             if (e.remote) { p.life = 0; e.flash = 0.12; if (e.remote === 'ai') out.push({ type: 'netHit', enemy: e, weapon: 'pea' }); break; }
             p.life = 0; e.hp--; e.lastHitBy = 'me'; e.flash = 0.12; e.alert = 3; e.jinkT = 0;
-            this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.2), 4, 6, 0.6);
+            if (space) sfx.shieldHit(e.mesh, prev, BOLT_MINE);
+            else this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.2), 4, 6, 0.6);
             out.push({ type: 'hitEnemy', enemy: e });
             if (e.hp <= 0) this.kill(e, out);
             break;
@@ -936,18 +944,18 @@ export class Dogfight {
       d.pos.addScaledVector(d.dir, d.speed * dt);
       if (d.tracking && active && segDist(prev, d.pos, g.pos) < DART_HIT_R) {
         out.push({ type: 'dartHit', by: d.by }); this.hurtT = 0.8; // a dart always lands, even right after a pea hit
-        this.puffs.burst(d.pos, tmpA.set(0, 2, 0), 5, 14, 0.8);
+        if (space) sfx.explode(d.pos, ZERO, 0.4); else this.puffs.burst(d.pos, tmpA.set(0, 2, 0), 5, 14, 0.8);
         this.removeDart(d); continue;
       }
       if (d.pos.y < terrainHeight(d.pos.x, d.pos.z) + 0.3 || (space && hitsObstacle(d.pos, 0.3))) { // (in space: a ship)
         if (d.tracking) out.push({ type: 'dartShaken', how: 'ground' });
-        this.puffs.burst(d.pos, tmpA.set(0, 5, 0), 5, 14, 0.9);
+        if (space) sfx.explode(d.pos, ZERO, 0.35); else this.puffs.burst(d.pos, tmpA.set(0, 5, 0), 5, 14, 0.9);
         this.removeDart(d); continue;
       }
       // smoke trail so you can see it coming
       d.trail -= dt;
-      if (d.trail <= 0) { d.trail = 0.03; this.puffs.burst(d.pos, tmpB.set(0, 0.5, 0), 0.6, 1, d.tracking ? 0.55 : 0.35); }
-      if (d.life <= 0) { this.puffs.burst(d.pos, tmpA.set(0, 1, 0), 2, 4, 0.5); this.removeDart(d); continue; }
+      if (d.trail <= 0) { d.trail = 0.03; if (space) sfx.missileTrail(d.pos, d.dir, d.tracking); else this.puffs.burst(d.pos, tmpB.set(0, 0.5, 0), 0.6, 1, d.tracking ? 0.55 : 0.35); }
+      if (d.life <= 0) { if (space) sfx.explode(d.pos, ZERO, 0.3); else this.puffs.burst(d.pos, tmpA.set(0, 1, 0), 2, 4, 0.5); this.removeDart(d); continue; }
       d.mesh.position.copy(d.pos);
       d.mesh.lookAt(tmpA.copy(d.pos).sub(d.dir));
       d.mesh.rotateZ(t * 12);
@@ -964,9 +972,9 @@ export class Dogfight {
       } else if (e.alive && hitsObstacle(e.pos)) {
         // flew into a tree, rock or pillar: same rules as you. It only counts as your kill if you chased it there.
         if (e.state === 'evade' || e.pos.distanceTo(g.pos) < 120) this.kill(e, out, true);
-        else { e.alive = false; e.dying = 0.001; this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.3), 8, 22, 0.9); }
+        else { e.alive = false; e.dying = 0.001; if (!space) this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.3), 8, 22, 0.9); }
       }
-      if (!e.alive && e.dying < 90 && (e.pos.y < terrainHeight(e.pos.x, e.pos.z) + 0.5 || (space && hitsObstacle(e.pos, 0)))) {
+      if (!e.alive && e.dying < 90 && !space && (e.pos.y < terrainHeight(e.pos.x, e.pos.z) + 0.5)) {
         this.puffs.burst(e.pos, tmpA.set(0, 6, 0), 6, 14, 1.0);
         e.dying = 99;
       }
@@ -1001,7 +1009,7 @@ export class Dogfight {
   private kill(e: Enemy, out: DogfightEvent[], ground = false) {
     e.alive = false; e.dying = 0.001; e.rollT = 0;
     this.kills++;
-    this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.3), 8, 22, 0.9);
+    if (!isSpace()) this.puffs.burst(e.pos, e.vel.clone().multiplyScalar(0.3), 8, 22, 0.9);
     out.push({ type: 'kill', role: e.role, ground, enemy: e });
     this.spawnT = Math.min(this.spawnT, rand(5, 9));
   }
