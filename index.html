@@ -175,8 +175,23 @@
     .menu.side { width: 440px; margin-right: auto; } .side h1, .side .hint { text-align: left; }
   }
   @media (max-height: 500px) { .menu h1 { margin-bottom: 8px; } .panel .blurb { display: none; } }
+  /* space mode */
+  body.space { background: #020108; }
+  body.space #overlay { background: linear-gradient(180deg, rgba(10,4,30,.35), rgba(20,6,40,.65)); }
+  #boost { left: 16px; bottom: calc(36px + env(safe-area-inset-bottom)); width: 150px; height: 9px; border-radius: 5px; background: rgba(255,255,255,.18);
+    display: none; align-items: center; box-shadow: 0 0 6px var(--shadow); }
+  #boost i { display: block; height: 100%; border-radius: 5px; background: #7af0ff; transition: background .2s; }
+  #boost b { position: absolute; left: 158px; font-size: 11px; font-weight: 900; letter-spacing: 2px; white-space: nowrap; }
+  #boost.on i { background: #fff; box-shadow: 0 0 10px #7af0ff; }
+  #boost.low i { background: #ff5a4a; }
+  #pipper { position: fixed; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px; border: 2px solid rgba(140,255,170,.85); border-radius: 50%;
+    pointer-events: none; display: none; box-shadow: 0 0 4px rgba(0,0,0,.4); }
+  #pipper::after { content: ''; position: absolute; left: 15px; top: 15px; width: 4px; height: 4px; border-radius: 50%; background: rgba(140,255,170,.95); }
+  #viewBtn { position: fixed; left: 50%; margin-left: -28px; bottom: calc(14px + env(safe-area-inset-bottom)); width: 56px; height: 36px; border-radius: 10px;
+    border: 2px solid rgba(255,255,255,.6); background: rgba(20,40,60,.35); display: none; pointer-events: none;
+    align-items: center; justify-content: center; font-weight: 900; font-size: 12px; letter-spacing: 1px; }
   /* ---------- Safe areas: in landscape the notch and the rounded corners sit at the sides ---------- */
-  #stats, #hp, #darts, #feed { margin-left: env(safe-area-inset-left); }
+  #stats, #hp, #darts, #feed, #boost { margin-left: env(safe-area-inset-left); }
   #wave, #board, #radar, #fire, #dartBtn { margin-right: env(safe-area-inset-right); }
   /* ---------- Phone on its side: thumbs at the bottom corners ---------- */
   @media (pointer: coarse) and (orientation: landscape) {
@@ -185,6 +200,9 @@
     #dartBtn { right: 22px; bottom: calc(110px + env(safe-area-inset-bottom)); width: 68px; height: 68px; }
     #radar { right: auto; left: 50%; width: 92px; height: 92px; margin: 0 0 0 -46px; bottom: calc(8px + env(safe-area-inset-bottom)); }
     #stats { bottom: calc(10px + env(safe-area-inset-bottom)); font-size: 13px; max-width: calc(50vw - 70px); }
+    #boost { bottom: calc(58px + env(safe-area-inset-bottom)); } /* above the stats, which can wrap to two lines here */
+    /* space: the VIEW button sits beside FIRE so it doesn't cover the radar */
+    #viewBtn { left: auto; right: 112px; margin: 0 env(safe-area-inset-right) 0 0; bottom: calc(38px + env(safe-area-inset-bottom)); }
   }
   @media (orientation: landscape) and (max-height: 540px) {
     #score { font-size: 28px; top: calc(8px + env(safe-area-inset-top)); }
@@ -214,7 +232,7 @@
     .split .opt { min-height: 42px; }
     .split .sect { margin: 10px 6px 2px; }
     .split .rooms { max-height: 150px; }
-    #overlay .split .tabs button { min-width: 0; padding: 8px 4px; }
+    #overlay .split .tabs button { min-width: 0; padding: 8px 2px; font-size: 14px; }
     .split .opt .ctl b { min-width: 96px; }
     #overlay .split .opt .ctl button { width: 34px; }
     .split .opt .lab { white-space: nowrap; }
@@ -263,6 +281,9 @@
   <div id="darts" class="hud"></div>
   <div id="fire">FIRE</div>
   <div id="dartBtn">DART</div>
+  <div id="viewBtn">VIEW</div>
+  <div id="boost" class="hud"><i></i><b>BOOST</b></div>
+  <div id="pipper"></div>
   <div id="rets"></div>
   <div id="gunCross"></div>
   <div id="stick"><div id="knob"></div></div>

@@ -55,3 +55,13 @@ Turn **Lead marker** on or off on the title screen (online: in the room menu or 
 
 ## Down cam (option, every mode)
 When you're shot down, your bird falls out of the sky trailing smoke (like the AI birds) and the last 4 seconds, plus 3 seconds after the hit, replay from the chase camera of whoever got you: another player online, or the AI bird whose pea or dart hit you (found by tracing the shot back to the bird that fired it). The moment of the hit plays in slow motion, then the usual "downed" screen appears; press any key or tap to skip. Online, respawn waits for the replay to finish. Being chased into the ground by a bird that hit you in the last few seconds also counts. The title screen / lobby has a **Down cam** row: *When shot down* (default), *Every crash* (plain crashes replay from beside your own bird) or *Off*. It only records what's on screen, so the game keeps running underneath while it plays.
+
+## Space mode
+Pick **Space** on the title screen to fly a space fighter through an asteroid belt in low orbit over a wild planet. It plays like the arena (waves of 1 to 12 enemy fighters, the same missile switches, lead marker and down cam), and the online lobby's arena picker has **Asteroid Belt (space)** too.
+- **No air, no stall:** you cruise at a steady ~200 km/h. **Boost** to change pace (it runs on a fuel gauge, bottom left, that refills on its own and when you cut close past rocks or thread a ring), or **brake** to slow right down and turn much tighter. Every fighter, yours and the enemies', uses the same numbers (`src/space.ts`); enemies are only smarter about when to brake into a turn and when to burn their boost.
+- **Lasers** replace the pea shooter (faster, longer reach) and **missiles** replace the darts (fast enough to run down a boosting fighter). Shots stop on rocks, so you can hide behind one, and a missile can be led into a rock to shake it.
+- **The belt:** thousands of tumbling rocks in clumps and clearings, giant asteroids, ring-shaped rocks and fat rocks with a tunnel bored through them. Fly through a ring or a tunnel for bonus points and boost. Dive too low and you hit the planet.
+- Controls: keyboard Shift boost, Space brake, Z/C yaw (rest as normal). Controller: A or either bumper boosts, LT brakes, and the right stick is a throttle too (up boost, down brake). Touch: the right thumb drags up to boost, down to brake.
+
+## First-person view (option, every mode)
+**Camera: First person** on the title screen, or press **T** (R3 on a controller, VIEW on touch) any time in flight. In space you sit in the cockpit behind a canopy frame with a gun pipper; as a bird you see just the tip of your beak. Crashes switch back to the chase camera so you can watch.
