@@ -42,6 +42,10 @@ composer.setPixelRatio(Math.min(devicePixelRatio, coarse ? 1.5 : 2));
 composer.setSize(innerWidth, innerHeight);
 composer.addPass(new RenderPass(scene, camera));
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.75, 0.5, 0.95);
+// One NaN or infinite pixel would smear across the bloom's blur levels as big black blocks, so the glow
+// only ever reads finite, clamped colour.
+bloom.materialHighPassFilter.fragmentShader = bloom.materialHighPassFilter.fragmentShader.replace(/}\s*$/,
+  '  vec4 hp = gl_FragColor; bool ok = hp.r + hp.g + hp.b < 1e4 && hp.r + hp.g + hp.b > -1e4;\n  gl_FragColor = ok ? clamp(hp, 0., 64.) : vec4(0.);\n}');
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 function render() { if (lookSpace) composer.render(); else renderer.render(scene, camera); }
