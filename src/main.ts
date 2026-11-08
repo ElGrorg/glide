@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, ARENAS, ARENA_R, ARENA_LID_R, arenaBarrier, setArena, getArena, SPACE_ARENA, isSpace, type Obstacle } from './world';
+import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, ARENAS, ARENA_R, ARENA_LID_R, arenaBarrier, skimAmount, setArena, getArena, SPACE_ARENA, isSpace, type Obstacle } from './world';
 import { SpaceScene, buildField, holeThreaded, fleet, clearSpawnY, spaceEdge, grabPickup, boostPickups, SPACE_R, SPACE_CRUISE, SPACE_BOOST, PICKUP_FUEL } from './space';
 import { ShipMesh, type Craft } from './ship';
 import { route, BIOME_NAME } from './route';
@@ -1514,7 +1514,14 @@ function frame(now: number) {
       const wp = new THREE.Vector3(p.x, terrainHeight(p.x, p.z) + 0.3, p.z);
       for (let i = 0; i < n; i++) puffs.burst(wp, glider.vel.clone().multiplyScalar(0.15).setY(4), 3, 1, 0.5);
     }
-    // ground skim
+    // ground skim: the ground-effect push (see skimThrust) shows as dust kicked up behind you and a wider view
+    const skim = mode === 'flying' && !onWater ? skimAmount(p.x, p.y, p.z) : 0;
+    if (skim > 0.05) {
+      const n = Math.ceil(30 * dt * skim * Math.min(1, glider.speed / 40));
+      const gp = new THREE.Vector3(p.x, terrainHeight(p.x, p.z) + 0.4, p.z).addScaledVector(glider.dir, -2);
+      for (let i = 0; i < n; i++) puffs.burst(gp, glider.vel.clone().multiplyScalar(-0.05).setY(2.5), 2.5, 1, 0.45);
+      camera.fov += 4 * skim * dt;
+    }
     if (clearance < 5 && mode === 'flying') {
       score += dt * (5 - clearance) * glider.speed * 0.35 * multiplier();
       if (dogfight.chargeDart(dt * 0.08 * (5 - clearance) / 5)) { popup('Dart reloaded'); audio.beep(1600, 0.1, 0.07); }

@@ -244,7 +244,7 @@ export class Enemy {
     // and can flare its wings to slow down
     const brake = wantSpeed < this.speed - 6 ? Math.min(1, (this.speed - wantSpeed) / 15) : 0;
     const drag = (DRAG + BRAKE_DRAG * brake) * this.speed * this.speed;
-    this.speed += (-G * this.dir.y - drag + cruiseThrust(this.pos.y) + skimThrust(this.pos.x, this.pos.y, this.pos.z)) * dt; // + flapping and ground skim, same as yours
+    this.speed += (-G * this.dir.y - drag + cruiseThrust(this.pos.y) + skimThrust(this.pos.x, this.pos.y, this.pos.z, this.speed)) * dt; // + flapping and ground skim, same as yours
     this.speed = THREE.MathUtils.clamp(this.speed, 4, MAX_SPEED);
 
     // barrel roll: a quick sideways juke

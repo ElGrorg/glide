@@ -310,7 +310,7 @@ export class Glider {
   private energy(dt: number, climb: number) {
     const drag = (DRAG * (1 - 0.8 * this.tuck) + BRAKE_DRAG * this.brake) * this.speed * this.speed;
     const acc = -G * climb - drag + TUCK_THRUST * this.tuck + cruiseThrust(this.pos.y)
-      + skimThrust(this.pos.x, this.pos.y, this.pos.z); // ground effect: skim low for a push
+      + skimThrust(this.pos.x, this.pos.y, this.pos.z, this.speed); // ground effect: skim low for a push
     return THREE.MathUtils.clamp(this.speed + acc * dt, 4, MAX_SPEED);
   }
 
