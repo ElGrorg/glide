@@ -68,16 +68,27 @@ export function cruiseThrust(y: number): number {
   return CRUISE_DRAG * CRUISE_SPEED * CRUISE_SPEED * (1 - smoothstep(y, 230, 380));
 }
 
-/** Ground effect: skimming low over the ground cushions the wings and pushes you along (m/s^2).
- *  Full push at 1 m or lower, fading out by 6 m, so it only pays to fly right on the deck. Level
- *  skimming tops out where drag catches up (~50 m/s), so it's a reward for staying low, not free speed.
- *  The same for every bird: you, the AI, and online players. None in space. */
-export const SKIM_HEIGHT = 6;
-const SKIM_ACCEL = 4;
-export function skimThrust(x: number, y: number, z: number): number {
+/** Ground effect: skimming low over the ground cushions the wings, so you get a push and less drag.
+ *  Full effect at 2 m or lower, fading smoothly to nothing by 10 m. The push is strongest at normal
+ *  gliding speeds and tapers off toward SKIM_TOP, so level skimming settles around 55-60 m/s (~210 km/h)
+ *  in a few seconds instead of leaking speed. Diving low still beats it: less drag on the way down.
+ *  The same for every bird: you, the AI, and online players (each client flies its own bird with this).
+ *  None in space. */
+export const SKIM_FULL = 2, SKIM_HEIGHT = 10;
+const SKIM_PUSH = 8;       // m/s^2 at gliding speed, right on the deck
+const SKIM_TOP = 72;       // the push is gone by this speed (m/s)
+const SKIM_DRAG_CUT = 0.25; // fraction of drag the ground cushion takes away
+/** How deep in ground effect a bird at (x, y, z) is: 1 on the deck, 0 above SKIM_HEIGHT. */
+export function skimAmount(x: number, y: number, z: number): number {
   if (isSpace()) return 0;
-  const clear = y - terrainHeight(x, z);
-  return SKIM_ACCEL * THREE.MathUtils.clamp((SKIM_HEIGHT - clear) / (SKIM_HEIGHT - 1), 0, 1);
+  return 1 - smoothstep(y - terrainHeight(x, z), SKIM_FULL, SKIM_HEIGHT);
+}
+/** Ground-effect acceleration (m/s^2) for a bird at (x, y, z) flying at `speed`. */
+export function skimThrust(x: number, y: number, z: number, speed: number): number {
+  const k = skimAmount(x, y, z);
+  if (k <= 0) return 0;
+  const push = SKIM_PUSH * clamp((SKIM_TOP - speed) / 30, 0, 1);
+  return k * (push + SKIM_DRAG_CUT * CRUISE_DRAG * speed * speed);
 }
 
 function arenaCanyon(x: number, z: number): number {
