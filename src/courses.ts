@@ -98,5 +98,146 @@ const glacier = defineCourse({
   finishAt: ['s4', 0.78],
 });
 
-export const COURSES: CourseDef[] = [glacier];
+
+// ======================================================================
+// 2. Hollow Mountain: a misty gorge pours into the Maw, three tunnels through the Labyrinth, the Cathedral,
+//    then out by the high chimney or the long drain, and down the falls through the Eye.
+// ======================================================================
+const H2 = {
+  S: [0, 0, 1500] as Node,
+  F: [55, -880, 1304] as Node,      // gorge (left) or the mossy shelf (right)
+  M0: [15, -1210, 1236] as Node,    // back together in the basin
+  K1: [5, -1295, 1219] as Node,     // the throat
+  MAW: [0, -1365, 1202] as Node,    // into the mountain
+  J1: [-20, -1580, 1160] as Node,   // the Labyrinth splits three ways
+  CATH: [0, -2520, 962] as Node,    // the Cathedral
+  CX: [0, -2810, 902] as Node,      // two ways out
+  O1: [112, -3080, 896] as Node,    // the chimney comes out on a ledge
+  O2: [-12, -3580, 792] as Node,    // the drain comes out
+  M3: [0, -3720, 760] as Node,      // daylight
+  K4: [20, -4360, 622] as Node,     // the falls (left) or the rim (right)
+  E1: [60, -5150, 462] as Node,     // the Eye
+  E2: [35, -5330, 426] as Node,
+  M4: [10, -5480, 398] as Node,
+  FIN: [-20, -5830, 328] as Node,
+};
+const SKY1: Node = [150, -1960, 1080], SKY2: Node = [162, -2160, 1040];
+const hollow = defineCourse({
+  id: 'caverns', version: 1, name: 'Hollow Mountain', biome: 'misty', seed: 52211,
+  blurb: 'a misty gorge, the Labyrinth tunnels, the Cathedral and the Eye',
+  sections: ['The Gorge', 'Labyrinth', 'Chimney or Drain', 'The Falls'],
+  look: { caveRock: 0x7b9483, crystal: 0xc4ff6e, trees: 1.1, rocks: 0.9, clouds: 0.55, lowClouds: true },
+  paths: [
+    path('s1', 'valley', H2.S, [[-50, -300, 85], [25, -620, 80]], H2.F, 60, 0, 90),
+    path('gorge', 'canyon', H2.F, [[45, -960, 16, 40], [5, -1040, 15, 50], [-15, -1115, 14, 55]], H2.M0, 18, 40, 20, 35),
+    path('shelf', 'valley', H2.F, [[85, -960, 45], [95, -1050, 42], [60, -1135, 40]], H2.M0, 35, 0, 50),
+    path('basin', 'valley', H2.M0, [], H2.K1, 30, 0, 45),
+    path('throat', 'canyon', H2.K1, [], H2.MAW, 17, 50, 20, 45),
+    path('maw', 'cave', H2.MAW, [[-14, -1460, 26, 24]], H2.J1, 22, 22, 19, 22),
+    // the Labyrinth: wide and sweeping (left), the needle (middle: tight and straight), the skylight (right)
+    path('lab-l', 'cave', H2.J1, [[-48, -1690, 13, 15], [-135, -1880, 13, 15], [-165, -2100, 14, 16], [-110, -2330, 13, 15], [-42, -2445, 14, 16]], H2.CATH, 18, 18, 14, 16),
+    path('lab-m', 'cave', H2.J1, [[-18, -1720, 9, 11], [2, -1960, 9, 11], [-14, -2200, 9, 12], [-4, -2410, 10, 12]], H2.CATH, 14, 16, 12, 14),
+    path('lab-r1', 'cave', H2.J1, [[14, -1690, 13, 15], [100, -1850, 13, 15]], SKY1, 14, 15, 14, 16),
+    path('skylight', 'canyon', SKY1, [], SKY2, 15, 60, 15, 60),
+    path('lab-r2', 'cave', SKY2, [[150, -2290, 13, 15], [88, -2400, 13, 15], [34, -2465, 14, 16]], H2.CATH, 18, 18, 14, 15),
+    path('cathedral', 'cave', H2.CATH, [[8, -2660, 44, 40]], H2.CX, 26, 26, 30, 28),
+    // the chimney: out high, a slight rise you have to carry speed over, then a long dive off the ledge
+    path('chimney', 'cave', H2.CX, [[38, -2905, 12, 14, 904], [88, -3000, 12, 14, 906]], H2.O1, 13, 15, 14, 16),
+    path('ledge', 'valley', H2.O1, [[125, -3290, 45], [70, -3540, 55]], H2.M3, 70, 0, 26),
+    // the drain: a long, dark, gently falling tube
+    path('drain', 'cave', H2.CX, [[-22, -2960, 12, 13], [-42, -3200, 11, 13], [-22, -3440, 12, 13]], H2.O2, 13, 14, 14, 16),
+    path('drainout', 'canyon', H2.O2, [], H2.M3, 26, 40, 15, 40),
+    path('daylight', 'valley', H2.M3, [[40, -3920, 75], [60, -4160, 70]], H2.K4, 50, 0, 70),
+    // the falls: a deep slot into the Eye tunnel; or the rim, round the outside and longer
+    path('falls', 'canyon', H2.K4, [[-35, -4600, 14, 60], [-20, -4850, 13, 70], [45, -5050, 13, 70]], H2.E1, 14, 60, 18, 50),
+    path('eye', 'cave', H2.E1, [], H2.E2, 15, 17, 14, 16),
+    path('rim', 'valley', H2.K4, [[110, -4590, 40], [160, -4880, 40], [155, -5170, 40], [110, -5360, 45]], H2.M4, 60, 0, 45),
+    path('out4', 'valley', H2.E2, [], H2.M4, 60, 0, 30),
+    path('finale', 'valley', H2.M4, [], H2.FIN, 85, 0, 65),
+  ],
+  routes: [
+    { name: 'Gorge · needle · drain · falls and the Eye', paths: ['s1', 'gorge', 'basin', 'throat', 'maw', 'lab-m', 'cathedral', 'drain', 'drainout', 'daylight', 'falls', 'eye', 'out4', 'finale'] },
+    { name: 'Shelf · left sweep · chimney · rim', paths: ['s1', 'shelf', 'basin', 'throat', 'maw', 'lab-l', 'cathedral', 'chimney', 'ledge', 'daylight', 'rim', 'finale'] },
+    { name: 'Gorge · skylight · chimney · falls', paths: ['s1', 'gorge', 'basin', 'throat', 'maw', 'lab-r1', 'skylight', 'lab-r2', 'cathedral', 'chimney', 'ledge', 'daylight', 'falls', 'eye', 'out4', 'finale'] },
+  ],
+  pieces: [
+    // the Cathedral: a forest of columns
+    { path: 'cathedral', at: 0.25, lat: -18, type: 'column', r: 4 },
+    { path: 'cathedral', at: 0.3, lat: 14, type: 'column', r: 5 },
+    { path: 'cathedral', at: 0.45, lat: -2, type: 'column', r: 5.5 },
+    { path: 'cathedral', at: 0.55, lat: -26, type: 'column', r: 4 },
+    { path: 'cathedral', at: 0.6, lat: 24, type: 'column', r: 4.5 },
+    { path: 'cathedral', at: 0.7, lat: -16, type: 'column', r: 4 },
+    ...slalom('drain', 0.3, 0.8, 4, 6, 2.2),
+    ...slalom('daylight', 0.45, 0.8, 4, 20, 4, 'spire', 50),
+  ],
+  startAt: ['s1', 0.2],
+  splitsAt: [['maw', 0.45], ['cathedral', 0.12], ['daylight', 0.3]],
+  finishAt: ['finale', 0.55],
+});
+
+// ======================================================================
+// 3. Red Rock Slots: a mesa-top start, the deep slot or the wash, the braids round a butte (or through it),
+//    the pillar field, the sinkhole dive or the switchbacks, and the Narrows to the finish.
+// ======================================================================
+const R3 = {
+  S: [0, 0, 1400] as Node,
+  F1: [-30, -950, 1196] as Node,   // the slot (left) or the wash (right)
+  M1: [-15, -1740, 1028] as Node,
+  B0: [-10, -1880, 1000] as Node,  // the braids: left, right, or through the butte
+  B1: [-8, -2500, 870] as Node,
+  P0: [0, -2610, 846] as Node,     // out into the pillar field
+  F3: [-20, -3420, 700] as Node,   // the sinkhole (left) or the switchbacks (right)
+  M3: [10, -3890, 538] as Node,
+  N: [0, -5250, 280] as Node,      // out of the Narrows
+  FIN: [-10, -5570, 216] as Node,
+};
+const G3: Node = [-28, -3500, 683];
+const redrock = defineCourse({
+  id: 'canyon', version: 1, name: 'Red Rock Slots', biome: 'desert', seed: 63389,
+  blurb: 'deep slots, a butte tunnel, the pillar field and the Narrows',
+  sections: ['The Slot', 'The Braids', 'Pillar Field', 'The Narrows'],
+  look: { caveRock: 0xc9825a, crystal: 0xffcf6a, trees: 1, rocks: 1, clouds: 0.3, lowClouds: false },
+  paths: [
+    path('s1', 'valley', R3.S, [[40, -300, 110], [0, -640, 105]], R3.F1, 60, 0, 110),
+    // the slot: deep, narrow and twisting, and short
+    path('slot', 'canyon', R3.F1, [[-40, -1040, 12, 60], [-90, -1170, 10, 80], [-60, -1320, 10, 85], [-95, -1470, 10, 85], [-65, -1610, 11, 75]], R3.M1, 16, 60, 14, 45),
+    // the wash: wide, open and longer
+    path('wash', 'valley', R3.F1, [[20, -1040, 50], [95, -1230, 55], [95, -1440, 55], [35, -1615, 45]], R3.M1, 30, 0, 50),
+    path('s2', 'canyon', R3.M1, [], R3.B0, 20, 45, 22, 45),
+    path('braidL', 'canyon', R3.B0, [[-35, -1960, 13, 55], [-95, -2120, 13, 65], [-90, -2290, 13, 65], [-50, -2400, 14, 60], [-22, -2450, 15, 55]], R3.B1, 17, 50, 16, 50),
+    path('braidR', 'canyon', R3.B0, [[15, -1960, 13, 55], [80, -2120, 13, 65], [78, -2290, 13, 65], [40, -2400, 14, 60], [8, -2450, 15, 55]], R3.B1, 17, 50, 16, 50),
+    path('butte', 'cave', R3.B0, [[-12, -1990, 12, 15], [-12, -2060, 11, 13], [-2, -2300, 11, 13], [-8, -2420, 12, 15]], R3.B1, 14, 18, 16, 22),
+    path('s3', 'canyon', R3.B1, [], R3.P0, 30, 40, 20, 50),
+    path('field', 'valley', R3.P0, [[35, -2880, 115], [5, -3170, 120]], R3.F3, 60, 0, 60),
+    // the sinkhole: a short slot into a steep, dark tube that dives through the mesa
+    path('sinkgate', 'canyon', R3.F3, [], G3, 14, 45, 18, 40),
+    path('sink', 'cave', G3, [[-34, -3560, 13, 18], [-38, -3640, 12, 18, 642], [-22, -3770, 12, 16, 582]], R3.M3, 14, 16, 14, 20),
+    // the switchbacks: an open canyon that snakes down the cliff, longer and gentler
+    path('switch', 'canyon', R3.F3, [[25, -3500, 18, 45], [85, -3600, 19, 55], [88, -3720, 19, 60], [48, -3825, 18, 55]], R3.M3, 20, 50, 20, 40),
+    path('narrows', 'canyon', R3.M3, [[-10, -4060, 12, 60], [28, -4300, 11, 70], [-12, -4560, 11, 75], [22, -4800, 11, 70], [-14, -5030, 11, 70]], R3.N, 14, 55, 16, 55),
+    path('wash2', 'valley', R3.N, [[-10, -5400, 60]], R3.FIN, 80, 0, 30),
+  ],
+  routes: [
+    { name: 'Slot · butte tunnel · sinkhole', paths: ['s1', 'slot', 's2', 'butte', 's3', 'field', 'sinkgate', 'sink', 'narrows', 'wash2'] },
+    { name: 'Wash · left braid · switchbacks', paths: ['s1', 'wash', 's2', 'braidL', 's3', 'field', 'switch', 'narrows', 'wash2'] },
+    { name: 'Slot · right braid · switchbacks', paths: ['s1', 'slot', 's2', 'braidR', 's3', 'field', 'switch', 'narrows', 'wash2'] },
+  ],
+  pieces: [
+    // lone spires on the mesa top
+    { path: 's1', at: 0.35, lat: -40, type: 'spire', r: 5, h: 55 },
+    { path: 's1', at: 0.55, lat: 35, type: 'spire', r: 6, h: 60 },
+    { path: 's1', at: 0.75, lat: -25, type: 'spire', r: 5, h: 50 },
+    // the pillar field: pick your own line through it
+    ...[[0.12, -30], [0.18, 25], [0.26, -5], [0.33, 45], [0.38, -50], [0.45, 15], [0.52, -25], [0.58, 50], [0.64, -55], [0.7, 5], [0.77, -30], [0.83, 35]]
+      .map(([at, lat], i) => ({ path: 'field', at, lat, type: 'spire' as const, r: 5 + (i % 3), h: 50 + (i % 4) * 12 })),
+    // boulders in the Narrows: hop them or squeeze round
+    ...slalom('narrows', 0.2, 0.85, 5, 5, 3.2, 'rock'),
+  ],
+  startAt: ['s1', 0.08],
+  splitsAt: [['s2', 0.4], ['field', 0.5], ['narrows', 0.08]],
+  finishAt: ['wash2', 0.6],
+});
+
+export const COURSES: CourseDef[] = [glacier, hollow, redrock];
 export function courseById(id: string) { return COURSES.find((c) => c.id === id) ?? null; }

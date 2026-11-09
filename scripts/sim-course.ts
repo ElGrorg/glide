@@ -2,7 +2,7 @@ import './dom-stub';
 // Autopilot fly-test for the time trial courses: flies every route with the real flight model and reports
 // time, splits, slowest speed and any crash. Run: npx tsx scripts/sim-course.ts [courseId] [clearance]
 import { Glider } from '../src/bird';
-import { setCourse, getCourse, solidClearance, floorBelow, obstaclesNear, obstacleGap, type Obstacle } from '../src/world';
+import { terrainHeight, setCourse, getCourse, solidClearance, floorBelow, obstaclesNear, obstacleGap, type Obstacle } from '../src/world';
 import { COURSES } from '../src/courses';
 import { gateCrossed } from '../src/course';
 import type { InputState } from '../src/input';
@@ -25,6 +25,17 @@ for (const def of COURSES) {
       const a1 = Math.atan2(sm.x[i] - sm.x[i - 6], sm.z[i] - sm.z[i - 6]), a2 = Math.atan2(sm.x[i + 6] - sm.x[i], sm.z[i + 6] - sm.z[i]);
       const r = 24 / Math.max(1e-4, Math.abs(wrap(a2 - a1)));
       if (r < minR) { minR = r; at = i / sm.n; }
+    }
+    if (p.kind === 'cave') {
+      // the rock over a cave should be solid all the way (no accidental skylights), apart from the portals
+      let thin = Infinity, at2 = 0;
+      for (let i = 10; i < sm.n - 10; i++) for (const lat of [-1, 0, 1]) {
+        const rl = Math.hypot(p.tx[i], p.tz[i]) || 1;
+        const x = sm.x[i] - p.tz[i] / rl * lat * sm.w[i], z = sm.z[i] + p.tx[i] / rl * lat * sm.w[i];
+        const cover = terrainHeight(x, z) - (sm.y[i] + sm.h[i]);
+        if (cover < thin) { thin = cover; at2 = i / sm.n; }
+      }
+      if (thin < 6) console.log(`  thin roof: ${p.def.id} only ${thin.toFixed(1)} m of rock at ${(at2 * 100).toFixed(0)}%`);
     }
     if (minR < 160) console.log(`  tight bend: ${p.def.id} (${p.kind}, w ${sm.w[Math.round(at * sm.n)].toFixed(0)}) radius ${minR.toFixed(0)} m at ${(at * 100).toFixed(0)}%`);
   }
