@@ -10,7 +10,7 @@ import { Input } from './input';
 import { WindAudio } from './audio';
 import { Dogfight, MAX_DARTS, peaSpeed, peaLife, flapAmount, type DogfightEvent, type Enemy } from './dogfight';
 import { setWorldSeed } from './noise';
-import { Online, PLAYER_CSS, TEAM_CSS, TEAM_NAMES, colorIndex, type MatchRules } from './online';
+import { Online, PLAYER_CSS, TEAM_CSS, TEAM_NAMES, colorIndex, type MatchRules, type MatchResult } from './online';
 import { cleanCode, hasRoomBrowser, listRooms, type RoomInfo } from './net';
 import { DownCam, type Tracked } from './downcam';
 import { sfx } from './spacefx';
@@ -289,7 +289,8 @@ const settings = { mode: 'endless' as GameMode, env: ARENAS.length /* = random *
   /* title menu: controls list open (open on a first visit) */ help: true,
   /* replay when you go down: 'shot' = shot down (or chased into the ground), 'all' = every crash too, 'off' */ downcam: 'shot' as DownCamSetting,
   /* camera: behind you, or first person */ view: 'chase' as ViewSetting,
-  /* phones: steer by tilting */ tilt: false };
+  /* phones: steer by tilting */ tilt: false,
+  /* arena + online: first to this many kills wins (0 = no limit, -1 = custom, which uses winN) */ winAt: 0, winN: 15 };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('glide.settings') || '{}')); } catch { /* storage unavailable */ }
 settings.env = THREE.MathUtils.clamp(Math.round(settings.env) || 0, 0, SPACE_ENV);
 settings.enemies = THREE.MathUtils.clamp(Math.round(settings.enemies) || 3, 1, 12);
@@ -300,6 +301,14 @@ settings.tilt = isTouch && settings.tilt === true;
 input.tilt = settings.tilt;
 input.onMotion = () => { if (mode === 'title') renderMenu(); };
 if (!DOWNCAM_OPTS.includes(settings.downcam)) settings.downcam = 'shot';
+/** Winning score picks: No limit, first to 3 / 5 / 10, or a custom number. */
+const WIN_OPTS = [0, 3, 5, 10, -1];
+if (!WIN_OPTS.includes(settings.winAt)) settings.winAt = 0;
+settings.winN = THREE.MathUtils.clamp(Math.round(settings.winN) || 15, 1, 95);
+/** The kills it takes to win this match (0 = no limit). */
+const winTarget = () => (settings.winAt < 0 ? settings.winN : settings.winAt);
+/** The winning score rows: the picker, plus the number when it's on Custom. */
+const winRows = () => ['winAt', ...(settings.winAt < 0 ? ['winN'] : [])];
 settings.name = String(settings.name || '').slice(0, 16);
 // an invite link (?room=CODE) opens straight onto the online menu, ready to join
 const inviteCode = cleanCode(new URLSearchParams(location.search).get('room') || '');
@@ -312,7 +321,7 @@ loadBest();
 /** The arena chosen for this match ("random" rolls one per match). */
 let arenaIdx = 0;
 
-const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'team', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'tilt', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
+const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'team', 'winAt', 'winN', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'tilt', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
 const GO_ROW = MENU_ROWS.indexOf('go');
 let menuRow = inviteCode ? MENU_ROWS.indexOf('join') : GO_ROW;
 /** On a phone the Steering row (thumbs or tilt) follows Camera. */
@@ -323,10 +332,10 @@ function menuRows(): readonly string[] {
 function baseRows(): readonly string[] {
   const browser = hasRoomBrowser();
   if (settings.mode === 'online') return online.active
-    ? (online.isHost && online.phase === 'lobby' ? [...(browser ? ['vis'] : []), 'env', 'bots', 'allies', ...(settings.allies ? ['team'] : []), 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go']
+    ? (online.isHost && online.phase === 'lobby' ? [...(browser ? ['vis'] : []), 'env', 'bots', 'allies', ...(settings.allies ? ['team'] : []), ...winRows(), 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go']
       : online.phase === 'lobby' ? [...(online.teams ? ['team'] : []), 'lead', 'downcam', 'view'] : [])
     : ['mode', ...(browser && openRooms.length ? ['rooms'] : []), 'join', ...(browser ? ['vis'] : []), 'host', 'lead', 'downcam', 'view', 'help'];
-  return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
+  return settings.mode === 'arena' ? ['mode', 'env', 'enemies', ...winRows(), 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
     : settings.mode === 'space' ? ['mode', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
     : ['mode', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help'];
 }
@@ -399,7 +408,7 @@ function renderMenu() {
   const arena = settings.mode === 'arena', space = settings.mode === 'space';
   const dw = space ? 'missiles' : 'darts';
   const head = `${modeRow(sel('mode'))}<p class="blurb">${MODE_BLURB[settings.mode]}</p>`;
-  const sets = `${arena ? `${sect('Match')}${pickRow(sel('env'), 'env', 'Arena', envName, envBlurb)}${pickRow(sel('enemies'), 'enemies', 'Enemies', `${settings.enemies} per wave`)}` : ''}
+  const sets = `${arena ? `${sect('Match')}${pickRow(sel('env'), 'env', 'Arena', envName, envBlurb)}${pickRow(sel('enemies'), 'enemies', 'Enemies', `${settings.enemies} per wave`)}${winRow(sel)}` : ''}
       ${space ? `${sect('Match')}${pickRow(sel('enemies'), 'enemies', 'Enemies', `${settings.enemies} per wave`)}` : ''}
       ${sect(space ? 'Missiles' : 'Darts')}
       ${pickRow(sel('myDarts'), 'myDarts', `Your ${dw}`, onOff(settings.myDarts))}
@@ -427,6 +436,16 @@ const revealSel = () => hud.overlay.querySelector('.sel')?.scrollIntoView({ bloc
 function visRow(sel: string) {
   const on = online.active ? online.isPublic : settings.public;
   return pickRow(sel, 'vis', 'Room', on ? 'Public' : 'Private', on ? 'Listed under Open rooms for anyone to join' : 'Hidden: friends join with the code or invite link');
+}
+/** Winning score: No limit, or first to 3 / 5 / 10 / any number of kills. */
+function winRow(sel: (r: string) => string) {
+  const n = winTarget(), online_ = settings.mode === 'online';
+  const value = settings.winAt === 0 ? 'No limit' : settings.winAt < 0 ? 'Custom' : `First to ${n}`;
+  const note = !n ? (online_ ? 'Play on until the host closes the room' : 'Fight wave after wave until you go down')
+    : !online_ ? `Shoot down ${n} bird${n > 1 ? 's' : ''} to win`
+    : settings.allies ? `First team to ${n} kills between them wins` : `First player to ${n} kill${n > 1 ? 's' : ''} wins`;
+  return pickRow(sel('winAt'), 'winAt', 'Win at', value, note)
+    + (settings.winAt < 0 ? pickRow(sel('winN'), 'winN', 'Kills to win', `${settings.winN} kill${settings.winN > 1 ? 's' : ''}`, 'Steps of 1 up to 20, then 5') : '');
 }
 function viewRow(sel: string) { return pickRow(sel, 'view', 'Camera', settings.view === 'cockpit' ? 'First person' : 'Chase', 'T / R3 switches in flight'); }
 function tiltRow(sel: string) {
@@ -499,9 +518,11 @@ function renderOnlineMenu() {
       ${pickRow(sel('env'), 'env', 'Arena', envName)}
       ${pickRow(sel('bots'), 'bots', 'AI birds', settings.bots ? `${settings.bots} per wave` : 'None')}
       ${pickRow(sel('allies'), 'allies', 'Players', settings.allies ? 'Team up' : 'Free for all', settings.allies ? 'Red vs Blue: everyone picks a team' : '')}
+      ${winRow(sel)}
       ${pickRow(sel('myDarts'), 'myDarts', 'Player darts', onOff(settings.myDarts))}
       ${pickRow(sel('enemyDarts'), 'enemyDarts', 'AI darts', onOff(settings.enemyDarts))}` : '';
-    const start = online.isHost ? `<button data-act="go" class="go-btn cta${sel('go')}">Start match</button>` : '<p class="blurb center wait">Waiting for the host to start…</p>';
+    const goal = !online.isHost && online.lobbyWin ? `<p class="blurb center">First ${online.teams ? 'team' : 'player'} to <b>${online.lobbyWin}</b> kill${online.lobbyWin > 1 ? 's' : ''} wins</p>` : '';
+    const start = online.isHost ? `<button data-act="go" class="go-btn cta${sel('go')}">Start match</button>` : `${goal}<p class="blurb center wait">Waiting for the host to start…</p>`;
     const room = `<p class="sect center">Room code</p>
     <div class="roomcode">${esc(online.code)}</div>
     <div class="btns"><button data-act="copy">Copy invite link</button><button data-act="leave">Leave</button></div>
@@ -538,7 +559,7 @@ function onlineAction(act: string) {
   audio.start();
   onlineNote = '';
   const name = (settings.name || '').trim() || 'Bird';
-  if (act === 'host') { online.host(name, settings.public, settings.allies); renderMenu(); }
+  if (act === 'host') { online.host(name, settings.public, settings.allies, winTarget()); renderMenu(); }
   else if (act === 'join') {
     if (cleanCode(settings.code).length < 4) { onlineNote = 'Type the room code your friend gave you.'; renderMenu(); (document.getElementById('codeIn') as HTMLInputElement | null)?.focus(); return; }
     online.join(settings.code, name); renderMenu();
@@ -550,7 +571,7 @@ function onlineAction(act: string) {
     if (!navigator.clipboard) { onlineNote = `Invite link: ${link}`; renderMenu(); }
   } else if (act === 'go' && online.isHost && online.phase === 'lobby') {
     const rules: MatchRules = { seed: (Math.random() * 2 ** 31) | 0, arena: settings.env < ARENAS.length ? settings.env : Math.floor(Math.random() * ARENAS.length),
-      bots: settings.bots, myDarts: settings.myDarts, enemyDarts: settings.enemyDarts, allies: settings.allies, space: settings.env === SPACE_ENV };
+      bots: settings.bots, myDarts: settings.myDarts, enemyDarts: settings.enemyDarts, allies: settings.allies, space: settings.env === SPACE_ENV, winAt: winTarget() };
     online.start(rules);
   }
 }
@@ -583,6 +604,9 @@ function menuChange(row: string, d: number) {
   else if (row === 'myDarts') settings.myDarts = !settings.myDarts;
   else if (row === 'enemyDarts') settings.enemyDarts = !settings.enemyDarts;
   else if (row === 'enemies') settings.enemies = THREE.MathUtils.clamp(settings.enemies + d, 1, 12);
+  else if (row === 'winAt') settings.winAt = WIN_OPTS[(WIN_OPTS.indexOf(settings.winAt) + d + WIN_OPTS.length) % WIN_OPTS.length];
+  else if (row === 'winN') settings.winN = THREE.MathUtils.clamp(settings.winN + (settings.winN + d > 20 ? 5 * d : d), 1, 95);
+  if (row === 'winAt' || row === 'winN') online.setWinAt(winTarget());
   saveSettings(); renderMenu();
 }
 let startReq = false, menuReq = false;
@@ -687,9 +711,12 @@ function rumble(strength: number, ms: number) {
 }
 
 // ---------- Game state ----------
-type Mode = 'title' | 'flying' | 'crashed';
+/** 'over': someone reached the winning score, and the winner screen is up. */
+type Mode = 'title' | 'flying' | 'crashed' | 'over';
 let mode: Mode = 'title';
 let score = 0, combo = 0, comboTimer = 0, slowmo = 0, crashTimer = 0, shake = 0;
+/** When the winner screen went up (wall clock, ms): a short pause before a press can dismiss it. */
+let overAt = 0;
 let startZ = 0;
 const near = new Map<string, { gap: number; type: string }>(); // obstacle id -> closest gap while passing
 const prevPos = new THREE.Vector3();
@@ -986,6 +1013,43 @@ function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall 
   setTimeout(() => { if (mode === 'crashed' && !downcam.playing) hud.overlay.classList.remove('hidden'); }, 700);
 }
 
+// ---------- Winning score: the match ends when someone gets there ----------
+/** Solo arena: you shot down enough birds. */
+function winSolo() {
+  mode = 'over'; overAt = performance.now();
+  const final = Math.floor(score);
+  const isBest = final > best;
+  if (isBest) { best = final; try { localStorage.setItem(bestKey(), String(best)); } catch { /* ignore */ } }
+  audio.whoosh(1); audio.beep(1400, 0.2, 0.07); setTimeout(() => audio.beep(2100, 0.25, 0.07), 160); rumble(0.6, 250);
+  hud.overlay.innerHTML = `<div class="menu"><h1>You win!</h1><div class="panel center"><p class="big">First to ${winTarget()} · ${dogfight.kills} shot down</p><p class="score"><b>${final}</b><span>points</span></p><p>${getArena()?.name ?? 'Arena'} · wave ${Math.max(1, dogfight.wave)}</p><p class="best${isBest ? ' new' : ''}">${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div><div class="btns"><button data-act="menu">${isTouch ? 'Menu' : 'Menu (Esc / B)'}</button></div></div></div>`;
+  setTimeout(() => { if (mode === 'over') hud.overlay.classList.remove('hidden'); }, 900);
+}
+/** Online: the host called the match. Show who won and the final scores, then everyone goes back to the room. */
+function showOnlineResult(r: MatchResult) {
+  closePause();
+  if (downcam.playing) endDownCam();
+  dogfight.reset();
+  mode = 'over'; overAt = performance.now(); slowmo = 0;
+  const me = r.players.find((p) => p.id === online.myId);
+  const teams = r.team >= 0;
+  const iWon = teams ? me?.team === r.team : r.winner === online.myId;
+  const winnerName = r.players.find((p) => p.id === r.winner)?.name ?? 'Someone';
+  const title = teams ? `<span style="color:${TEAM_CSS[r.team]}">${TEAM_NAMES[r.team]} wins!</span>` : iWon ? 'You win!' : `${esc(winnerName)} wins!`;
+  const sub = teams ? (iWon ? 'Your team got there first' : 'The other team got there first') : iWon ? `First to ${r.winAt} kills` : `First to ${r.winAt} kills · better luck next time`;
+  const sorted = [...r.players].sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
+  const row = (p: PlayerResult) => `<li${p.id === online.myId ? ' class="me"' : ''}><i style="background:${teams ? TEAM_CSS[p.team] : PLAYER_CSS[colorIndex(p.id)]}"></i><span>${esc(p.name)}${p.id === online.myId ? ' <em>you</em>' : ''}</span><b>${p.kills}</b><small>${p.deaths}</small></li>`;
+  const list = teams
+    ? [r.team, 1 - r.team].map((k) => { const tm = sorted.filter((p) => p.team === k); return tm.length ? `<li class="teamhead" style="color:${TEAM_CSS[k]}"><span>${TEAM_NAMES[k]} team</span><b>${tm.reduce((a, p) => a + p.kills, 0)}</b><small></small></li>${tm.map(row).join('')}` : ''; }).join('')
+    : sorted.map(row).join('');
+  if (iWon) { audio.whoosh(1); audio.beep(1400, 0.2, 0.07); setTimeout(() => audio.beep(2100, 0.25, 0.07), 160); rumble(0.6, 250); } else audio.beep(600, 0.3, 0.07);
+  hud.overlay.innerHTML = `<div class="menu"><h1>${title}</h1><div class="panel center"><p class="big">${sub}</p>
+    <ul class="standings"><li class="head"><i></i><span></span><b>Kills</b><small>Downed</small></li>${list}</ul>
+    <div class="go">${isTouch ? 'Tap to go back to the room' : 'Press any key or button to go back to the room'}</div>
+    <p class="blurb small">${online.isHost ? 'Start another match from the room when you\'re ready.' : 'The host can start another match from there.'}</p></div></div>`;
+  hud.overlay.classList.remove('hidden');
+}
+type PlayerResult = MatchResult['players'][number];
+
 function onDogfight(ev: DogfightEvent) {
   switch (ev.type) {
     case 'spawn':
@@ -1010,6 +1074,7 @@ function onDogfight(ev: DogfightEvent) {
       if (Math.random() < 0.3) botSay(OOPS, ev.enemy);
       popup(ev.ground ? `Ground kill! +${pts}` : `Shot down! +${pts}`, `${ev.role === 'hunter' ? 'hunter' : 'bandit'} · ${dogfight.kills} down`);
       audio.thud(); audio.whoosh(0.8); rumble(0.6, 200); slowmo = 0.4;
+      if (settings.mode === 'arena' && winTarget() > 0 && dogfight.kills >= winTarget()) winSolo();
       break;
     }
     case 'hitPlayer':
@@ -1226,7 +1291,8 @@ function drawOnlineHud(dt: number) {
   const row = (p: typeof rows[number]) =>
     `<div style="color:${PLAYER_CSS[colorIndex(p.id)]}"${p.id === online.myId ? ' class="me"' : ''}><span>${esc(p.name)}</span><i>${p.kills}</i><i class="d">${p.deaths}</i></div>`;
   // Team up: each team under its own heading with its total
-  $('board').innerHTML = `<b>ROOM ${esc(online.code)}</b>` + (online.teams
+  const winAt = online.rules?.winAt ?? 0;
+  $('board').innerHTML = `<b>ROOM ${esc(online.code)}${winAt ? ` · FIRST TO ${winAt}` : ''}</b>` + (online.teams
     ? TEAM_NAMES.map((tn, k) => { const tm = rows.filter((p) => p.team === k); return tm.length ? `<div class="teamrow" style="color:${TEAM_CSS[k]}"><span>${tn}</span><i>${tm.reduce((a, p) => a + p.kills, 0)}</i><i class="d"></i></div>${tm.map(row).join('')}` : ''; }).join('')
     : rows.map(row).join(''));
   while (feed.length && t - feed[0].t > 6) feed.shift();
@@ -1424,6 +1490,7 @@ function onlineEvents() {
       case 'scored': { const pts = Math.round(600 * multiplier()); score += pts; combo++; comboTimer = 4; audio.thud(); audio.whoosh(0.8); rumble(0.6, 200); break; }
       case 'hitConfirmed': audio.beep(1700, 0.03, 0.05); break;
       case 'chat': chatLine(online.nameOf(ev.from), PLAYER_CSS[colorIndex(ev.from)], ev.line); break;
+      case 'end': showOnlineResult(ev.result); break;
       case 'wave': onDogfight(ev.cleared ? { type: 'waveCleared', wave: ev.wave } : { type: 'wave', wave: ev.wave, count: ev.count }); break;
       case 'dartIn':
         if (mode !== 'flying' || spawnShield > 0) break;
@@ -1445,6 +1512,7 @@ function frame(now: number) {
   const inp = input.poll();
   document.body.classList.toggle('flying', mode === 'flying');
   onlineEvents();
+  online.checkWin(); // (host only: someone reached the winning score)
 
   if (inp.anyPress) audio.start();
   // quick chat (any time you're in the air or waiting to respawn)
@@ -1496,6 +1564,13 @@ function frame(now: number) {
     else { const el = document.getElementById('respawnIn'); if (el) el.textContent = `Back in the air in ${Math.ceil(respawnAt - crashTimer)}…`; }
   }
   else if (mode === 'crashed' && inp.anyPress && crashTimer > 0.8 && crashTimer > downcamEndT + 0.4) { spawn(); mode = 'flying'; hud.overlay.classList.add('hidden'); }
+  else if (mode === 'over') {
+    const overT = (performance.now() - overAt) / 1000;
+    // solo: fly again, or back to the menu. Online: back to the room's lobby (the room stays open).
+    if (online.active) { if ((inp.anyPress || menuReq) && overT > 1.2) goToMenu(); }
+    else if (menuReq || nav.back || nav.menu) goToMenu();
+    else if (inp.anyPress && overT > 1.2) { spawn(); mode = 'flying'; hud.overlay.classList.add('hidden'); }
+  }
   else if (mode === 'flying' && online.phase === 'playing' && nav.menu) openPause();
   else if (mode === 'flying' && (nav.menu || menuReq)) goToMenu();
   startReq = false; menuReq = false;
@@ -1787,7 +1862,7 @@ function frame(now: number) {
     hud.warn.textContent = isSpace() ? '◀ LEAVING THE BATTLE: TURN BACK ▶' : '◀ NO WAY OVER THE WALL: TURN BACK ▶';
     hud.warn.style.opacity = String(0.5 + 0.5 * Math.sin(t * 10));
   }
-  hud.score.textContent = mode === 'title' || replaying ? '' : String(Math.floor(score));
+  hud.score.textContent = mode === 'title' || replaying || (mode === 'over' && online.active) ? '' : String(Math.floor(score));
   hud.combo.style.opacity = combo > 0 && mode === 'flying' ? '1' : '0';
   hud.combo.textContent = `combo x${multiplier().toFixed(1)}`;
   hud.stats.textContent = mode === 'flying'
@@ -1800,7 +1875,8 @@ function frame(now: number) {
   hud.wave.textContent = rules && mode !== 'title'
     ? rules.bots === 0 ? (rules.allies ? teamBanner() : 'FREE FOR ALL') : dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`
     : inArena && mode === 'flying'
-    ? dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`
+    ? (dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`)
+      + (settings.mode === 'arena' && winTarget() > 0 ? ` · ${dogfight.kills}/${winTarget()} DOWN` : '')
     : '';
   audio.update(glider.speed, mist, mode === 'flying' && !isSpace()); // (no wind in space)
   audio.engine(isSpace() && mode === 'flying', THREE.MathUtils.clamp((glider.speed - 22) / (SPACE_BOOST - 22), 0, 1), glider.boost, glider.brake);
