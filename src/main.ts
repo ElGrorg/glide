@@ -880,7 +880,7 @@ function addCloseCall(gap: number, label: string) {
   // flying dangerously pays: a slipstream speed kick and a chunk of dart recharge, more the closer you cut it
   const kick = veryClose ? 7 : 3 + (3.5 - gap) * 1.2;
   // (space: no slipstream off a hull in a vacuum, and boost only comes from pickups)
-  if (!isSpace() && !racing()) glider.speed = Math.min(95, glider.speed + kick); // (no free speed in a time trial)
+  if (!isSpace()) glider.speed = Math.min(95, glider.speed + kick); // (time trials too: risk pays)
   const refilled = dogfight.chargeDart(veryClose ? 0.5 : 0.25);
   const perks = isSpace() ? (refilled ? 'MISSILE RELOADED' : '') : `+${Math.round(kick * 3.6)} km/h${refilled ? ' · DART RELOADED' : ''}`;
   popup(veryClose ? `INSANE! +${pts}` : `Close call +${pts}`, `${label} · ${gap.toFixed(1)} m${perks ? ` · ${perks}` : ''}`);
