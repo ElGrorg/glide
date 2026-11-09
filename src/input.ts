@@ -17,6 +17,10 @@ export interface InputState {
   source: 'keyboard' | 'touch' | 'gamepad';
   /** Menu navigation, edge-triggered: x/y = -1/0/1 (d-pad, arrows, stick flick), ok = Enter/Space/A/Start, back = Esc/B. */
   nav: { x: number; y: number; ok: boolean; back: boolean; menu: boolean };
+  /** Quick chat, edge-triggered: a d-pad direction, number key 1-4, or a tap on the chat wheel. */
+  chat: 'up' | 'left' | 'right' | 'down' | null;
+  /** Touch: the CHAT button was tapped (opens / closes the wheel). */
+  chatToggle: boolean;
 }
 
 const DEAD = 0.15;
@@ -28,7 +32,7 @@ export type PadScheme = 'flight' | 'classic' | 'wings';
 const SCHEMES: PadScheme[] = ['flight', 'classic', 'wings'];
 
 export class Input {
-  state: InputState = { pitch: 0, roll: 0, yaw: 0, rollRate: true, brake: 0, boost: 0, view: false, tuck: 0, fire: false, dart: false, aimX: 0, aimY: 0, anyPress: false, trick: null, source: 'keyboard', nav: { x: 0, y: 0, ok: false, back: false, menu: false } };
+  state: InputState = { pitch: 0, roll: 0, yaw: 0, rollRate: true, brake: 0, boost: 0, view: false, tuck: 0, fire: false, dart: false, aimX: 0, aimY: 0, anyPress: false, trick: null, source: 'keyboard', nav: { x: 0, y: 0, ok: false, back: false, menu: false }, chat: null, chatToggle: false };
   private nav = { x: 0, y: 0, ok: false, back: false, menu: false };
   private stickNav = { x: 0, y: 0 };
   private trick: InputState['trick'] = null;
@@ -47,6 +51,8 @@ export class Input {
   private mouseFire = false;
   private dartReq = false;
   private viewReq = false;
+  private chatReq: InputState['chat'] = null;
+  private chatToggleReq = false;
   /** Space fighter controls: Shift boosts instead of braking, and the right stick (or right thumb)
    *  pushed up boosts, pulled down brakes. */
   space = false;
@@ -105,7 +111,9 @@ export class Input {
     addEventListener('keydown', (e) => {
       if (typing(e)) return; // typing a name or room code
       if (!e.repeat) {
-        this.pressed = true;
+        const qc = ({ Digit1: 'up', Digit2: 'left', Digit3: 'right', Digit4: 'down', Numpad1: 'up', Numpad2: 'left', Numpad3: 'right', Numpad4: 'down' } as const)[e.code as 'Digit1'];
+        if (qc) this.chatReq = qc; // quick chat (doesn't count as "press any key")
+        else this.pressed = true;
         if (e.code === 'KeyV') this.toggleScheme();
         if (e.code === 'KeyR') this.dartReq = true;
         if (e.code === 'KeyT') this.viewReq = true;
@@ -146,6 +154,8 @@ export class Input {
           return !!b && b.width > 0 && t.clientX >= b.left - 12 && t.clientX <= b.right + 12 && t.clientY >= b.top - 12 && t.clientY <= b.bottom + 12;
         };
         if (this.space && this.thrId === null && hit('throttle')) { this.thrId = t.identifier; this.slideThrottle(t.clientY); }
+        else if (hit('chatBtn')) { this.chatToggleReq = true; this.fireIds.add(-1 - t.identifier); }
+        else if (document.getElementById('qc')?.classList.contains('on') && (['up', 'left', 'right', 'down'] as const).some((d) => hit(`qc-${d}`) && (this.chatReq = d))) this.fireIds.add(-1 - t.identifier);
         else if (hit('viewBtn')) { this.viewReq = true; this.fireIds.add(-1 - t.identifier); }
         else if (hit('dartBtn')) { this.dartReq = true; this.fireIds.add(-1 - t.identifier); }
         else if (hit('fire')) {
@@ -406,7 +416,13 @@ export class Input {
       fire ||= rt > 0.3 || !!gp.buttons[2]?.pressed;
       gp.buttons.forEach((b, i) => {
         if (b.pressed && !this.padButtonsPrev[i]) {
-          this.pressed = true; this.state.source = 'gamepad';
+          // the d-pad is quick chat in flight (and menu moves on screens), not "press any button"
+          if (i < 12 || i > 15) this.pressed = true;
+          this.state.source = 'gamepad';
+          if (i === 12) this.chatReq = 'up';
+          if (i === 13) this.chatReq = 'down';
+          if (i === 14) this.chatReq = 'left';
+          if (i === 15) this.chatReq = 'right';
           if (i === 8) this.toggleScheme();
           if (i === 3) this.dartReq = true;
           if (i === 11) this.viewReq = true;
@@ -441,6 +457,8 @@ export class Input {
     this.state.dart = this.dartReq; this.dartReq = false;
     this.state.aimX = clamp(aimX); this.state.aimY = clamp(aimY);
     this.state.nav = this.nav;
+    this.state.chat = this.chatReq; this.chatReq = null;
+    this.state.chatToggle = this.chatToggleReq; this.chatToggleReq = false;
     this.nav = { x: 0, y: 0, ok: false, back: false, menu: false };
     this.state.anyPress = this.pressed;
     this.pressed = false;

@@ -83,6 +83,25 @@
   #board div.teamrow { margin-top: 4px; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; }
   #board div.teamrow i { color: inherit; }
   #feed { top: calc(76px + env(safe-area-inset-top)); left: 16px; font-size: 13px; font-weight: 700; line-height: 1.5; display: none; max-width: 45vw; }
+  /* quick chat: the lines (left, under the kill feed) and the d-pad wheel (left middle) */
+  #chat { top: 38vh; left: 16px; font-size: 14px; font-weight: 700; line-height: 1.55; display: none; max-width: 42vw; }
+  #chat div { animation: chatIn .18s ease-out; }
+  #chat i { opacity: .75; }
+  @keyframes chatIn { from { opacity: 0; transform: translateX(-8px); } }
+  #qc { position: fixed; left: calc(16px + env(safe-area-inset-left)); top: 50%; transform: translateY(-50%); display: none; pointer-events: none;
+    grid-template-columns: repeat(3, auto); grid-template-rows: repeat(3, auto); gap: 4px; align-items: center; justify-items: center;
+    font-size: 13px; font-weight: 800; color: #fff; text-shadow: 0 1px 3px var(--shadow); }
+  #qc.on { display: grid; }
+  #qc .mid { grid-area: 2 / 2; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; opacity: .8; padding: 0 6px; }
+  #qc .qd { padding: 6px 10px; border-radius: 10px; background: rgba(18,38,58,.62); border: 1px solid rgba(255,255,255,.18);
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); white-space: nowrap; display: flex; gap: 6px; align-items: center; }
+  #qc .up { grid-area: 1 / 1 / 2 / 4; } #qc .left { grid-area: 2 / 1; justify-self: end; } #qc .right { grid-area: 2 / 3; justify-self: start; } #qc .down { grid-area: 3 / 1 / 4 / 4; }
+  #qc kbd { font: inherit; font-size: 10px; opacity: .8; } #qc kbd em { font-style: normal; display: none; margin-left: 3px; }
+  body:not(.touch) #qc kbd em { display: inline; }
+  #qc.touch { font-size: 15px; gap: 8px; } #qc.touch .qd { padding: 11px 14px; }
+  #chatBtn { position: fixed; right: 26px; bottom: calc(330px + env(safe-area-inset-bottom)); width: 60px; height: 34px; border-radius: 10px;
+    border: 2px solid rgba(255,255,255,.6); background: rgba(20,40,60,.35); display: none; pointer-events: none;
+    align-items: center; justify-content: center; font-weight: 900; font-size: 12px; letter-spacing: 1px; }
   /* ---------- Overlay: title menu, lobby and crash screens ---------- */
   #overlay { position: fixed; inset: 0; display: flex; align-items: flex-start; justify-content: center; text-align: center; overflow-y: auto;
     padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
@@ -234,6 +253,7 @@
   #throttle.boosting #thrKnob { background: #ffd36a; box-shadow: 0 0 12px rgba(255,190,60,.8); }
   #throttle.drifting #thrKnob { background: #8fc8ff; box-shadow: 0 0 12px rgba(90,170,255,.8); }
   /* ---------- Safe areas: in landscape the notch and the rounded corners sit at the sides ---------- */
+  #chatBtn { margin-right: env(safe-area-inset-right); } #chat { margin-left: env(safe-area-inset-left); }
   #stats, #hp, #darts, #feed, #boost { margin-left: env(safe-area-inset-left); }
   #wave, #board, #radar, #fire, #dartBtn { margin-right: env(safe-area-inset-right); }
   /* ---------- Phone on its side: thumbs at the bottom corners ---------- */
@@ -245,6 +265,7 @@
     #stats { bottom: calc(10px + env(safe-area-inset-bottom)); font-size: 13px; max-width: calc(50vw - 70px); }
     #boost { bottom: calc(58px + env(safe-area-inset-bottom)); } /* above the stats, which can wrap to two lines here */
     /* space: the VIEW button sits beside FIRE so it doesn't cover the radar */
+    #chatBtn { right: 26px; bottom: calc(194px + env(safe-area-inset-bottom)); }
     #viewBtn { left: auto; right: 112px; margin: 0 env(safe-area-inset-right) 0 0; bottom: calc(38px + env(safe-area-inset-bottom)); }
   }
   @media (orientation: landscape) and (max-height: 540px) {
@@ -318,12 +339,15 @@
   <div id="wave" class="hud"></div>
   <div id="board" class="hud"></div>
   <div id="feed" class="hud"></div>
+  <div id="chat" class="hud"></div>
+  <div id="qc"></div>
   <div id="warn" class="hud">▼ ON YOUR TAIL ▼</div>
   <canvas id="radar"></canvas>
   <div id="darts" class="hud"></div>
   <div id="fire">FIRE</div>
   <div id="dartBtn">DART</div>
   <div id="viewBtn">VIEW</div>
+  <div id="chatBtn">CHAT</div>
   <div id="throttle"><b class="up">BOOST</b><i class="notch"></i><div id="thrKnob"></div><b class="dn">DRIFT</b></div>
   <div id="boost" class="hud"><i></i><b>BOOST</b></div>
   <div id="pipper"></div>
