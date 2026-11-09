@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { hash2 } from './noise';
-import { terrainHeight, nearestBranch, gateZ, nearestGateIndex, type Obstacle } from './world';
+import { terrainHeight, nearestBranch, gateZ, nearestGateIndex, getCourse, type Obstacle } from './world';
 import { route, type LiveBranch } from './route';
 
 export type GateType = 'ring' | 'tunnel' | 'needle' | 'arch';
@@ -153,6 +153,7 @@ export class Gates {
   }
 
   update(z: number, t: number) {
+    if (getCourse()) { if (this.active.size) this.reset(); return; } // time trials: no rings or wind tunnels
     const k0 = Math.max(0, nearestGateIndex(z) - 1);
     const k1 = Math.max(0, nearestGateIndex(z - 700));
     for (let k = k0; k <= k1; k++) {
