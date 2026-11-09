@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, ARENAS, ARENA_R, ARENA_LID_R, arenaBarrier, skimAmount, setArena, getArena, SPACE_ARENA, isSpace, setCourse, getCourse, solidClearance, floorBelow, caveShade, type Obstacle } from './world';
+import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, ARENAS, ARENA_R, ARENA_LID_R, arenaBarrier, skimAmount, setArena, getArena, SPACE_ARENA, isSpace, setCourse, getCourse, solidClearance, floorBelow, caveShade, solidCrossed, type Obstacle } from './world';
 import { COURSES, courseById } from './courses';
 import { SpaceScene, buildField, holeThreaded, fleet, clearSpawnY, spaceEdge, grabPickup, boostPickups, SPACE_R, SPACE_CRUISE, SPACE_BOOST, PICKUP_FUEL } from './space';
 import { ShipMesh, type Craft } from './ship';
@@ -16,6 +16,7 @@ import { cleanCode, hasRoomBrowser, listRooms, type RoomInfo } from './net';
 import { DownCam, type Tracked } from './downcam';
 import { RaceRun, Ghost, GhostData, boardKey, sectionName, fmtTime, fmtDelta, fetchBoard, fetchGhost, submitRun, localBest, myPid, hasGlobalBoard, type Board, type BoardEntry } from './race';
 import type { CourseDef } from './course';
+import { buildMap, guessSpec, checkSpec, filesFor, mapId, listMaps, saveMap, deleteMap, ACCEPT, BIOMES, LIMITS, type MapFile, type MapSpec, type StoredMap } from './mapimport';
 import { sfx } from './spacefx';
 import { QuickChat, lineText, botReply, BOT_NAMES, OOPS, BANTER } from './quickchat';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
@@ -295,7 +296,7 @@ const settings = { mode: 'endless' as GameMode, env: ARENAS.length /* = random *
   /* replay when you go down: 'shot' = shot down (or chased into the ground), 'all' = every crash too, 'off' */ downcam: 'shot' as DownCamSetting,
   /* camera: behind you, or first person */ view: 'chase' as ViewSetting,
   /* phones: steer by tilting */ tilt: false,
-  /* race: which course */ course: 0,
+  /* race: which course */ course: 0, /* (or one of your imported maps, by id) */ mapId: '',
   /* arena + online: first to this many kills wins (0 = no limit, -1 = custom, which uses winN) */ winAt: 0, winN: 15 };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('glide.settings') || '{}')); } catch { /* storage unavailable */ }
 settings.env = THREE.MathUtils.clamp(Math.round(settings.env) || 0, 0, SPACE_ENV);
@@ -327,7 +328,7 @@ loadBest();
 /** The arena chosen for this match ("random" rolls one per match). */
 let arenaIdx = 0;
 
-const MENU_ROWS = ['mode', 'course', 'board', 'env', 'enemies', 'bots', 'allies', 'team', 'winAt', 'winN', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'tilt', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
+const MENU_ROWS = ['mode', 'course', 'import', 'board', 'env', 'enemies', 'bots', 'allies', 'team', 'winAt', 'winN', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'tilt', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
 const GO_ROW = MENU_ROWS.indexOf('go');
 let menuRow = inviteCode ? MENU_ROWS.indexOf('join') : GO_ROW;
 /** On a phone the Steering row (thumbs or tilt) follows Camera. */
@@ -341,7 +342,7 @@ function baseRows(): readonly string[] {
     ? (online.isHost && online.phase === 'lobby' ? [...(browser ? ['vis'] : []), 'env', 'bots', 'allies', ...(settings.allies ? ['team'] : []), ...winRows(), 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go']
       : online.phase === 'lobby' ? [...(online.teams ? ['team'] : []), 'lead', 'downcam', 'view'] : [])
     : ['mode', ...(browser && openRooms.length ? ['rooms'] : []), 'join', ...(browser ? ['vis'] : []), 'host', 'lead', 'downcam', 'view', 'help'];
-  if (settings.mode === 'race') return ['mode', 'course', 'board', 'view', 'go', 'help'];
+  if (settings.mode === 'race') return ['mode', 'course', 'import', 'board', 'view', 'go', 'help'];
   return settings.mode === 'arena' ? ['mode', 'env', 'enemies', ...winRows(), 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
     : settings.mode === 'space' ? ['mode', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
     : ['mode', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help'];
@@ -595,7 +596,7 @@ function menuChange(row: string, d: number) {
     const m = MODES[THREE.MathUtils.clamp(MODES.indexOf(settings.mode) + d, 0, MODES.length - 1)];
     if (m !== settings.mode) { const was = worldKind(settings.mode), now = worldKind(m); settings.mode = m; loadBest(); if (was !== now) queuePreview(); showControlsSafe(); }
   }
-  else if (row === 'course') { settings.course = (settings.course + d + COURSES.length) % COURSES.length; boardSel = 0; refreshBoard(); queuePreview(); }
+  else if (row === 'course') { stepCourse(d); boardSel = 0; refreshBoard(); queuePreview(); }
   else if (row === 'board') { const n = boardItems().length; if (n) boardSel = (boardSel + d + n) % n; }
   else if (row === 'bots') settings.bots = THREE.MathUtils.clamp(settings.bots + d, 0, 12);
   else if (row === 'allies') { settings.allies = !settings.allies; online.setTeams(settings.allies); }
@@ -638,6 +639,8 @@ function menuAct(target: HTMLElement) {
   if (!act) return;
   audio.start();
   const [k, v] = act.split(':');
+  if (k === 'mapimport') { menuRow = MENU_ROWS.indexOf('import'); pickMapFiles(); return; }
+  if (k === 'mapremove') { menuRow = MENU_ROWS.indexOf('import'); removeMap(); return; }
   if (['go', 'host', 'join', 'joinroom'].includes(k)) goLandscape();
   if (k === 'joinroom') { settings.code = cleanCode(v); onlineAction('join'); return; }
   if (k === 'ghost') { menuRow = MENU_ROWS.indexOf('board'); boardSel = Math.max(0, boardItems().findIndex((e) => e.pid === v)); toggleGhost(v); return; }
@@ -1154,10 +1157,148 @@ function onDogfight(ev: DogfightEvent) {
 // at every gate. A crash sends you back to the top; the left stick click (or Backspace) restarts any time.
 // The stopwatch is green while you're ahead of the reference run (the ghost you picked, or else the record)
 // and red while you're behind it.
-const course = () => COURSES[THREE.MathUtils.clamp(settings.course | 0, 0, COURSES.length - 1)];
+const builtIn = () => COURSES[THREE.MathUtils.clamp(settings.course | 0, 0, COURSES.length - 1)];
+/** The course picked in the menu: a built-in one, or one of your imported maps once it's built. */
+const course = (): CourseDef => (settings.mapId && userMaps.find((m) => m.stored.id === settings.mapId)?.def) || builtIn();
 settings.course = THREE.MathUtils.clamp(Math.round(settings.course) || 0, 0, COURSES.length - 1);
 // (dev / sharing: ?course=<id> opens straight onto that course in Race mode)
-{ const dev = courseById(new URLSearchParams(location.search).get('course') ?? ''); if (dev) { settings.mode = 'race'; settings.course = COURSES.indexOf(dev); } }
+{ const dev = courseById(new URLSearchParams(location.search).get('course') ?? ''); if (dev) { settings.mode = 'race'; settings.course = COURSES.indexOf(dev); settings.mapId = ''; } }
+
+// ---------- Your own maps: imported heightmaps and models, kept on this device ----------
+const userMaps: { stored: StoredMap; def: CourseDef | null; building: Promise<void> | null; error: string }[] = [];
+const pickedMap = () => (settings.mapId ? userMaps.find((m) => m.stored.id === settings.mapId) ?? null : null);
+/** Is the picked map still being built (so the menu shouldn't start a race on the fallback course)? */
+const mapPending = () => { const m = pickedMap(); return !!m && !m.def; };
+function ensureBuilt(m: typeof userMaps[number]): Promise<void> {
+  if (m.def || m.error) return Promise.resolve();
+  if (!m.building) m.building = buildMap(m.stored).then((d) => { m.def = d; }, (e) => { m.error = (e as Error).message || 'Couldn\'t build this map.'; })
+    .finally(() => { m.building = null; if (m.stored.id === settings.mapId) { refreshBoard(); queuePreview(); } if (mode === 'title' && racing()) renderMenu(); });
+  return m.building;
+}
+function stepCourse(d: number) {
+  const n = COURSES.length + userMaps.length;
+  let i = settings.mapId ? COURSES.length + userMaps.findIndex((m) => m.stored.id === settings.mapId) : settings.course;
+  if (i < 0) i = 0;
+  i = (i + d + n) % n;
+  if (i < COURSES.length) { settings.course = i; settings.mapId = ''; }
+  else { const m = userMaps[i - COURSES.length]; settings.mapId = m.stored.id; ensureBuilt(m); }
+}
+listMaps().then((list) => {
+  for (const stored of list) userMaps.push({ stored, def: null, building: null, error: '' });
+  const m = pickedMap();
+  if (settings.mapId && !m) settings.mapId = '';
+  if (m) ensureBuilt(m);
+  if (mode === 'title' && racing()) renderMenu();
+});
+const mapInput = document.createElement('input');
+mapInput.type = 'file'; mapInput.multiple = true; mapInput.accept = ACCEPT; mapInput.style.display = 'none';
+document.body.appendChild(mapInput);
+mapInput.addEventListener('change', () => { const f = [...(mapInput.files ?? [])]; mapInput.value = ''; if (f.length) openImporter(f); });
+function pickMapFiles() { mapInput.click(); }
+async function removeMap() {
+  const m = pickedMap();
+  if (!m || !confirm(`Remove "${m.stored.spec.name}" from this device? Your best time on it goes too.`)) return;
+  await deleteMap(m.stored.id).catch(() => {});
+  try { localStorage.removeItem(`glide.race.${m.def ? boardKey(m.def) : `map-${m.stored.id}-v1`}`); } catch { /* storage off */ }
+  userMaps.splice(userMaps.indexOf(m), 1);
+  settings.mapId = ''; saveSettings(); refreshBoard(); queuePreview(); renderMenu();
+}
+// drop files anywhere on the title screen to import them
+addEventListener('dragover', (e) => { if (mode === 'title') e.preventDefault(); });
+addEventListener('drop', (e) => {
+  if (mode !== 'title') return;
+  e.preventDefault();
+  const f = [...(e.dataTransfer?.files ?? [])];
+  if (f.length) openImporter(f);
+});
+
+/** The import card: what was picked, a few settings (size, height range, scale), then build it and race. */
+let importer: { files: MapFile[]; spec: MapSpec; busy: boolean; error: string } | null = null;
+const importEl = document.createElement('div');
+importEl.id = 'importer';
+document.body.appendChild(importEl);
+async function openImporter(list: File[]) {
+  if (settings.mode !== 'race') { settings.mode = 'race'; loadBest(); queuePreview(); renderMenu(); }
+  const files: MapFile[] = [];
+  for (const f of list) files.push({ name: f.name, data: await f.arrayBuffer() });
+  importer = { files, spec: null!, busy: false, error: '' };
+  try { importer.spec = guessSpec(files); filesFor(importer.spec, files); }
+  catch (e) { importer.error = (e as Error).message; }
+  renderImporter();
+}
+function closeImporter() { importer = null; importEl.classList.remove('on'); importEl.innerHTML = ''; }
+function renderImporter() {
+  if (!importer) return closeImporter();
+  const { spec, files, error, busy } = importer;
+  const names = files.map((f) => `${esc(f.name)} <i>${(f.data.byteLength / 1e6).toFixed(1)} MB</i>`).join('<br>');
+  const t = spec?.terrain as (MapSpec['terrain'] & Record<string, any>) | undefined;
+  const fromJson = files.some((f) => /\.json$/i.test(f.name));
+  const num = (id: string, label: string, small: string, v: number) =>
+    `<div class="opt"><label class="lab" for="${id}">${label}<small>${small}</small></label><span class="ctl"><input id="${id}" type="number" inputmode="decimal" value="${v}"></span></div>`;
+  let fields = '';
+  if (spec && !fromJson) {
+    if (t && 'heightmap' in t) {
+      const size = Array.isArray(t.size) ? t.size[0] : t.size ?? 3000, h = Array.isArray(t.height) ? t.height : [0, t.height ?? 700];
+      fields = num('impW', 'Width', 'metres across (a 2 min run is about 5 km)', size) + num('impLo', 'Lowest point', 'metres (black)', h[0]) + num('impHi', 'Highest point', 'metres (white)', h[1]);
+    } else if (t) fields = num('impS', 'Scale', 'metres per model unit (Blender: 1)', t.scale ?? 1) + num('impR', 'Turn', 'degrees, so the run goes your way', t.rotate ?? 0);
+  }
+  const biome = spec ? `<div class="opt"><label class="lab" for="impB">Look<small>trees, rock and sky</small></label><span class="ctl"><select id="impB">${BIOMES.map((b) => `<option${b === spec.biome ? ' selected' : ''}>${b}</option>`).join('')}</select></span></div>` : '';
+  importEl.innerHTML = `<div class="menu"><div class="panel">
+    <h1>Import a map</h1>
+    <p class="blurb small">${names}</p>
+    ${spec ? `<div class="opt"><label class="lab" for="impN">Name</label><span class="ctl"><input id="impN" maxlength="40" value="${esc(spec.name)}" autocomplete="off" spellcheck="false"></span></div>${fields}${biome}` : ''}
+    ${spec && !fromJson && !(t && 'model' in t) ? '<p class="blurb small">No start or finish given, so the race runs from the highest point to the lowest. Add a map .json to place your own.</p>' : ''}
+    ${spec && t && 'model' in t ? '<p class="blurb small">Empties named START, SPLIT1, SPLIT2… and FINISH place the timing lines (otherwise it runs from the highest point to the lowest). TREE, ROCK and PILLAR empties place obstacles.</p>' : ''}
+    ${error ? `<p class="note">${esc(error)}</p>` : ''}
+    <div class="btns">${spec ? `<button data-imp="go" class="go-btn cta"${busy ? ' disabled' : ''}>${busy ? 'Building…' : 'Import and race'}</button>` : ''}<button data-imp="cancel">Cancel</button></div>
+    <p class="blurb small">Heightmaps: PNG (8 or 16-bit), JPG, WebP, RAW (.r16). Models: GLB, glTF, OBJ. Up to ${LIMITS.fileMB} MB a file.</p>
+  </div></div>`;
+  importEl.classList.add('on');
+}
+importEl.addEventListener('click', (e) => {
+  const b = (e.target as HTMLElement).closest('[data-imp]')?.getAttribute('data-imp');
+  if (b === 'cancel') closeImporter();
+  else if (b === 'go') importMap();
+});
+importEl.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeImporter(); e.stopPropagation(); });
+async function importMap() {
+  const im = importer;
+  if (!im?.spec || im.busy) return;
+  const val = (id: string) => { const el = document.getElementById(id) as HTMLInputElement | null; const v = el ? parseFloat(el.value) : NaN; return Number.isFinite(v) ? v : undefined; };
+  const name = (document.getElementById('impN') as HTMLInputElement | null)?.value.trim();
+  const biome = (document.getElementById('impB') as HTMLSelectElement | null)?.value;
+  const raw = JSON.parse(JSON.stringify(im.spec)) as MapSpec & { terrain: Record<string, any> };
+  if (name) raw.name = name;
+  if (biome) raw.biome = biome as MapSpec['biome'];
+  if ('heightmap' in raw.terrain) {
+    const w = val('impW'), lo = val('impLo'), hi = val('impHi');
+    if (w !== undefined) raw.terrain.size = w;
+    if (lo !== undefined || hi !== undefined) raw.terrain.height = [lo ?? 0, Math.max((lo ?? 0) + 1, hi ?? 700)];
+  } else {
+    const sc = val('impS'), r = val('impR');
+    if (sc !== undefined) raw.terrain.scale = sc;
+    if (r !== undefined) raw.terrain.rotate = r;
+  }
+  im.busy = true; im.error = ''; renderImporter();
+  try {
+    if (userMaps.length >= LIMITS.maps) throw new Error(`You have ${LIMITS.maps} maps on this device. Remove one first.`);
+    const spec = checkSpec(raw);
+    const files = filesFor(spec, im.files);
+    const id = await mapId(spec, files);
+    const stored: StoredMap = { id, spec, files, at: Date.now() };
+    const def = await buildMap(stored);
+    await saveMap(stored).catch(() => { throw new Error('Couldn\'t save the map on this device (storage full or private browsing?).'); });
+    const old = userMaps.findIndex((m) => m.stored.id === id);
+    const entry = { stored, def, building: null, error: '' };
+    if (old >= 0) userMaps[old] = entry; else userMaps.push(entry);
+    settings.mapId = id; saveSettings();
+    if (importer === im) closeImporter();
+    boardSel = 0; menuRow = GO_ROW; refreshBoard(); queuePreview(); renderMenu();
+  } catch (e) {
+    im.busy = false; im.error = (e as Error).message || String(e);
+    if (importer === im) renderImporter();
+  }
+}
 const racing = () => settings.mode === 'race';
 function enterCourse(c: CourseDef) {
   setArena(null); setCourse(c); applyLook();
@@ -1244,7 +1385,7 @@ function finishRace() {
     <p class="score"><b>${fmtTime(ms)}</b><span>${esc(c.name)}</span></p>
     ${d !== null ? `<p class="${d < 0 ? 'ahead' : 'behind'}">${fmtDelta(d)} vs ${ref!.mine ? 'your best' : esc(ref!.name)}</p>` : ''}
     <table class="splits">${rows}</table>
-    <p id="raceRank" class="best">${hasGlobalBoard() ? 'Sending your time…' : pb ? 'Saved on this device' : `Your best: ${fmtTime(prev!.ms)}`}</p>
+    <p id="raceRank" class="best">${hasGlobalBoard() && !c.local ? 'Sending your time…' : pb ? 'Saved on this device' : `Your best: ${fmtTime(prev!.ms)}`}</p>
     <div class="go">${isTouch ? 'Tap to race again' : 'Any key or button to race again'}</div>
     <div class="btns"><button data-act="menu">${isTouch ? 'Menu' : 'Menu (Esc / B)'}</button></div></div></div>`;
   hud.overlay.classList.remove('hidden');
@@ -1253,7 +1394,7 @@ function finishRace() {
     const el = document.getElementById('raceRank');
     if (r.rank) {
       if (el) el.textContent = r.best ? `#${r.rank} of ${r.total} on the board` : `Your best is #${r.rank} of ${r.total}`;
-    } else if (el && hasGlobalBoard()) el.textContent = r.error === 'offline' ? 'Couldn\'t reach the board (saved on this device)' : `The board didn't take this run (${r.error ?? 'error'})`;
+    } else if (el && hasGlobalBoard() && !c.local) el.textContent = r.error === 'offline' ? 'Couldn\'t reach the board (saved on this device)' : `The board didn't take this run (${r.error ?? 'error'})`;
     boards.delete(boardKey(c)); // the menu fetches it fresh
   });
 }
@@ -1267,7 +1408,7 @@ async function refreshBoard() {
   const key = boardKey(course());
   const cur = boards.get(key);
   if (cur?.state === 'loading') return;
-  if (!hasGlobalBoard()) { boards.set(key, { state: 'ok', board: null }); return; }
+  if (!hasGlobalBoard() || course().local) { boards.set(key, { state: 'ok', board: null }); return; }
   boards.set(key, { state: 'loading', board: cur?.board ?? null });
   try { boards.set(key, { state: 'ok', board: await fetchBoard(key) }); }
   catch { boards.set(key, { state: 'error', board: cur?.board ?? null }); }
@@ -1302,12 +1443,17 @@ function renderRaceMenu() {
       <b><i>${e.rank ? `#${e.rank}` : ''}</i>${esc(e.name)}${e.mine ? ' <em>you</em>' : ''}</b><span>${fmtTime(e.ms)}${pick === e.pid ? ' · ghost' : ''}</span></button>`).join('')
     : `<p class="blurb small">${st?.state === 'loading' ? 'Loading the top times…' : st?.state === 'error' ? 'Couldn\'t load the leaderboard.' : 'No times yet. Set the first one!'}</p>`;
   const pickName = pick ? items.find((e) => e.pid === pick)?.name : '';
+  const pm = pickedMap();
+  const cName = pm && !pm.def ? esc(pm.stored.spec.name) : esc(c.name);
+  const cBlurb = pm && !pm.def ? (pm.error ? `Couldn't build it: ${esc(pm.error)}` : 'Building your map…') : esc(c.blurb) + (c.local ? ' · on this device' : '');
+  const importRow = `<div class="opt${sel('import')}"><span class="lab">Your maps<small>${userMaps.length ? `${userMaps.length} on this device · ` : ''}heightmap or 3D model${isTouch ? '' : ', or drop files here'}</small></span>
+    <span class="ctl"><button class="txt" data-act="mapimport">Import…</button>${pm ? '<button class="txt" data-act="mapremove">Remove</button>' : ''}</span></div>`;
   const head = `${modeRow(sel('mode'))}<p class="blurb">${MODE_BLURB.race}</p>
-    ${pickRow(sel('course'), 'course', 'Course', esc(c.name), esc(c.blurb))}
+    ${pickRow(sel('course'), 'course', 'Course', cName, cBlurb)}${importRow}
     <div class="opt"><label class="lab" for="nameIn">Your name<small>shown on the leaderboard</small></label><span class="ctl"><input id="nameIn" maxlength="16" placeholder="Bird" value="${esc(settings.name)}" autocomplete="off" spellcheck="false"></span></div>`;
-  const board = `${sect(hasGlobalBoard() ? 'Top times · pick one to race its ghost' : 'Your best · pick it to race your ghost')}
+  const board = `${sect(hasGlobalBoard() && !c.local ? 'Top times · pick one to race its ghost' : 'Your best · pick it to race your ghost')}
     <div class="rooms board${sel('board')}" id="boardList">${list}</div>
-    ${!hasGlobalBoard() ? '<p class="blurb small">The global leaderboard is on the online version of the game.</p>' : ''}
+    ${c.local ? '<p class="blurb small">Times on your own maps stay on this device.</p>' : !hasGlobalBoard() ? '<p class="blurb small">The global leaderboard is on the online version of the game.</p>' : ''}
     ${raceNote ? `<p class="note">${esc(raceNote)}</p>` : ''}`;
   const cta = `<button data-act="go" class="go-btn cta${sel('go')}">${pickName ? `Race ${esc(pickName)}'s ghost` : 'Race!'}</button>`;
   const restartHint = isTouch ? 'Tap RESTART to start over' : 'Left stick click / Backspace restarts';
@@ -1779,6 +1925,8 @@ function frame(now: number) {
     else if (nav.back) pauseBack();
     else if (nav.ok) pauseAct(pauseSel);
     if (mode === 'crashed' && online.phase === 'playing' && !downcam.playing && crashTimer > respawnAt) respawnOnline();
+  } else if (importer) {
+    if (nav.back || nav.menu) closeImporter();
   } else if (mode === 'title') {
     const rows = menuRows() as readonly string[];
     if (nav.y) {
@@ -1794,6 +1942,10 @@ function frame(now: number) {
       if (nav.ok && rows.includes(row) && ['host', 'join', 'go'].includes(row)) onlineAction(row);
       if (nav.ok && row === 'rooms' && openRooms[roomSel] && openRooms[roomSel].players < openRooms[roomSel].max) { settings.code = openRooms[roomSel].code; onlineAction('join'); }
       if (nav.back && online.active) { if (lobbyLeaveNeedsConfirm()) openPause('confirm', true); else onlineAction('leave'); }
+    } else if (settings.mode === 'race' && nav.ok && MENU_ROWS[menuRow] === 'import' && !startReq) {
+      pickMapFiles();
+    } else if (settings.mode === 'race' && mapPending() && (startReq || nav.ok)) {
+      startReq = false; // still building your map
     } else if (settings.mode === 'race' && nav.ok && MENU_ROWS[menuRow] === 'board' && !startReq) {
       const it = boardItems()[boardSel];
       if (it) toggleGhost(it.pid);
@@ -1891,7 +2043,7 @@ function frame(now: number) {
     const p = glider.pos;
     const ground = floorBelow(p.x, p.y, p.z); // (cave-aware on a time trial course)
     clearance = p.y - ground;
-    if (getCourse() ? solidClearance(p.x, p.y, p.z) < 0.45 : clearance < 0.45) { if (clearance < 0.45) p.y = ground + 0.45; crash(); }
+    if (getCourse() ? solidClearance(p.x, p.y, p.z) < 0.45 || solidCrossed(prevPos, p) : clearance < 0.45) { if (clearance < 0.45) p.y = ground + 0.45; crash(); }
     if (racing() && mode === 'flying') stepRace(dt);
     const crunch = isSpace() ? 'Kaboom!' : 'Crunch!';
 

@@ -19,6 +19,8 @@ export interface CourseDef {
   finish: Gate;
   /** Names for the sections between gates (splits.length + 1 of them). */
   sections?: string[];
+  /** a map from this device: its times stay on this device */
+  local?: boolean;
 }
 
 /** Leaderboard key: a course's times only count against the same version of its geometry. */
@@ -278,7 +280,7 @@ export async function submitRun(course: CourseDef, run: RaceRun, name: string): 
     ghostCache.set(`${key}/${await myPid()}`, ghost);
   }
   const base = httpBase();
-  if (!base) return { best };
+  if (!base || course.local) return { best }; // (your own maps keep their times on this device)
   try {
     const r = await fetch(`${base}/race/${key}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
