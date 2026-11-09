@@ -21,6 +21,8 @@ export interface InputState {
   chat: 'up' | 'left' | 'right' | 'down' | null;
   /** Touch: the CHAT button was tapped (opens / closes the wheel). */
   chatToggle: boolean;
+  /** Edge-triggered: restart the race (left stick click, Backspace, touch RESTART). */
+  restart: boolean;
 }
 
 const DEAD = 0.15;
@@ -32,7 +34,7 @@ export type PadScheme = 'flight' | 'classic' | 'wings';
 const SCHEMES: PadScheme[] = ['flight', 'classic', 'wings'];
 
 export class Input {
-  state: InputState = { pitch: 0, roll: 0, yaw: 0, rollRate: true, brake: 0, boost: 0, view: false, tuck: 0, fire: false, dart: false, aimX: 0, aimY: 0, anyPress: false, trick: null, source: 'keyboard', nav: { x: 0, y: 0, ok: false, back: false, menu: false }, chat: null, chatToggle: false };
+  state: InputState = { pitch: 0, roll: 0, yaw: 0, rollRate: true, brake: 0, boost: 0, view: false, tuck: 0, fire: false, dart: false, aimX: 0, aimY: 0, anyPress: false, trick: null, source: 'keyboard', nav: { x: 0, y: 0, ok: false, back: false, menu: false }, chat: null, chatToggle: false, restart: false };
   private nav = { x: 0, y: 0, ok: false, back: false, menu: false };
   private stickNav = { x: 0, y: 0 };
   private trick: InputState['trick'] = null;
@@ -51,6 +53,7 @@ export class Input {
   private mouseFire = false;
   private dartReq = false;
   private viewReq = false;
+  private restartReq = false;
   private chatReq: InputState['chat'] = null;
   private chatToggleReq = false;
   /** Space fighter controls: Shift boosts instead of braking, and the right stick (or right thumb)
@@ -117,6 +120,7 @@ export class Input {
         if (e.code === 'KeyV') this.toggleScheme();
         if (e.code === 'KeyR') this.dartReq = true;
         if (e.code === 'KeyT') this.viewReq = true;
+        if (e.code === 'Backspace') this.restartReq = true;
         const c = e.code;
         if (c === 'ArrowLeft' || c === 'KeyA') this.nav.x = -1;
         if (c === 'ArrowRight' || c === 'KeyD') this.nav.x = 1;
@@ -156,6 +160,7 @@ export class Input {
         if (this.space && this.thrId === null && hit('throttle')) { this.thrId = t.identifier; this.slideThrottle(t.clientY); }
         else if (hit('chatBtn')) { this.chatToggleReq = true; this.fireIds.add(-1 - t.identifier); }
         else if (document.getElementById('qc')?.classList.contains('on') && (['up', 'left', 'right', 'down'] as const).some((d) => hit(`qc-${d}`) && (this.chatReq = d))) this.fireIds.add(-1 - t.identifier);
+        else if (hit('restartBtn')) { this.restartReq = true; this.fireIds.add(-1 - t.identifier); }
         else if (hit('viewBtn')) { this.viewReq = true; this.fireIds.add(-1 - t.identifier); }
         else if (hit('dartBtn')) { this.dartReq = true; this.fireIds.add(-1 - t.identifier); }
         else if (hit('fire')) {
@@ -426,6 +431,7 @@ export class Input {
           if (i === 8) this.toggleScheme();
           if (i === 3) this.dartReq = true;
           if (i === 11) this.viewReq = true;
+          if (i === 10) this.restartReq = true; // left stick click
           if (i === 14) this.nav.x = -1;
           if (i === 15) this.nav.x = 1;
           if (i === 12) this.nav.y = -1;
@@ -453,6 +459,7 @@ export class Input {
     this.state.brake = Math.min(1, brake);
     this.state.boost = Math.min(1, boost);
     this.state.view = this.viewReq; this.viewReq = false;
+    this.state.restart = this.restartReq; this.restartReq = false;
     this.state.fire = fire;
     this.state.dart = this.dartReq; this.dartReq = false;
     this.state.aimX = clamp(aimX); this.state.aimY = clamp(aimY);

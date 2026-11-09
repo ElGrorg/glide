@@ -7,6 +7,8 @@ One Cloudflare Worker does everything:
 
 A third piece, the **Lobby** Durable Object, keeps the list of public rooms for the in-game room browser (`GET /rooms`). Rooms report their player count to it when it changes and every 2 minutes while open; a room it hasn't heard from in 5 minutes drops off. Private rooms are never listed.
 
+A fourth piece, the **Leaderboard** Durable Object (one per race course), keeps the time trial boards: each racer's best time, splits and ghost (`GET /race/<course>/top`, `GET /race/<course>/ghost/<id>`, `POST /race/<course>`). It's declared in `wrangler.toml` (binding `BOARDS`, migration `v3`), so the next deploy creates it: nothing to set up in the dashboard. Only the Cloudflare build has the global board; other builds keep your own best on the device.
+
 The game knows which mode to use from how it was built:
 
 | Build | Online play goes through |

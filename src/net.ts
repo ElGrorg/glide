@@ -69,6 +69,8 @@ export async function listRooms(): Promise<RoomInfo[]> {
   return r.json();
 }
 export const hasRoomBrowser = () => !!relayBase();
+/** The game server's http(s) address (Cloudflare build only), or '' when there's none (race leaderboards). */
+export const serverBase = () => relayBase().replace(/^ws/, 'http');
 
 export class Net {
   peer: Peer | null = null;

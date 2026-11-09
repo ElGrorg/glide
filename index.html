@@ -353,6 +353,28 @@
   #stick { position: fixed; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%; border: 2px solid rgba(255,255,255,.6);
     background: rgba(255,255,255,.12); display: none; pointer-events: none; }
   #knob { position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.7); }
+  /* time trial: stopwatch top right (green ahead of the reference run, red behind), splits under it */
+  #race { top: calc(10px + env(safe-area-inset-top)); right: 16px; text-align: right; display: none; margin-right: env(safe-area-inset-right); min-width: 210px; }
+  #race .watch { display: block; font-size: 40px; font-weight: 900; font-variant-numeric: tabular-nums; letter-spacing: 1px; line-height: 1.05; }
+  #race .ahead, .panel .ahead { color: #5dff8a; } #race .behind, .panel .behind { color: #ff6a5a; }
+  #race small { display: block; font-size: 13px; font-weight: 700; opacity: .9; margin-bottom: 6px; }
+  #race small em { font-style: normal; font-weight: 900; }
+  #race .splits div { display: flex; gap: 10px; justify-content: flex-end; font-size: 13px; font-weight: 700; opacity: .45; font-variant-numeric: tabular-nums; }
+  #race .splits div.done { opacity: .95; } #race .splits div.cur { opacity: .8; }
+  #race .splits div.flash { animation: splitflash .5s ease-out 3; }
+  #race .splits i { font-style: normal; min-width: 54px; } #race .splits i:last-child { min-width: 46px; }
+  @keyframes splitflash { 0% { transform: scale(1.12); } 100% { transform: scale(1); } }
+  #ghostTag { position: fixed; left: 0; top: 0; font-size: 12px; font-weight: 800; color: #bfe8ff; pointer-events: none; white-space: nowrap; display: none; text-shadow: 0 1px 4px var(--shadow); }
+  #restartBtn { position: fixed; left: 50%; margin-left: 36px; bottom: calc(14px + env(safe-area-inset-bottom)); width: 78px; height: 36px; border-radius: 10px;
+    border: 2px solid rgba(255,255,255,.6); background: rgba(20,40,60,.35); display: none; pointer-events: none;
+    align-items: center; justify-content: center; font-weight: 900; font-size: 12px; letter-spacing: 1px; }
+  .panel table.splits { margin: 6px auto 4px; border-collapse: collapse; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .panel table.splits td { padding: 2px 8px; text-align: right; } .panel table.splits td:first-child { text-align: left; opacity: .85; }
+  #overlay .rooms button.racer { flex-direction: row; justify-content: space-between; align-items: center; }
+  #overlay .rooms button.racer b i { font-style: normal; opacity: .65; margin-right: 8px; display: inline-block; min-width: 26px; }
+  #overlay .rooms button.racer b em { font-style: normal; font-size: 12px; opacity: .7; }
+  #overlay .rooms button.racer.picked { border-color: #bfe8ff; background: rgba(191,232,255,.18); }
+  .rooms.board.sel { box-shadow: 0 0 0 2px var(--accent); }
 </style>
 </head>
 <body>
@@ -374,6 +396,9 @@
   <div id="fire">FIRE</div>
   <div id="dartBtn">DART</div>
   <div id="viewBtn">VIEW</div>
+  <div id="restartBtn">RESTART</div>
+  <div id="race" class="hud"></div>
+  <div id="ghostTag"></div>
   <div id="chatBtn">CHAT</div>
   <div id="throttle"><b class="up">BOOST</b><i class="notch"></i><div id="thrKnob"></div><b class="dn">DRIFT</b></div>
   <div id="boost" class="hud"><i></i><b>BOOST</b></div>
