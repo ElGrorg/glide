@@ -68,6 +68,7 @@ export function setCourse(def: CourseDef | null) {
   if (def) arena = null;
   lockWorldSeed(def ? def.seed : null);
   course = def ? new Course(def) : null;
+  placePlaced(def);
   courseSceneStale = true;
 }
 export function getCourse() { return course; }
@@ -78,6 +79,46 @@ export function solidClearance(x: number, y: number, z: number): number {
 /** Height of the ground under a point: a cave's floor when inside one, otherwise the terrain. */
 export function floorBelow(x: number, y: number, z: number): number {
   return course ? course.floorBelow(x, y, z) : terrainHeight(x, z);
+}
+/** Did the bird pass through a surface between two frames? (an imported model's thin walls) */
+export function solidCrossed(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): boolean {
+  const t = course?.def.terrain;
+  return !!t?.crossed && t.crossed(a.x, a.y, a.z, b.x, b.y, b.z);
+}
+
+// ---------- Hand-placed trees, boulders and pillars (imported maps) ----------
+const PLACED_CELL = 40;
+const placedGrid = new Map<number, Obstacle[]>();
+const pkey = (ix: number, iz: number) => (ix + 32768) * 65536 + (iz + 32768);
+function placePlaced(def: CourseDef | null) {
+  placedGrid.clear();
+  if (!def?.objects || !course) return;
+  const c = course;
+  def.objects.forEach((od, i) => {
+    const y0 = od.y !== undefined ? c.floorBelow(od.x, od.y + 1, od.z) : c.height(od.x, od.z);
+    const tint = hash2(i, 91, 7);
+    let o: Obstacle;
+    if (od.type === 'tree') {
+      const kind = TREE_KIND[def.biome], shape = TREE_SHAPE[kind];
+      const scale = od.h ? od.h / shape.h : od.r ? od.r / shape.r : 1 + tint * 1.2;
+      o = { id: `p${i}`, type: 'tree', x: od.x, z: od.z, y0: y0 - 0.8, top: y0 + shape.h * scale - 0.8, r: shape.r * scale, scale, tint, kind, biome: def.biome };
+    } else if (od.type === 'spire') {
+      const r = od.r ?? 6, h = od.h ?? 45;
+      o = { id: `p${i}`, type: 'spire', x: od.x, z: od.z, y0: y0 - 3, top: y0 + h, r, scale: r / 6, tint, biome: def.biome };
+    } else {
+      const r = od.r ?? 4;
+      o = { id: `p${i}`, type: 'rock', x: od.x, z: od.z, y0: y0 + r * 0.25, top: y0 + r * 1.2, r, scale: r, tint, biome: def.biome };
+    }
+    const k = pkey(Math.floor(od.x / PLACED_CELL), Math.floor(od.z / PLACED_CELL));
+    let a = placedGrid.get(k); if (!a) placedGrid.set(k, a = []); a.push(o);
+  });
+}
+function placedNear(x: number, z: number, radius: number, out: Obstacle[]) {
+  if (!placedGrid.size) return;
+  const m = radius + 15;
+  for (let ix = Math.floor((x - m) / PLACED_CELL); ix <= Math.floor((x + m) / PLACED_CELL); ix++)
+    for (let iz = Math.floor((z - m) / PLACED_CELL); iz <= Math.floor((z + m) / PLACED_CELL); iz++)
+      for (const o of placedGrid.get(pkey(ix, iz)) ?? []) out.push(o);
 }
 /** 0..1 along the loaded course's main line (0 when no course). */
 export function courseProgress(x: number, z: number): number { return course ? course.progress(x, z) : 0; }
@@ -355,7 +396,7 @@ function forestDensity(x: number, z: number): number {
 export function treeAt(ix: number, iz: number): Obstacle | null {
   const x = (ix + 0.15 + hash2(ix, iz, 1) * 0.7) * TREE_CELL;
   const z = (iz + 0.15 + hash2(ix, iz, 2) * 0.7) * TREE_CELL;
-  const biome = biomeAt(x, z, hash2(ix, iz, 6));
+  const biome = course?.def.terrain ? course.def.biome : biomeAt(x, z, hash2(ix, iz, 6));
   const dens = biome === 'desert' ? 0.3 : forestDensity(x, z);
   const roll = hash2(ix, iz, 3);
   if (roll > dens * (arena ? arena.trees : course ? course.def.look.trees * TREE_DENSITY[biome] * 1.5 : TREE_DENSITY[biome])) return null;
@@ -379,7 +420,7 @@ export function rockAt(ix: number, iz: number): Obstacle | null {
   const roll = hash2(ix, iz, 11);
   const x = (ix + 0.2 + hash2(ix, iz, 12) * 0.6) * ROCK_CELL;
   const z = (iz + 0.2 + hash2(ix, iz, 13) * 0.6) * ROCK_CELL;
-  const biome = biomeAt(x, z, hash2(ix, iz, 19));
+  const biome = course?.def.terrain ? course.def.biome : biomeAt(x, z, hash2(ix, iz, 19));
   // courses: pillars and boulders on the open ground, thinner on the racing floors (floorDensity)
   const fd = course && roll < course.def.look.spires + course.def.look.rocks * BOULDER_P[biome] ? course.floorDensity(x, z, true) : 1;
   const sp = arena ? arena.spires : course ? course.def.look.spires * fd : SPIRE_P[biome];
@@ -456,6 +497,7 @@ export function obstaclesNear(x: number, z: number, radius: number, out: Obstacl
   for (let ix = r0x; ix <= r1x; ix++) for (let iz = r0z; iz <= r1z; iz++) { const o = rockAt(ix, iz); if (o) out.push(o); }
   for (let iz = Math.floor((z - radius - 5) / BRIDGE_CELL); iz <= Math.floor((z + radius + 5) / BRIDGE_CELL); iz++) bridgesAt(iz, out);
   if (course) course.piecesNear(x, z, radius + 12, out as never[]);
+  placedNear(x, z, radius, out);
   if (arena) {
     const m = 40; // arches reach this far from their cell's anchor
     for (let ix = Math.floor((x - radius - m) / ARCH_CELL); ix <= Math.floor((x + radius + m) / ARCH_CELL); ix++)
@@ -583,8 +625,27 @@ function paletteColor(p: Palette, cz: number, ny: number, h: number, v: number, 
   if (p.snow && rel > 140 + v * 40) out.lerp(PALETTES.alpine.g1, clamp((rel - 140 - v * 40) / 30, 0, 1));
 }
 
+/** Ground paint for imported maps: the biome's grass, rock on the steep faces, snow up high (alpine).
+ *  `rel` is 0..1 from the map's lowest to its highest ground. */
+export function mapGroundColor(biome: Biome, cx: number, cz: number, ny: number, rel: number, out: THREE.Color) {
+  const v = n3(cx / 40, cz / 40) * 0.5 + 0.5, p = PALETTES[biome];
+  out.copy(p.g1).lerp(p.g2, v);
+  if (ny < 0.82) out.lerp(p.rock, clamp((0.82 - ny) * 5, 0, 1));
+  if (ny < 0.2) out.copy(p.rock).multiplyScalar(0.9 + v * 0.2); // walls and ceilings
+  if (p.snow && ny > 0.5 && rel > 0.7 + v * 0.08) out.lerp(PALETTES.alpine.g1, clamp((rel - 0.7 - v * 0.08) * 12, 0, 1));
+  out.offsetHSL(0, 0, (hash2(Math.floor(cx * 3), Math.floor(cz * 3), 9) - 0.5) * 0.04);
+  return out;
+}
+
 function faceColor(cx: number, cz: number, ny: number, h: number, out: THREE.Color) {
   const v = n3(cx / 40, cz / 40) * 0.5 + 0.5;
+  const ter = course?.def.terrain;
+  if (ter) {
+    // an imported heightmap: its colour map if it has one, else the course's palette by height and slope
+    if (!ter.color?.(cx, cz, ny, h, out)) mapGroundColor(course!.def.biome, cx, cz, ny, (h - ter.bounds.y0) / Math.max(1, ter.bounds.y1 - ter.bounds.y0), out);
+    else out.offsetHSL(0, 0, (hash2(Math.floor(cx * 3), Math.floor(cz * 3), 9) - 0.5) * 0.04);
+    return;
+  }
   const b = nearestBranch(cx, cz);
   paletteColor(PALETTES[b.parent], cz, ny, h, v, out);
   if (b.t > 0 && b.biome !== b.parent) {
@@ -611,6 +672,7 @@ export class Chunk {
   }
 
   private buildGround() {
+    if (course?.def.terrain && !course.def.terrain.drawGround) return new THREE.Group(); // a model draws its own ground
     const x0 = this.cx * CHUNK, z0 = this.cz * CHUNK, step = CHUNK / SEG;
     const N = SEG + 1;
     const hs = new Float32Array(N * N);
@@ -668,6 +730,10 @@ export class Chunk {
     for (const o of bridgeParts) if (o.type === 'rock' && o.x >= x0 && o.x < x0 + CHUNK && o.z >= z0 && o.z < z0 + CHUNK) rocks.push(o);
     if (course) for (const o of course.piecesNear(x0 + CHUNK / 2, z0 + CHUNK / 2, CHUNK, []) as Obstacle[])
       if (o.x >= x0 && o.x < x0 + CHUNK && o.z >= z0 && o.z < z0 + CHUNK) (o.type === 'spire' ? spires : rocks).push(o);
+    const placed: Obstacle[] = [];
+    placedNear(x0 + CHUNK / 2, z0 + CHUNK / 2, CHUNK, placed);
+    for (const o of placed) if (o.x >= x0 && o.x < x0 + CHUNK && o.z >= z0 && o.z < z0 + CHUNK)
+      (o.type === 'tree' ? trees[o.kind!] : o.type === 'spire' ? spires : rocks).push(o);
 
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), pv = new THREE.Vector3();
     const c = new THREE.Color();

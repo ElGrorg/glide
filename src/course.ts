@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { makeNoise2D, hash2 } from './noise';
 import type { Biome } from './route';
+import type { TerrainSource } from './terrain';
 
 // ---------- Time trial courses: fixed, hand-laid mountains (the same for everyone) ----------
 // A course is a set of paths laid down a mountain. Each path is a spline of control points
@@ -53,7 +54,14 @@ export interface CourseDef {
   startGate: Gate; splits: Gate[]; finish: Gate;
   /** names for the sections between gates (splits.length + 1 of them) */
   sections: string[];
+  /** an imported map's own ground (a heightmap or a model) in place of the mountain the paths make */
+  terrain?: TerrainSource;
+  /** trees, boulders and pillars placed by hand (an imported map); `y` picks the floor under it (in a tunnel) */
+  objects?: ObjectDef[];
+  /** a map from this device (imported): its times stay on this device */
+  local?: boolean;
 }
+export interface ObjectDef { type: 'tree' | 'rock' | 'spire'; x: number; z: number; y?: number; r?: number; h?: number }
 
 /** Did the bird cross gate `g` (in its downhill direction) between `prev` and `cur`? */
 export function gateCrossed(g: Gate, prev: Vec3Like, cur: Vec3Like): boolean {
@@ -319,6 +327,7 @@ export class Course {
 
   /** Ground height (the open surface: the mountain over a cave, not the cave floor). */
   height(x: number, z: number): number {
+    if (this.def.terrain) return this.def.terrain.height(x, z);
     const n1 = this.n1, n2 = this.n2, n3 = this.n3;
     const ridged = 1 - Math.abs(n1(x / 230, z / 230));
     const rough = ridged * ridged * 95 + n2(x / 140, z / 140) * 22;
@@ -441,6 +450,8 @@ export class Course {
 
   /** Metres of free air around (x, y, z): negative inside rock. Free air is open sky above the ground or the inside of any cave. */
   solidClearance(x: number, y: number, z: number): number {
+    const t = this.def.terrain;
+    if (t?.clearance) return t.clearance(x, y, z);
     const open = y - this.height(x, z);
     if (open > 30) return open;
     const c = this.caveAt(x, y, z);
@@ -448,6 +459,8 @@ export class Course {
   }
   /** Height of the ground under the bird: a cave's floor when you're in one, otherwise the open surface. */
   floorBelow(x: number, y: number, z: number): number {
+    const t = this.def.terrain;
+    if (t?.floor) return t.floor(x, y, z);
     const h = this.height(x, z);
     if (y > h - 0.5) return h;
     const c = this.caveAt(x, y, z);
@@ -455,6 +468,8 @@ export class Course {
   }
   /** 0..1: how deep in a cave (for darkening the fog). */
   caveShade(x: number, y: number, z: number): number {
+    const t = this.def.terrain;
+    if (t?.shade) return t.shade(x, y, z);
     const h = this.height(x, z);
     if (y > h) return 0;
     const c = this.caveAt(x, y, z);
@@ -519,6 +534,8 @@ export class Course {
   buildScene(): THREE.Group {
     const group = new THREE.Group();
     group.name = 'course';
+    const own = this.def.terrain?.scene?.();
+    if (own) group.add(own);
     const look = this.def.look;
     const rock = new THREE.Color(look.caveRock), tmp = new THREE.Color();
     const L = new THREE.Vector3(0.35, 1, 0.25).normalize();

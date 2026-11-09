@@ -19,6 +19,10 @@ What's on the mountain: stepped slopes ending in cliff drops, rivers to skim (wi
 
 Code map: `src/route.ts` forks and environments · `src/world.ts` terrain, canyons, biomes, obstacles, clouds, chunk streaming · `src/gates.ts` rings, wind tunnels, needles, arches · `src/bird.ts` bird mesh and glide physics · `src/input.ts` keyboard/touch/gamepad · `src/main.ts` game loop, camera, scoring, HUD · `src/puffs.ts` cloud-punch particles · `src/audio.ts` procedural wind.
 
+## Your own maps (Race mode)
+
+Race mode imports maps you make: a heightmap (16-bit PNG, JPG, RAW from Gaea / World Machine / Unity / Unreal), a 3D model (glTF / GLB / OBJ from Blender or a track builder, tunnels included), or a Glide map `.json`. Maps and their best times stay on your device. Formats, Blender markers and limits are in [MAPS.md](MAPS.md). Code: `src/mapimport.ts` (file readers, map → course), `src/terrain.ts` (heightmap grid and model collision).
+
 ## Dogfights
 Enemy birds join the run every 7 to 13 seconds (one at a time, two once you have a couple of kills).
 - **Hunters** (dark grey) spawn behind you and fire bursts from your tail. The radar (bottom right) glows red and a warning flashes when one is on you. Hunters react to your moves about half a second late and turn wider than you. A dodge roll (roll while banking) or a hard break makes them lose sight of you ("Shook it!"), and slamming the brakes when one is close makes it overshoot.
