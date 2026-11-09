@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, ARENAS, ARENA_R, ARENA_LID_R, arenaBarrier, skimAmount, setArena, getArena, SPACE_ARENA, isSpace, type Obstacle } from './world';
+import { World, riverAt, terrainHeight, obstaclesNear, obstacleGap, canyonAt, basePlane, nearestBranch, CANYON_RIM, SKY_COLOR, FOG_FAR, ARENAS, ARENA_R, ARENA_LID_R, arenaBarrier, skimAmount, setArena, getArena, SPACE_ARENA, isSpace, setCourse, getCourse, solidClearance, floorBelow, caveShade, type Obstacle } from './world';
+import { COURSES, courseById } from './courses';
 import { SpaceScene, buildField, holeThreaded, fleet, clearSpawnY, spaceEdge, grabPickup, boostPickups, SPACE_R, SPACE_CRUISE, SPACE_BOOST, PICKUP_FUEL } from './space';
 import { ShipMesh, type Craft } from './ship';
 import { route, BIOME_NAME } from './route';
@@ -13,8 +14,8 @@ import { setWorldSeed } from './noise';
 import { Online, PLAYER_CSS, TEAM_CSS, TEAM_NAMES, colorIndex, type MatchRules } from './online';
 import { cleanCode, hasRoomBrowser, listRooms, type RoomInfo } from './net';
 import { DownCam, type Tracked } from './downcam';
-import { RaceRun, Ghost, GhostData, boardKey, sectionName, fmtTime, fmtDelta, fetchBoard, fetchGhost, submitRun, localBest, myPid, hasGlobalBoard, type CourseDef, type Board, type BoardEntry } from './race';
-import { STUB_COURSES } from './racestub';
+import { RaceRun, Ghost, GhostData, boardKey, sectionName, fmtTime, fmtDelta, fetchBoard, fetchGhost, submitRun, localBest, myPid, hasGlobalBoard, type Board, type BoardEntry } from './race';
+import type { CourseDef } from './course';
 import { sfx } from './spacefx';
 import { QuickChat, lineText, botReply, BOT_NAMES, OOPS, BANTER } from './quickchat';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
@@ -31,6 +32,8 @@ renderer.setSize(innerWidth, innerHeight);
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
+const CAVE_FOG = new THREE.Color(0x1d2228);
+let caveNow = 0;
 scene.background = SKY;
 scene.fog = new THREE.Fog(SKY, 140, 640);
 
@@ -781,7 +784,7 @@ function resetDownCam() { downcam.clear(); downcamReq = null; downcamEl.classLis
 function spawn(fresh = true) {
   input.recenter(); input.setThrottle(0);
   if (settings.mode === 'race') { spawnRace(); return; }
-  if (courseOn) { courseOn = null; fresh = true; } // leaving a race course: back to a fresh random world
+  if (getCourse()) { setCourse(null); fresh = true; } // leaving a race course: back to a fresh random world
   const arena = settings.mode !== 'endless';
   const space = worldKind(settings.mode) === 2;
   dogfight.spawning = true; dogfight.targets = [];
@@ -938,7 +941,7 @@ function updateFall(dt: number) {
     p.addScaledVector(fallVel, dt);
     fallSpin += dt * 3;
     if (fallVel.lengthSq() > 0.25) fallDir.copy(fallVel).normalize().applyAxisAngle(WORLD_UP, Math.sin(fallSpin * 0.7) * 0.6).normalize();
-    const ground = terrainHeight(p.x, p.z) + 0.45;
+    const ground = floorBelow(p.x, p.y, p.z) + 0.45;
     if (p.y < ground) { p.y = ground; fallVel.set(0, 0, 0); fallSettled = true; puffs.burst(p, tmp.set(0, 3, 0), 8, 20, 1.2); }
     glider.speed = fallVel.length();
     return;
@@ -947,7 +950,7 @@ function updateFall(dt: number) {
     fallVel.y -= 18 * dt;
     fallVel.multiplyScalar(Math.exp(-0.3 * dt));
     p.addScaledVector(fallVel, dt);
-    const ground = terrainHeight(p.x, p.z) + 0.45;
+    const ground = floorBelow(p.x, p.y, p.z) + 0.45;
     if (p.y < ground) {
       p.y = ground;
       if (fallVel.y < -6) { puffs.burst(p, tmp.set(0, 4, 0), 4, 10, 0.8); audio.thud(); shake = Math.max(shake, 0.5); }
@@ -1086,37 +1089,14 @@ function onDogfight(ev: DogfightEvent) {
 // at every gate. A crash sends you back to the top; the left stick click (or Backspace) restarts any time.
 // The stopwatch is green while you're ahead of the reference run (the ghost you picked, or else the record)
 // and red while you're behind it.
-const COURSES: (CourseDef & { seed?: number })[] = STUB_COURSES;
 const course = () => COURSES[THREE.MathUtils.clamp(settings.course | 0, 0, COURSES.length - 1)];
 settings.course = THREE.MathUtils.clamp(Math.round(settings.course) || 0, 0, COURSES.length - 1);
+// (dev / sharing: ?course=<id> opens straight onto that course in Race mode)
+{ const dev = courseById(new URLSearchParams(location.search).get('course') ?? ''); if (dev) { settings.mode = 'race'; settings.course = COURSES.indexOf(dev); } }
 const racing = () => settings.mode === 'race';
-/** The course whose world is built right now (null: an ordinary random world). */
-let courseOn: string | null = null;
-function enterCourse(c: CourseDef & { seed?: number }) {
-  const key = boardKey(c);
-  setArena(null); applyLook();
-  if (courseOn === key) return;
-  courseOn = key;
-  // (placeholder courses: the endless mountainside on a fixed seed)
-  setWorldSeed(c.seed ?? 1); route.reset(c.seed ?? 1); world.reset();
+function enterCourse(c: CourseDef) {
+  setArena(null); setCourse(c); applyLook();
 }
-/** Height of the floor under a point (cave-aware once the real courses are in). */
-function groundBelow(x: number, _y: number, z: number) { return terrainHeight(x, z); }
-/** Metres of clear air under / around a point: below 0.45 is a crash. */
-function solidGap(x: number, y: number, z: number) { return y - terrainHeight(x, z); }
-/** Chase camera: never inside the rock (pulls in toward the bird instead). */
-function keepCamOutOfRock(want: THREE.Vector3, bird: THREE.Vector3) {
-  if (solidGap(want.x, want.y, want.z) >= 1.8) return;
-  // first try lifting it; if that would leave a cave (rock overhead), slide it in toward the bird
-  const lifted = groundBelow(want.x, want.y, want.z) + 1.8;
-  if (solidGap(want.x, lifted, want.z) >= 1.8 && lifted - want.y < 6) { want.y = lifted; return; }
-  const from = tmp2.copy(want);
-  for (let k = 1; k <= 10; k++) {
-    want.lerpVectors(from, bird, k / 10);
-    if (solidGap(want.x, want.y, want.z) >= 1.2) return;
-  }
-}
-const tmp2 = new THREE.Vector3();
 
 let run = new RaceRun(course());
 let finishT = 0;
@@ -1136,9 +1116,8 @@ function spawnRace() {
   input.recenter(); input.setThrottle(0);
   dogfight.spawning = false; dogfight.targets = []; dogfight.reset(); dogfight.arenaCount = 0;
   gates.reset(); puffs.clear(); resetDownCam();
-  let { x, y, z } = c.start;
-  if (c.seed !== undefined) { x = route.mainCenter(0); y = terrainHeight(x, 0) + 45; z = 0; } // placeholder start
-  glider.reset(x, y, z, c.start.heading);
+  const { x, y, z } = c.start;
+  glider.reset(x, y, z, c.start.heading); glider.speed = c.start.speed;
   startZ = z; score = 0; combo = 0; slowmo = 0; shake = 0; hp = 3;
   near.clear(); prevPos.copy(glider.pos); wasInCloud = false;
   run = new RaceRun(c); run.reset(); finishT = 0; lastDelta = null; splitFlash = 0;
@@ -1643,8 +1622,18 @@ function placeCamera(snap = false, dt = 0.016, lift = 0) {
 
   const dist = g.space ? 10 + Math.max(0, g.speed - SPACE_CRUISE) * 0.05 : 8.5 + camSteep * 2.5 + Math.max(0, g.speed - 30) * 0.06;
   const want = g.pos.clone().addScaledVector(camFwd, -dist).addScaledVector(camUp, 2.6 + lift);
-  if (racing()) keepCamOutOfRock(want, g.pos);
-  else { const ground = terrainHeight(want.x, want.z) + 1.8; if (want.y < ground) want.y = ground; }
+  const ground = floorBelow(want.x, want.y, want.z) + 1.8;
+  if (want.y < ground) want.y = ground;
+  // in a cave the camera stays inside the tunnel: slide it in toward the bird until it's clear of the rock
+  if (getCourse() && solidClearance(want.x, want.y, want.z) < 1.5) {
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 6; i++) {
+      const m = (lo + hi) / 2;
+      tmp.copy(g.pos).lerp(want, m);
+      if (solidClearance(tmp.x, tmp.y, tmp.z) >= 1.5) lo = m; else hi = m;
+    }
+    want.lerp(g.pos, 1 - lo);
+  }
   const lookWant = g.pos.clone().addScaledVector(g.dir, 10 - camSteep * 4);
   camPos.lerp(want, snap ? 1 : 1 - Math.exp(-12 * dt));
   camLook.lerp(lookWant, snap ? 1 : 1 - Math.exp(-10 * dt));
@@ -1825,9 +1814,9 @@ function frame(now: number) {
       if (!inLoop) { inLoop = true; loopMinClear = 99; }
     } else if (glider.free ? Math.abs(glider.pitch) < 0.5 && !glider.looping : glider.pitch < 0.7) inLoop = false;
     const p = glider.pos;
-    const ground = groundBelow(p.x, p.y, p.z);
-    clearance = racing() ? solidGap(p.x, p.y, p.z) : p.y - ground;
-    if (clearance < 0.45) { if (!racing()) p.y = ground + 0.45; crash(); }
+    const ground = floorBelow(p.x, p.y, p.z); // (cave-aware on a time trial course)
+    clearance = p.y - ground;
+    if (getCourse() ? solidClearance(p.x, p.y, p.z) < 0.45 : clearance < 0.45) { if (clearance < 0.45) p.y = ground + 0.45; crash(); }
     if (racing() && mode === 'flying') stepRace(dt);
     const crunch = isSpace() ? 'Kaboom!' : 'Crunch!';
 
@@ -1949,7 +1938,7 @@ function frame(now: number) {
     finishT += dt;
     prevPos.copy(glider.pos);
     glider.step(dt, { ...inp, pitch: 0, roll: 0, yaw: 0, brake: 0.3, trick: null } as typeof inp);
-    if (solidGap(glider.pos.x, glider.pos.y, glider.pos.z) < 3) { glider.pos.y = groundBelow(glider.pos.x, glider.pos.y, glider.pos.z) + 3; }
+    if (solidClearance(glider.pos.x, glider.pos.y, glider.pos.z) < 3) glider.pos.y = floorBelow(glider.pos.x, glider.pos.y, glider.pos.z) + 3;
   } else if (mode === 'crashed') {
     crashTimer += dt;
     online.preUpdate();
@@ -1971,7 +1960,11 @@ function frame(now: number) {
     skyNow.lerp(target, Math.min(1, dt * 0.8));
     (scene.fog as THREE.Fog).color.copy(skyNow);
     skyMat().copy(skyNow);
-    const far = FOG_FAR[nb.parent] + (FOG_FAR[nb.biome] - FOG_FAR[nb.parent]) * nb.t;
+    let far = FOG_FAR[nb.parent] + (FOG_FAR[nb.biome] - FOG_FAR[nb.parent]) * nb.t;
+    // deep in a cave the air goes dark and close
+    const cave = caveShade(camera.position.x, camera.position.y, camera.position.z);
+    caveNow += (cave - caveNow) * Math.min(1, dt * 3);
+    if (caveNow > 0.01) { (scene.fog as THREE.Fog).color.lerp(CAVE_FOG, caveNow * 0.85); far = THREE.MathUtils.lerp(far, 260, caveNow); }
     const fog = scene.fog as THREE.Fog;
     fog.far += (far - fog.far) * Math.min(1, dt * 0.8);
     fog.near = fog.far * 0.22;
@@ -1984,7 +1977,7 @@ function frame(now: number) {
 
   // shadow
   const gp = glider.pos;
-  const gy = groundBelow(gp.x, gp.y, gp.z);
+  const gy = floorBelow(gp.x, gp.y, gp.z);
   const h = gp.y - gy;
   shadow.visible = !isSpace();
   shadow.position.set(gp.x, gy + 0.35, gp.z);
@@ -2098,5 +2091,5 @@ addEventListener('resize', () => {
 
 // ?debug exposes the game objects to the console (used for the two-browser online tests)
 if (new URLSearchParams(location.search).has('debug')) {
-  (window as any).glide = { online, dogfight, glider, get hp() { return hp; }, get shield() { return spawnShield; }, get t() { return t; }, get mode() { return mode; }, get score() { return score; }, get pause() { return pause; }, crash: (how: 'pea' | 'dart' | 'crash' = 'pea') => crash('Shot down!', how) };
+  (window as any).glide = { online, dogfight, glider, camera, course: getCourse, get hp() { return hp; }, get shield() { return spawnShield; }, get t() { return t; }, get mode() { return mode; }, get score() { return score; }, get pause() { return pause; }, crash: (how: 'pea' | 'dart' | 'crash' = 'pea') => crash('Shot down!', how) };
 }

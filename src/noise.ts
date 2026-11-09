@@ -2,8 +2,11 @@
 let worldSeed = (Math.random() * 2 ** 31) | 0;
 const reseeders: (() => void)[] = [];
 export function getWorldSeed() { return worldSeed; }
+/** Time trials: a course pins the world seed (trees, rocks, noise) so everyone gets the same mountain. */
+let lockedSeed: number | null = null;
+export function lockWorldSeed(seed: number | null) { lockedSeed = seed; if (seed !== null) setWorldSeed(seed); }
 export function setWorldSeed(seed: number) {
-  worldSeed = seed | 0;
+  worldSeed = (lockedSeed ?? seed) | 0;
   for (const r of reseeders) r();
 }
 
