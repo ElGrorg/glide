@@ -24,6 +24,11 @@ class_name = "Room"
 name = "LOBBY"
 class_name = "Lobby"
 
+# Time trial leaderboards: one per course (and course version).
+[[durable_objects.bindings]]
+name = "BOARDS"
+class_name = "Leaderboard"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
@@ -31,3 +36,7 @@ new_sqlite_classes = ["Room"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["Lobby"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["Leaderboard"]

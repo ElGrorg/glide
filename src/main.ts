@@ -13,6 +13,8 @@ import { setWorldSeed } from './noise';
 import { Online, PLAYER_CSS, TEAM_CSS, TEAM_NAMES, colorIndex, type MatchRules } from './online';
 import { cleanCode, hasRoomBrowser, listRooms, type RoomInfo } from './net';
 import { DownCam, type Tracked } from './downcam';
+import { RaceRun, Ghost, GhostData, boardKey, sectionName, fmtTime, fmtDelta, fetchBoard, fetchGhost, submitRun, localBest, myPid, hasGlobalBoard, type CourseDef, type Board, type BoardEntry } from './race';
+import { STUB_COURSES } from './racestub';
 import { sfx } from './spacefx';
 import { QuickChat, lineText, botReply, BOT_NAMES, OOPS, BANTER } from './quickchat';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
@@ -277,7 +279,7 @@ document.body.classList.toggle('touch', isTouch);
 if (isTouch) { $('fire').style.display = 'flex'; $('dartBtn').style.display = 'flex'; $('viewBtn').style.display = 'flex'; }
 
 // ---------- Game settings: endless downhill or arena ----------
-type GameMode = 'endless' | 'arena' | 'space' | 'online';
+type GameMode = 'endless' | 'race' | 'arena' | 'space' | 'online';
 type ViewSetting = 'chase' | 'cockpit';
 /** The online lobby's arena picker: the arenas, then Random, then Space. */
 const SPACE_ENV = ARENAS.length + 1;
@@ -289,12 +291,13 @@ const settings = { mode: 'endless' as GameMode, env: ARENAS.length /* = random *
   /* title menu: controls list open (open on a first visit) */ help: true,
   /* replay when you go down: 'shot' = shot down (or chased into the ground), 'all' = every crash too, 'off' */ downcam: 'shot' as DownCamSetting,
   /* camera: behind you, or first person */ view: 'chase' as ViewSetting,
-  /* phones: steer by tilting */ tilt: false };
+  /* phones: steer by tilting */ tilt: false,
+  /* race: which course */ course: 0 };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('glide.settings') || '{}')); } catch { /* storage unavailable */ }
 settings.env = THREE.MathUtils.clamp(Math.round(settings.env) || 0, 0, SPACE_ENV);
 settings.enemies = THREE.MathUtils.clamp(Math.round(settings.enemies) || 3, 1, 12);
 settings.bots = THREE.MathUtils.clamp(Math.round(settings.bots) || 0, 0, 12);
-if (!['endless', 'arena', 'space', 'online'].includes(settings.mode)) settings.mode = 'endless';
+if (!['endless', 'race', 'arena', 'space', 'online'].includes(settings.mode)) settings.mode = 'endless';
 if (settings.view !== 'cockpit') settings.view = 'chase';
 settings.tilt = isTouch && settings.tilt === true;
 input.tilt = settings.tilt;
@@ -312,7 +315,7 @@ loadBest();
 /** The arena chosen for this match ("random" rolls one per match). */
 let arenaIdx = 0;
 
-const MENU_ROWS = ['mode', 'env', 'enemies', 'bots', 'allies', 'team', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'tilt', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
+const MENU_ROWS = ['mode', 'course', 'board', 'env', 'enemies', 'bots', 'allies', 'team', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'tilt', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
 const GO_ROW = MENU_ROWS.indexOf('go');
 let menuRow = inviteCode ? MENU_ROWS.indexOf('join') : GO_ROW;
 /** On a phone the Steering row (thumbs or tilt) follows Camera. */
@@ -326,6 +329,7 @@ function baseRows(): readonly string[] {
     ? (online.isHost && online.phase === 'lobby' ? [...(browser ? ['vis'] : []), 'env', 'bots', 'allies', ...(settings.allies ? ['team'] : []), 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go']
       : online.phase === 'lobby' ? [...(online.teams ? ['team'] : []), 'lead', 'downcam', 'view'] : [])
     : ['mode', ...(browser && openRooms.length ? ['rooms'] : []), 'join', ...(browser ? ['vis'] : []), 'host', 'lead', 'downcam', 'view', 'help'];
+  if (settings.mode === 'race') return ['mode', 'course', 'board', 'view', 'go', 'help'];
   return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
     : settings.mode === 'space' ? ['mode', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
     : ['mode', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help'];
@@ -365,10 +369,11 @@ const esc = (s: string) => s.replace(/[<>&"]/g, '');
 const inviteLink = () => { const u = new URL(location.href); u.search = ''; u.hash = ''; u.searchParams.set('room', online.code); const sig = new URLSearchParams(location.search).get('signal'); if (sig) u.searchParams.set('signal', sig); return u.toString(); };
 /** Mode tabs on the title menu. A new mode only needs an entry here (plus its blurb and rows below). */
 const MODE_TABS: { id: GameMode; label: string }[] = [
-  { id: 'endless', label: 'Endless' }, { id: 'arena', label: 'Arena' }, { id: 'space', label: 'Space' }, { id: 'online', label: 'Online' },
+  { id: 'endless', label: 'Endless' }, { id: 'race', label: 'Race' }, { id: 'arena', label: 'Arena' }, { id: 'space', label: 'Space' }, { id: 'online', label: 'Online' },
 ];
 const MODE_BLURB: Record<GameMode, string> = {
   endless: 'An endless mountainside. Skim the ground, thread the trees, punch through the clouds, and shoot down the birds hunting you.',
+  race: 'Time trial down a set course: caves, ravines and more than one way down. Keep your speed up or you\'ll stall. Race a ghost of anyone on the board.',
   arena: 'A walled-in basin to fight in, wave after wave. You flap to hold your speed, but climbing still costs it and diving still builds it.',
   space: 'Space fighters in the middle of a capital-ship battle high above a planet. No air, no stalling: cruise, boost (grab the gold pickups to refill it), drift to swing your nose round. Run the carrier hangar bays and the tunnels through the cruisers, skim the hulls, and lead missiles into them.',
   online: 'Fight in the arena with other players anywhere: join an open room, type a friend\'s code, or host your own.',
@@ -391,6 +396,7 @@ const splitMenu = (left: string, right: string, hint = '') => `<div class="menu 
   </div>`;
 function renderMenu() {
   if (settings.mode === 'online') { renderOnlineMenu(); return; }
+  if (settings.mode === 'race') { renderRaceMenu(); return; }
   const rows = menuRows() as readonly string[];
   if (!rows.includes(MENU_ROWS[menuRow])) menuRow = GO_ROW;
   const sel = (r: string) => (MENU_ROWS[menuRow] === r ? ' sel' : '');
@@ -559,12 +565,14 @@ let previewTimer = 0;
 function queuePreview() { clearTimeout(previewTimer); previewTimer = window.setTimeout(() => { if (mode === 'title') spawn(true); }, 220); }
 const MODES: GameMode[] = MODE_TABS.map((m) => m.id);
 /** Which world the title shows behind the menu: 0 = mountain, 1 = an arena, 2 = space. */
-const worldKind = (m: GameMode) => (m === 'endless' ? 0 : m === 'space' || (m === 'online' && settings.env === SPACE_ENV) ? 2 : 1);
+const worldKind = (m: GameMode) => (m === 'endless' ? 0 : m === 'race' ? 3 : m === 'space' || (m === 'online' && settings.env === SPACE_ENV) ? 2 : 1);
 function menuChange(row: string, d: number) {
   if (row === 'mode') {
     const m = MODES[THREE.MathUtils.clamp(MODES.indexOf(settings.mode) + d, 0, MODES.length - 1)];
     if (m !== settings.mode) { const was = worldKind(settings.mode), now = worldKind(m); settings.mode = m; loadBest(); if (was !== now) queuePreview(); showControlsSafe(); }
   }
+  else if (row === 'course') { settings.course = (settings.course + d + COURSES.length) % COURSES.length; boardSel = 0; refreshBoard(); queuePreview(); }
+  else if (row === 'board') { const n = boardItems().length; if (n) boardSel = (boardSel + d + n) % n; }
   else if (row === 'bots') settings.bots = THREE.MathUtils.clamp(settings.bots + d, 0, 12);
   else if (row === 'allies') { settings.allies = !settings.allies; online.setTeams(settings.allies); }
   else if (row === 'team') { if (online.teams) online.pickTeam(online.team ? 0 : 1); }
@@ -605,6 +613,7 @@ function menuAct(target: HTMLElement) {
   const [k, v] = act.split(':');
   if (['go', 'host', 'join', 'joinroom'].includes(k)) goLandscape();
   if (k === 'joinroom') { settings.code = cleanCode(v); onlineAction('join'); return; }
+  if (k === 'ghost') { menuRow = MENU_ROWS.indexOf('board'); boardSel = Math.max(0, boardItems().findIndex((e) => e.pid === v)); toggleGhost(v); return; }
   if (k === 'leave' && online.active && lobbyLeaveNeedsConfirm()) { openPause('confirm', true); return; }
   if (settings.mode === 'online' && ['host', 'join', 'leave', 'copy', 'go'].includes(k)) { onlineAction(k); return; }
   if (k === 'pause') { if (online.phase === 'playing') openPause('confirm'); return; }
@@ -687,7 +696,7 @@ function rumble(strength: number, ms: number) {
 }
 
 // ---------- Game state ----------
-type Mode = 'title' | 'flying' | 'crashed';
+type Mode = 'title' | 'flying' | 'crashed' | 'finished';
 let mode: Mode = 'title';
 let score = 0, combo = 0, comboTimer = 0, slowmo = 0, crashTimer = 0, shake = 0;
 let startZ = 0;
@@ -771,6 +780,8 @@ function resetDownCam() { downcam.clear(); downcamReq = null; downcamEl.classLis
 
 function spawn(fresh = true) {
   input.recenter(); input.setThrottle(0);
+  if (settings.mode === 'race') { spawnRace(); return; }
+  if (courseOn) { courseOn = null; fresh = true; } // leaving a race course: back to a fresh random world
   const arena = settings.mode !== 'endless';
   const space = worldKind(settings.mode) === 2;
   dogfight.spawning = true; dogfight.targets = [];
@@ -866,14 +877,14 @@ function addCloseCall(gap: number, label: string) {
   // flying dangerously pays: a slipstream speed kick and a chunk of dart recharge, more the closer you cut it
   const kick = veryClose ? 7 : 3 + (3.5 - gap) * 1.2;
   // (space: no slipstream off a hull in a vacuum, and boost only comes from pickups)
-  if (!isSpace()) glider.speed = Math.min(95, glider.speed + kick);
+  if (!isSpace() && !racing()) glider.speed = Math.min(95, glider.speed + kick); // (no free speed in a time trial)
   const refilled = dogfight.chargeDart(veryClose ? 0.5 : 0.25);
   const perks = isSpace() ? (refilled ? 'MISSILE RELOADED' : '') : `+${Math.round(kick * 3.6)} km/h${refilled ? ' · DART RELOADED' : ''}`;
   popup(veryClose ? `INSANE! +${pts}` : `Close call +${pts}`, `${label} · ${gap.toFixed(1)} m${perks ? ` · ${perks}` : ''}`);
   if (refilled) audio.beep(1600, 0.1, 0.07);
   audio.whoosh(veryClose ? 1 : 0.6);
   rumble(veryClose ? 0.8 : 0.4, 120);
-  if (veryClose) slowmo = 0.5;
+  if (veryClose && !racing()) slowmo = 0.5;
 }
 
 function onGate(e: GateEvent) {
@@ -959,6 +970,7 @@ function poseFall() {
 
 function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall = false) {
   mode = 'crashed'; crashTimer = 0; shake = 1;
+  if (racing()) { raceCrashed(title); startFall(how !== 'crash', wall); audio.thud(); rumble(1, 300); return; }
   if (isSpace() && title === 'Crunch!') title = wall ? 'Kaboom!' : 'Planetfall!';
   startFall(how !== 'crash', wall);
   if (isSpace()) sfx.explode(glider.pos, glider.vel, 1.3); // blown apart
@@ -1067,6 +1079,248 @@ function onDogfight(ev: DogfightEvent) {
     if (ev.type === 'wave') online.waveEvent(ev.wave, ev.count, false);
     if (ev.type === 'waveCleared') online.waveEvent(ev.wave, 0, true);
   }
+}
+
+// ---------- Time trial races ----------
+// A set course, the same for everyone. The clock starts at the start line and stops at the finish, with a split
+// at every gate. A crash sends you back to the top; the left stick click (or Backspace) restarts any time.
+// The stopwatch is green while you're ahead of the reference run (the ghost you picked, or else the record)
+// and red while you're behind it.
+const COURSES: (CourseDef & { seed?: number })[] = STUB_COURSES;
+const course = () => COURSES[THREE.MathUtils.clamp(settings.course | 0, 0, COURSES.length - 1)];
+settings.course = THREE.MathUtils.clamp(Math.round(settings.course) || 0, 0, COURSES.length - 1);
+const racing = () => settings.mode === 'race';
+/** The course whose world is built right now (null: an ordinary random world). */
+let courseOn: string | null = null;
+function enterCourse(c: CourseDef & { seed?: number }) {
+  const key = boardKey(c);
+  setArena(null); applyLook();
+  if (courseOn === key) return;
+  courseOn = key;
+  // (placeholder courses: the endless mountainside on a fixed seed)
+  setWorldSeed(c.seed ?? 1); route.reset(c.seed ?? 1); world.reset();
+}
+/** Height of the floor under a point (cave-aware once the real courses are in). */
+function groundBelow(x: number, _y: number, z: number) { return terrainHeight(x, z); }
+/** Metres of clear air under / around a point: below 0.45 is a crash. */
+function solidGap(x: number, y: number, z: number) { return y - terrainHeight(x, z); }
+/** Chase camera: never inside the rock (pulls in toward the bird instead). */
+function keepCamOutOfRock(want: THREE.Vector3, bird: THREE.Vector3) {
+  if (solidGap(want.x, want.y, want.z) >= 1.8) return;
+  // first try lifting it; if that would leave a cave (rock overhead), slide it in toward the bird
+  const lifted = groundBelow(want.x, want.y, want.z) + 1.8;
+  if (solidGap(want.x, lifted, want.z) >= 1.8 && lifted - want.y < 6) { want.y = lifted; return; }
+  const from = tmp2.copy(want);
+  for (let k = 1; k <= 10; k++) {
+    want.lerpVectors(from, bird, k / 10);
+    if (solidGap(want.x, want.y, want.z) >= 1.2) return;
+  }
+}
+const tmp2 = new THREE.Vector3();
+
+let run = new RaceRun(course());
+let finishT = 0;
+const ghost = new Ghost(scene);
+/** The run your stopwatch is compared against. */
+let ref: { name: string; ms: number; splits: number[]; data: GhostData | null; mine: boolean } | null = null;
+const refTimer = new Ghost(scene); // (an unseen copy of the reference run, used to find its time near you)
+/** Ghost you picked to race, per course. */
+const ghostPick = new Map<string, string>();
+let raceNote = '';
+let lastDelta: number | null = null;
+let splitFlash = 0;
+
+function spawnRace() {
+  const c = course();
+  enterCourse(c);
+  input.recenter(); input.setThrottle(0);
+  dogfight.spawning = false; dogfight.targets = []; dogfight.reset(); dogfight.arenaCount = 0;
+  gates.reset(); puffs.clear(); resetDownCam();
+  let { x, y, z } = c.start;
+  if (c.seed !== undefined) { x = route.mainCenter(0); y = terrainHeight(x, 0) + 45; z = 0; } // placeholder start
+  glider.reset(x, y, z, c.start.heading);
+  startZ = z; score = 0; combo = 0; slowmo = 0; shake = 0; hp = 3;
+  near.clear(); prevPos.copy(glider.pos); wasInCloud = false;
+  run = new RaceRun(c); run.reset(); finishT = 0; lastDelta = null; splitFlash = 0;
+  ghost.resetCursor(); refTimer.resetCursor();
+  for (let i = 0; i < 12 && world.update(glider.pos.x, glider.pos.z - 150, 8) > 0; i++);
+  placeCamera(true);
+}
+function restartRace() {
+  spawnRace();
+  mode = 'flying'; hud.overlay.classList.add('hidden');
+}
+/** Pick the ghost and the reference run for this race, and fetch their flights. */
+async function loadRaceRefs() {
+  const c = course(), key = boardKey(c);
+  const b = boards.get(key)?.board;
+  const pick = ghostPick.get(key);
+  const me = await myPid();
+  const items = boardItems();
+  const pickEntry = pick ? items.find((e) => e.pid === pick) : undefined;
+  const refEntry = pickEntry ?? b?.entries[0] ?? items[0];
+  ghost.set(null); refTimer.set(null);
+  ref = refEntry ? { name: refEntry.name, ms: refEntry.ms, splits: refEntry.splits, data: null, mine: refEntry.pid === me } : null;
+  if (pickEntry) {
+    const d = await fetchGhost(key, pickEntry.pid).catch(() => null);
+    if (boardKey(course()) !== key) return;
+    ghost.set(d, pickEntry.name);
+    if (ref) ref.data = d;
+  } else if (refEntry) {
+    const d = await fetchGhost(key, refEntry.pid).catch(() => null);
+    if (boardKey(course()) !== key) return;
+    if (ref) ref.data = d;
+  }
+  if (ref?.data) { refTimer.set(ref.data); if (refTimer.line) refTimer.line.visible = false; }
+}
+function stepRace(dt: number) {
+  glider.applyTo(bird);
+  const g = run.step(dt, prevPos, glider.pos, bird.quaternion);
+  if (g < 0) return;
+  splitFlash = 2.5;
+  audio.beep(g === run.gates.length - 1 ? 1500 : 1200, 0.12, 0.08);
+  if (run.state === 'finished') finishRace();
+}
+function raceCrashed(title: string) {
+  hud.overlay.innerHTML = `<div class="menu"><h1>${title}</h1><div class="panel center"><p>Back to the top…</p>
+    <div class="go">${isTouch ? 'Tap to go now' : 'Any key or button to go now'}</div></div></div>`;
+  hud.overlay.classList.remove('hidden');
+}
+function finishRace() {
+  mode = 'finished'; finishT = 0;
+  const c = course(), ms = run.splits[run.splits.length - 1];
+  const prev = localBest(boardKey(c));
+  const pb = !prev || ms < prev.ms;
+  const d = ref ? ms - ref.ms : null;
+  const rows = run.splits.map((t, i) => {
+    const rd = ref?.splits[i] !== undefined ? t - ref.splits[i] : null;
+    return `<tr><td>${esc(sectionName(c, i))}</td><td>${fmtTime(t)}</td><td class="${rd === null ? '' : rd < 0 ? 'ahead' : 'behind'}">${rd === null ? '' : fmtDelta(rd)}</td></tr>`;
+  }).join('');
+  hud.overlay.innerHTML = `<div class="menu"><h1>${pb ? 'New best!' : 'Finished'}</h1><div class="panel center">
+    <p class="score"><b>${fmtTime(ms)}</b><span>${esc(c.name)}</span></p>
+    ${d !== null ? `<p class="${d < 0 ? 'ahead' : 'behind'}">${fmtDelta(d)} vs ${ref!.mine ? 'your best' : esc(ref!.name)}</p>` : ''}
+    <table class="splits">${rows}</table>
+    <p id="raceRank" class="best">${hasGlobalBoard() ? 'Sending your time…' : pb ? 'Saved on this device' : `Your best: ${fmtTime(prev!.ms)}`}</p>
+    <div class="go">${isTouch ? 'Tap to race again' : 'Any key or button to race again'}</div>
+    <div class="btns"><button data-act="menu">${isTouch ? 'Menu' : 'Menu (Esc / B)'}</button></div></div></div>`;
+  hud.overlay.classList.remove('hidden');
+  const name = (settings.name || '').trim() || 'Bird';
+  submitRun(c, run, name).then((r) => {
+    const el = document.getElementById('raceRank');
+    if (r.rank) {
+      if (el) el.textContent = r.best ? `#${r.rank} of ${r.total} on the board` : `Your best is #${r.rank} of ${r.total}`;
+    } else if (el && hasGlobalBoard()) el.textContent = r.error === 'offline' ? 'Couldn\'t reach the board (saved on this device)' : `The board didn't take this run (${r.error ?? 'error'})`;
+    boards.delete(boardKey(c)); // the menu fetches it fresh
+  });
+}
+
+// ---------- Race menu: the course, its leaderboard, and the ghost to race ----------
+const boards = new Map<string, { state: 'loading' | 'ok' | 'error'; board: Board | null }>();
+let boardSel = 0;
+let myPidNow = '';
+myPid().then((p) => { myPidNow = p; });
+async function refreshBoard() {
+  const key = boardKey(course());
+  const cur = boards.get(key);
+  if (cur?.state === 'loading') return;
+  if (!hasGlobalBoard()) { boards.set(key, { state: 'ok', board: null }); return; }
+  boards.set(key, { state: 'loading', board: cur?.board ?? null });
+  try { boards.set(key, { state: 'ok', board: await fetchBoard(key) }); }
+  catch { boards.set(key, { state: 'error', board: cur?.board ?? null }); }
+  if (mode === 'title' && racing()) renderMenu();
+}
+/** The rows you can pick a ghost from: the top times, plus your own best if it isn't among them. */
+function boardItems(): (BoardEntry & { mine?: boolean })[] {
+  const key = boardKey(course());
+  const b = boards.get(key)?.board;
+  const out: (BoardEntry & { mine?: boolean })[] = (b?.entries ?? []).slice(0, 10).map((e) => ({ ...e, mine: e.pid === myPidNow }));
+  const lb = localBest(key);
+  if (b?.me && !out.some((e) => e.mine)) out.push({ ...b.me, mine: true });
+  else if (!out.some((e) => e.mine) && lb && myPidNow) out.push({ pid: myPidNow, name: settings.name || 'You', ms: lb.ms, splits: lb.splits, at: lb.at, mine: true });
+  return out;
+}
+function toggleGhost(pid: string) {
+  const key = boardKey(course());
+  if (ghostPick.get(key) === pid) ghostPick.delete(key); else ghostPick.set(key, pid);
+  renderMenu();
+}
+function renderRaceMenu() {
+  const rows = menuRows() as readonly string[];
+  if (!rows.includes(MENU_ROWS[menuRow])) menuRow = GO_ROW;
+  const sel = (r: string) => (MENU_ROWS[menuRow] === r ? ' sel' : '');
+  const c = course(), key = boardKey(c);
+  if (!boards.has(key)) refreshBoard();
+  const st = boards.get(key);
+  const items = boardItems();
+  boardSel = Math.min(boardSel, Math.max(0, items.length - 1));
+  const pick = ghostPick.get(key);
+  const list = items.length ? items.map((e, i) => `<button class="room racer${sel('board') && i === boardSel ? ' sel' : ''}${pick === e.pid ? ' picked' : ''}" data-act="ghost:${e.pid}">
+      <b><i>${e.rank ? `#${e.rank}` : ''}</i>${esc(e.name)}${e.mine ? ' <em>you</em>' : ''}</b><span>${fmtTime(e.ms)}${pick === e.pid ? ' · ghost' : ''}</span></button>`).join('')
+    : `<p class="blurb small">${st?.state === 'loading' ? 'Loading the top times…' : st?.state === 'error' ? 'Couldn\'t load the leaderboard.' : 'No times yet. Set the first one!'}</p>`;
+  const pickName = pick ? items.find((e) => e.pid === pick)?.name : '';
+  const head = `${modeRow(sel('mode'))}<p class="blurb">${MODE_BLURB.race}</p>
+    ${pickRow(sel('course'), 'course', 'Course', esc(c.name), esc(c.blurb))}
+    <div class="opt"><label class="lab" for="nameIn">Your name<small>shown on the leaderboard</small></label><span class="ctl"><input id="nameIn" maxlength="16" placeholder="Bird" value="${esc(settings.name)}" autocomplete="off" spellcheck="false"></span></div>`;
+  const board = `${sect(hasGlobalBoard() ? 'Top times · pick one to race its ghost' : 'Your best · pick it to race your ghost')}
+    <div class="rooms board${sel('board')}" id="boardList">${list}</div>
+    ${!hasGlobalBoard() ? '<p class="blurb small">The global leaderboard is on the online version of the game.</p>' : ''}
+    ${raceNote ? `<p class="note">${esc(raceNote)}</p>` : ''}`;
+  const cta = `<button data-act="go" class="go-btn cta${sel('go')}">${pickName ? `Race ${esc(pickName)}'s ghost` : 'Race!'}</button>`;
+  const restartHint = isTouch ? 'Tap RESTART to start over' : 'Left stick click / Backspace restarts';
+  const view = `${sect('View')}${viewRow(sel('view'))}<p class="blurb small">${restartHint}. A crash sends you back to the top.</p>`;
+  hud.overlay.innerHTML = compactQ.matches ? splitMenu(head + cta, board + view + helpRow(sel('help')), menuHint('race')) : `<div class="menu side">
+    <h1>Glide!</h1><div class="panel">${head}${board}${view}${cta}${helpRow(sel('help'))}</div>${menuHint('race')}</div>`;
+  showControls();
+  revealSel();
+  const nameIn = document.getElementById('nameIn') as HTMLInputElement | null;
+  nameIn?.addEventListener('input', () => { settings.name = nameIn.value.slice(0, 16); saveSettings(); });
+  nameIn?.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === 'Escape') nameIn.blur(); });
+}
+
+// ---------- Race HUD: the stopwatch (top right) and the splits under it ----------
+const raceEl = $('race'), ghostTag = $('ghostTag');
+let raceHudT = 0;
+function drawRaceHud(dt: number) {
+  const on = racing() && mode !== 'title';
+  raceEl.style.display = on ? 'block' : 'none';
+  if (!on) { ghostTag.style.display = 'none'; ghost.mesh.visible = false; return; }
+  const c = course();
+  // the ghost flies on its own clock, parked on the line until yours starts
+  const gt = run.state === 'ready' ? -1 : mode === 'finished' ? run.time + finishT : run.time;
+  ghost.update(gt, t);
+  if (ghost.data && ghost.mesh.visible) {
+    const v = tmp.copy(ghost.mesh.position).project(camera);
+    const vis = v.z < 1 && Math.abs(v.x) < 1 && Math.abs(v.y) < 1;
+    ghostTag.style.display = vis ? 'block' : 'none';
+    if (vis) {
+      ghostTag.textContent = `${ghost.label} · ${Math.round(ghost.mesh.position.distanceTo(glider.pos))} m`;
+      ghostTag.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight - 22}px) translateX(-50%)`;
+    }
+  } else ghostTag.style.display = 'none';
+  // how you stand against the reference run: where it was at this point of the course, or at the last gate
+  if (run.state === 'running' && ref) {
+    const near = refTimer.timeNear(glider.pos);
+    if (near !== null) lastDelta = run.time * 1000 - near * 1000;
+    else if (run.splits.length && ref.splits[run.splits.length - 1] !== undefined) lastDelta = run.splits[run.splits.length - 1] - ref.splits[run.splits.length - 1];
+  }
+  if (mode === 'finished' && ref) lastDelta = run.ms - ref.ms;
+  splitFlash -= dt;
+  if ((raceHudT -= dt) > 0 && splitFlash < 2.4) return;
+  raceHudT = 0.05;
+  const cls = lastDelta === null ? '' : lastDelta < 0 ? 'ahead' : 'behind';
+  const gates = run.gates.length;
+  let rows = '';
+  for (let i = 0; i < gates; i++) {
+    const mine = run.splits[i], theirs = ref?.splits[i];
+    const cur = i === run.splits.length && run.state === 'running';
+    const d = mine !== undefined && theirs !== undefined ? mine - theirs : null;
+    rows += `<div class="${mine !== undefined ? 'done' : cur ? 'cur' : ''}${i === run.splits.length - 1 && splitFlash > 0 ? ' flash' : ''}"><span>${esc(sectionName(c, i))}</span>`
+      + `<i>${mine !== undefined ? fmtTime(mine) : theirs !== undefined ? fmtTime(theirs) : '–'}</i>`
+      + `<i class="${d === null ? '' : d < 0 ? 'ahead' : 'behind'}">${d !== null ? fmtDelta(d) : ''}</i></div>`;
+  }
+  raceEl.innerHTML = `<b class="watch ${cls}">${fmtTime(run.ms)}</b>`
+    + `<small>${lastDelta !== null && run.state !== 'ready' ? `<em class="${cls}">${fmtDelta(lastDelta)}</em> ` : ''}${ref ? `vs ${ref.mine ? 'your best' : esc(ref.name)} ${fmtTime(ref.ms)}` : 'no time to beat yet'}</small>`
+    + `<div class="splits">${rows}</div>`;
 }
 
 // ---------- Dogfight HUD: tail radar, reticles, feathers ----------
@@ -1389,8 +1643,8 @@ function placeCamera(snap = false, dt = 0.016, lift = 0) {
 
   const dist = g.space ? 10 + Math.max(0, g.speed - SPACE_CRUISE) * 0.05 : 8.5 + camSteep * 2.5 + Math.max(0, g.speed - 30) * 0.06;
   const want = g.pos.clone().addScaledVector(camFwd, -dist).addScaledVector(camUp, 2.6 + lift);
-  const ground = terrainHeight(want.x, want.z) + 1.8;
-  if (want.y < ground) want.y = ground;
+  if (racing()) keepCamOutOfRock(want, g.pos);
+  else { const ground = terrainHeight(want.x, want.z) + 1.8; if (want.y < ground) want.y = ground; }
   const lookWant = g.pos.clone().addScaledVector(g.dir, 10 - camSteep * 4);
   camPos.lerp(want, snap ? 1 : 1 - Math.exp(-12 * dt));
   camLook.lerp(lookWant, snap ? 1 : 1 - Math.exp(-10 * dt));
@@ -1483,11 +1737,22 @@ function frame(now: number) {
       if (nav.ok && rows.includes(row) && ['host', 'join', 'go'].includes(row)) onlineAction(row);
       if (nav.ok && row === 'rooms' && openRooms[roomSel] && openRooms[roomSel].players < openRooms[roomSel].max) { settings.code = openRooms[roomSel].code; onlineAction('join'); }
       if (nav.back && online.active) { if (lobbyLeaveNeedsConfirm()) openPause('confirm', true); else onlineAction('leave'); }
+    } else if (settings.mode === 'race' && nav.ok && MENU_ROWS[menuRow] === 'board' && !startReq) {
+      const it = boardItems()[boardSel];
+      if (it) toggleGhost(it.pid);
     } else if (startReq || (nav.ok && !inp.nav.back)) {
       clearTimeout(previewTimer);
       spawn(false); // keeps the world the title was showing
       mode = 'flying'; hud.overlay.classList.add('hidden');
+      if (racing()) loadRaceRefs();
     }
+  } else if (racing()) {
+    // time trial: Esc / Start / B goes back to the menu; the left stick click (or Backspace) restarts at once;
+    // a crash restarts by itself a moment later, and after the finish any button races again
+    if (menuReq || nav.menu || (nav.back && mode !== 'flying')) goToMenu();
+    else if (inp.restart) restartRace();
+    else if (mode === 'crashed' && (crashTimer > 1.2 || (inp.anyPress && crashTimer > 0.3))) restartRace();
+    else if (mode === 'finished' && finishT > 1 && (inp.anyPress || startReq)) restartRace();
   } else if (mode === 'crashed' && online.phase === 'playing' && (nav.back || nav.menu)) openPause();
   else if (mode === 'crashed' && (menuReq || nav.back || nav.menu)) goToMenu();
   else if (mode === 'crashed' && downcam.playing) { if (inp.anyPress && downcam.elapsed > 0.35) endDownCam(); }
@@ -1536,7 +1801,7 @@ function frame(now: number) {
       }
     }
     online.preUpdate();
-    for (const ev of dogfight.update(dt, t, glider, inp.fire, inp.dart && myDartsOn(), true, wasInCloud)) onDogfight(ev);
+    if (!racing()) for (const ev of dogfight.update(dt, t, glider, inp.fire, inp.dart && myDartsOn(), true, wasInCloud)) onDogfight(ev);
     online.hp = hp; online.postUpdate(dt, glider, bird.quaternion, wasInCloud);
     spawnShield -= dt;
     if (dogfight.myDartThisFrame) { audio.dart(); rumble(0.3, 80); }
@@ -1560,9 +1825,10 @@ function frame(now: number) {
       if (!inLoop) { inLoop = true; loopMinClear = 99; }
     } else if (glider.free ? Math.abs(glider.pitch) < 0.5 && !glider.looping : glider.pitch < 0.7) inLoop = false;
     const p = glider.pos;
-    const ground = terrainHeight(p.x, p.z);
-    clearance = p.y - ground;
-    if (clearance < 0.45) { p.y = ground + 0.45; crash(); }
+    const ground = groundBelow(p.x, p.y, p.z);
+    clearance = racing() ? solidGap(p.x, p.y, p.z) : p.y - ground;
+    if (clearance < 0.45) { if (!racing()) p.y = ground + 0.45; crash(); }
+    if (racing() && mode === 'flying') stepRace(dt);
     const crunch = isSpace() ? 'Kaboom!' : 'Crunch!';
 
     // obstacles: collision + close calls
@@ -1599,7 +1865,7 @@ function frame(now: number) {
     }
 
     // gates
-    if (!inArena) gates.check(prevPos, p, (e: GateEvent) => onGate(e));
+    if (!inArena && !racing()) gates.check(prevPos, p, (e: GateEvent) => onGate(e));
 
     // arena: the mountain wall is solid ground (fly into it and you crash). Only a bird that climbs over
     // the top meets an invisible barrier: it stops you going further out, but never touches the controls.
@@ -1678,6 +1944,12 @@ function frame(now: number) {
 
     comboTimer -= dt;
     if (comboTimer <= 0) combo = 0;
+  } else if (mode === 'finished') {
+    // over the line: the bird glides on by itself while the result shows
+    finishT += dt;
+    prevPos.copy(glider.pos);
+    glider.step(dt, { ...inp, pitch: 0, roll: 0, yaw: 0, brake: 0.3, trick: null } as typeof inp);
+    if (solidGap(glider.pos.x, glider.pos.y, glider.pos.z) < 3) { glider.pos.y = groundBelow(glider.pos.x, glider.pos.y, glider.pos.z) + 3; }
   } else if (mode === 'crashed') {
     crashTimer += dt;
     online.preUpdate();
@@ -1712,7 +1984,7 @@ function frame(now: number) {
 
   // shadow
   const gp = glider.pos;
-  const gy = terrainHeight(gp.x, gp.z);
+  const gy = groundBelow(gp.x, gp.y, gp.z);
   const h = gp.y - gy;
   shadow.visible = !isSpace();
   shadow.position.set(gp.x, gy + 0.35, gp.z);
@@ -1721,7 +1993,7 @@ function frame(now: number) {
 
   // stream terrain ahead of the bird
   world.update(gp.x + glider.dir.x * 180, gp.z + glider.dir.z * 180, 2);
-  if (!inArena) gates.update(gp.z, t);
+  if (!inArena && !racing()) gates.update(gp.z, t);
 
   placeCamera(false, dt, mode === 'crashed' ? Math.min(10, crashTimer * 8) : 0);
   // (a fixed camera for screenshots and tests: window.__glide.camOverride = { pos: [x, y, z], look: [x, y, z] })
@@ -1771,8 +2043,13 @@ function frame(now: number) {
   const danger = mode === 'flying' ? THREE.MathUtils.clamp((5 - clearance) / 5, 0, 1) : 0;
   hud.edge.style.opacity = replaying ? '0' : String(Math.max(danger * 0.7, hitFlash));
   hud.edge.style.boxShadow = hitFlash > danger * 0.7 ? 'inset 0 0 140px 40px rgba(255, 40, 40, .85)' : '';
-  drawDogfightHud(mode === 'flying');
-  if (isTouch) { const d = mode === 'flying' ? 'flex' : 'none'; $('fire').style.display = d; $('dartBtn').style.display = myDartsOn() ? d : 'none'; $('viewBtn').style.display = d; $('chatBtn').style.display = d; }
+  drawDogfightHud(mode === 'flying' && !racing());
+  if (isTouch) {
+    const d = mode === 'flying' ? 'flex' : 'none', r = racing();
+    $('fire').style.display = r ? 'none' : d; $('dartBtn').style.display = myDartsOn() && !r ? d : 'none'; $('viewBtn').style.display = d; $('chatBtn').style.display = r ? 'none' : d;
+    $('restartBtn').style.display = r && mode !== 'title' ? 'flex' : 'none';
+  }
+  drawRaceHud(realDt);
   drawChat();
   $('pipper').style.display = firstPerson() && !replaying && !isSpace() ? 'block' : 'none';
   // space: boost fuel gauge
@@ -1787,8 +2064,8 @@ function frame(now: number) {
     hud.warn.textContent = isSpace() ? '◀ LEAVING THE BATTLE: TURN BACK ▶' : '◀ NO WAY OVER THE WALL: TURN BACK ▶';
     hud.warn.style.opacity = String(0.5 + 0.5 * Math.sin(t * 10));
   }
-  hud.score.textContent = mode === 'title' || replaying ? '' : String(Math.floor(score));
-  hud.combo.style.opacity = combo > 0 && mode === 'flying' ? '1' : '0';
+  hud.score.textContent = mode === 'title' || replaying || racing() ? '' : String(Math.floor(score));
+  hud.combo.style.opacity = combo > 0 && mode === 'flying' && !racing() ? '1' : '0';
   hud.combo.textContent = `combo x${multiplier().toFixed(1)}`;
   hud.stats.textContent = mode === 'flying'
     ? isSpace() ? `${Math.round(glider.speed * 3.6)} km/h · ${getArena()!.name}`
@@ -1817,7 +2094,7 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
   composer.setSize(innerWidth, innerHeight);
 });
-(window as any).__glide = { settings, input, glider, dogfight, world, gates, spaceScene, fleet, obstacleGap, boostPickups, isSpace, camera, get mode() { return mode; }, get score() { return score; }, canyonAt, terrainHeight, route, riverAt };
+(window as any).__glide = { settings, input, glider, dogfight, world, gates, spaceScene, fleet, obstacleGap, boostPickups, isSpace, camera, get mode() { return mode; }, get score() { return score; }, get run() { return run; }, canyonAt, terrainHeight, route, riverAt };
 
 // ?debug exposes the game objects to the console (used for the two-browser online tests)
 if (new URLSearchParams(location.search).has('debug')) {
