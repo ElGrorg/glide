@@ -1,4 +1,4 @@
-import { defineCourse, type CourseDef, type CtrlPt, type PathDef, type PathKind, type PieceDef } from './course';
+import { defineCourse, samplePath, type CourseDef, type CtrlPt, type PathDef, type PathKind, type PieceDef } from './course';
 
 // ---------- The three time trial courses ----------
 // Written as nodes (named points with a height) joined by paths. A path's floor falls evenly from one node's
@@ -27,6 +27,27 @@ function path(id: string, kind: PathKind, from: Node, via: Via[], to: Node, wTo:
   via.forEach((v, i) => pts.push([v[0], v[1], ys[i + 1], v[2], v[3] ?? hTo]));
   pts.push([to[0], to[1], ys[ys.length - 1], wTo, hTo]);
   return { id, kind, pts };
+}
+
+/** Twist a tunnel: S-bends sideways (amp metres either way, one full S every `wave` metres) and dips and rises
+ *  in the floor (vamp metres), easing in and out over the first and last 120 m so the ends still line up with the
+ *  paths they join. The bends are what make a tunnel hard: brake, carve, or kiss the wall. */
+function twist(p: PathDef, amp: number, wave: number, vamp = 0, phase = 0): PathDef {
+  const sm = samplePath(p.pts);
+  const pts: CtrlPt[] = [];
+  const n = Math.max(4, Math.round(sm.len / (wave / 6)));
+  for (let k = 0; k <= n; k++) {
+    const s = (sm.len * k) / n;
+    const i = Math.min(sm.n - 2, Math.round((s / sm.len) * (sm.n - 1)));
+    const tx = sm.x[i + 1] - sm.x[i], tz = sm.z[i + 1] - sm.z[i], tl = Math.hypot(tx, tz) || 1;
+    const e = Math.min(1, s / 120, (sm.len - s) / 120), taper = e * e * (3 - 2 * e);
+    const off = amp * Math.sin((2 * Math.PI * s) / wave + phase) * taper;
+    const dy = vamp * Math.sin((2 * Math.PI * s) / (wave * 0.6) + phase * 1.7) * taper;
+    pts.push([sm.x[i] - (tz / tl) * off, sm.z[i] + (tx / tl) * off, sm.y[i] + dy, sm.w[i], sm.h[i]]);
+  }
+  // exact ends
+  pts[0] = p.pts[0]; pts[pts.length - 1] = p.pts[p.pts.length - 1];
+  return { ...p, pts };
 }
 
 /** Columns or spires in a slalom: alternate sides along a stretch of path. */
@@ -62,8 +83,8 @@ const glacier = defineCourse({
     path('s1', 'valley', G.S, [[50, -280, 105], [-30, -600, 110], [-95, -900, 85]], G.F1, 70, 0, 95),
     // left: a short slot into the twin ice bores
     path('gate1', 'canyon', G.F1, [], G.C1, 13, 40, 16, 40),
-    path('boreL', 'cave', G.C1, [[-92, -1362, 12, 16], [-150, -1510, 11, 15], [-160, -1700, 12, 16], [-95, -1880, 11, 15]], G.C2, 12, 16, 12, 16),
-    path('boreR', 'cave', G.C1, [[-70, -1362, 12, 16], [-55, -1510, 12, 15], [-40, -1700, 11, 16], [-15, -1880, 12, 15]], G.C2, 12, 16, 12, 16),
+    twist(path('boreL', 'cave', G.C1, [[-92, -1362, 12, 16], [-150, -1510, 11, 15], [-160, -1700, 12, 16], [-95, -1880, 11, 15]], G.C2, 12, 16, 12, 16), 16, 240, 3, 0),
+    twist(path('boreR', 'cave', G.C1, [[-70, -1362, 12, 16], [-55, -1510, 12, 15], [-40, -1700, 11, 16], [-15, -1880, 12, 15]], G.C2, 12, 16, 12, 16), 16, 240, 3, 3.1),
     path('out1', 'canyon', G.C2, [], G.M1, 22, 40, 13, 40),
     // right: over the col, longer and gentler, with a rise you carry speed over
     path('col', 'valley', G.F1, [[60, -1300, 50], [190, -1520, 45], [205, -1760, 45, 0, 1300], [110, -1990, 50]], G.M1, 55, 0, 60),
@@ -75,9 +96,9 @@ const glacier = defineCourse({
     path('s3', 'valley', G.M2, [[10, -3650, 65]], P3a, 45, 0, 60),
     path('gate3', 'canyon', P3a, [], G.P3, 14, 40, 18, 40),
     // the glacier caves: three ways to the great hall
-    path('low', 'cave', G.P3, [[-12, -3968, 13, 15], [-52, -4045, 12, 14, 752], [-98, -4175, 11, 14], [-104, -4266, 14, 15, 688], [-48, -4368, 14, 15], [-3, -4425, 14, 16]], G.H, 16, 18, 13, 16),
-    path('mid', 'cave', G.P3, [[-2, -3970, 14, 16], [-5, -4080, 22, 20], [12, -4280, 26, 22]], G.H, 24, 22, 14, 16),
-    path('high', 'cave', G.P3, [[12, -3968, 13, 15], [54, -4045, 12, 15, 752], [100, -4170, 12, 15], [104, -4262, 15, 16, 728], [64, -4368, 14, 15], [22, -4425, 14, 16]], G.H, 16, 18, 13, 16),
+    twist(path('low', 'cave', G.P3, [[-12, -3968, 13, 15], [-52, -4045, 12, 14, 752], [-98, -4175, 11, 14], [-104, -4266, 14, 15, 688], [-48, -4368, 14, 15], [-3, -4425, 14, 16]], G.H, 16, 18, 13, 16), 14, 220, 4, 1),
+    twist(path('mid', 'cave', G.P3, [[-2, -3970, 14, 16], [-5, -4080, 22, 20], [12, -4280, 26, 22]], G.H, 24, 22, 14, 16), 8, 260, 3, 0),
+    twist(path('high', 'cave', G.P3, [[12, -3968, 13, 15], [54, -4045, 12, 15, 752], [100, -4170, 12, 15], [104, -4262, 15, 16, 728], [64, -4368, 14, 15], [22, -4425, 14, 16]], G.H, 16, 18, 13, 16), 14, 220, 4, 4),
     path('hall', 'cave', G.H, [[28, -4660, 36, 30]], G.P4, 16, 18, 32, 24),
     path('s4', 'valley', G.P4, [[90, -5100, 60], [70, -5330, 70, 0, 520], [10, -5480, 75, 0, 452], [-60, -5800, 80], [-20, -6000, 80]], G.E, 90, 0, 40),
   ],
@@ -87,7 +108,7 @@ const glacier = defineCourse({
     { name: 'The col · steep couloir · high cave', paths: ['s1', 'col', 's2', 'steep', 's3', 'gate3', 'high', 'hall', 's4'] },
   ],
   pieces: [
-    ...slalom('mid', 0.3, 0.85, 5, 9, 3.2),
+    ...slalom('mid', 0.3, 0.85, 5, 10, 3),
     { path: 'hall', at: 0.5, lat: 0, type: 'column', r: 5 },
     { path: 'hall', at: 0.74, lat: -15, type: 'column', r: 4 },
     { path: 'hall', at: 0.74, lat: 15, type: 'column', r: 4 },
@@ -135,17 +156,17 @@ const hollow = defineCourse({
     path('throat', 'canyon', H2.K1, [], H2.MAW, 17, 50, 20, 45),
     path('maw', 'cave', H2.MAW, [[-14, -1460, 26, 24]], H2.J1, 22, 22, 19, 22),
     // the Labyrinth: wide and sweeping (left), the needle (middle: tight and straight), the skylight (right)
-    path('lab-l', 'cave', H2.J1, [[-48, -1690, 13, 15], [-135, -1880, 13, 15], [-165, -2100, 14, 16], [-110, -2330, 13, 15], [-42, -2445, 14, 16]], H2.CATH, 18, 18, 14, 16),
-    path('lab-m', 'cave', H2.J1, [[-18, -1720, 9, 11], [2, -1960, 9, 11], [-14, -2200, 9, 12], [-4, -2410, 10, 12]], H2.CATH, 14, 16, 12, 14),
-    path('lab-r1', 'cave', H2.J1, [[14, -1690, 13, 15], [100, -1850, 13, 15]], SKY1, 14, 15, 14, 16),
+    twist(path('lab-l', 'cave', H2.J1, [[-48, -1690, 13, 15], [-135, -1880, 13, 15], [-165, -2100, 14, 16], [-110, -2330, 13, 15], [-42, -2445, 14, 16]], H2.CATH, 18, 18, 14, 16), 18, 250, 4, 0),
+    twist(path('lab-m', 'cave', H2.J1, [[-18, -1720, 11, 14], [2, -1960, 11, 14], [-14, -2200, 11, 14], [-4, -2410, 12, 15]], H2.CATH, 14, 16, 12, 15), 10, 180, 0, 1.5),
+    twist(path('lab-r1', 'cave', H2.J1, [[14, -1690, 13, 15], [100, -1850, 13, 15]], SKY1, 14, 15, 14, 16), 14, 210, 3, 0.5),
     path('skylight', 'canyon', SKY1, [], SKY2, 15, 60, 15, 60),
-    path('lab-r2', 'cave', SKY2, [[150, -2290, 13, 15], [88, -2400, 13, 15], [34, -2465, 14, 16]], H2.CATH, 18, 18, 14, 15),
+    twist(path('lab-r2', 'cave', SKY2, [[150, -2290, 13, 15], [88, -2400, 13, 15], [34, -2465, 14, 16]], H2.CATH, 18, 18, 14, 15), 14, 210, 3, 2),
     path('cathedral', 'cave', H2.CATH, [[8, -2660, 44, 40]], H2.CX, 26, 26, 30, 28),
     // the chimney: out high, a slight rise you have to carry speed over, then a long dive off the ledge
-    path('chimney', 'cave', H2.CX, [[38, -2905, 12, 14, 904], [88, -3000, 12, 14, 906]], H2.O1, 13, 15, 14, 16),
+    twist(path('chimney', 'cave', H2.CX, [[38, -2905, 12, 14, 904], [88, -3000, 12, 14, 906]], H2.O1, 13, 15, 14, 16), 12, 190, 2, 0),
     path('ledge', 'valley', H2.O1, [[125, -3290, 45], [70, -3540, 55]], H2.M3, 70, 0, 26),
     // the drain: a long, dark, gently falling tube
-    path('drain', 'cave', H2.CX, [[-22, -2960, 12, 13], [-42, -3200, 11, 13], [-22, -3440, 12, 13]], H2.O2, 13, 14, 14, 16),
+    twist(path('drain', 'cave', H2.CX, [[-22, -2960, 12, 13], [-42, -3200, 11, 13], [-22, -3440, 12, 13]], H2.O2, 13, 14, 14, 16), 18, 230, 4, 2.5),
     path('drainout', 'canyon', H2.O2, [], H2.M3, 26, 40, 15, 40),
     path('daylight', 'valley', H2.M3, [[40, -3920, 75], [60, -4160, 70]], H2.K4, 50, 0, 70),
     // the falls: a deep slot into the Eye tunnel; or the rim, round the outside and longer
@@ -168,7 +189,6 @@ const hollow = defineCourse({
     { path: 'cathedral', at: 0.55, lat: -26, type: 'column', r: 4 },
     { path: 'cathedral', at: 0.6, lat: 24, type: 'column', r: 4.5 },
     { path: 'cathedral', at: 0.7, lat: -16, type: 'column', r: 4 },
-    ...slalom('drain', 0.3, 0.8, 4, 6, 2.2),
     ...slalom('daylight', 0.45, 0.8, 4, 20, 4, 'spire', 50),
   ],
   startAt: ['s1', 0.2],
@@ -207,12 +227,12 @@ const redrock = defineCourse({
     path('s2', 'canyon', R3.M1, [], R3.B0, 20, 45, 22, 45),
     path('braidL', 'canyon', R3.B0, [[-35, -1960, 13, 55], [-95, -2120, 13, 65], [-90, -2290, 13, 65], [-50, -2400, 14, 60], [-22, -2450, 15, 55]], R3.B1, 17, 50, 16, 50),
     path('braidR', 'canyon', R3.B0, [[15, -1960, 13, 55], [80, -2120, 13, 65], [78, -2290, 13, 65], [40, -2400, 14, 60], [8, -2450, 15, 55]], R3.B1, 17, 50, 16, 50),
-    path('butte', 'cave', R3.B0, [[-12, -1990, 12, 15], [-12, -2060, 11, 13], [-2, -2300, 11, 13], [-8, -2420, 12, 15]], R3.B1, 14, 18, 16, 22),
+    twist(path('butte', 'cave', R3.B0, [[-12, -1990, 12, 19], [-12, -2060, 11, 17], [-2, -2300, 11, 17], [-8, -2420, 12, 17]], R3.B1, 14, 18, 16, 22), 16, 220, 0, 0),
     path('s3', 'canyon', R3.B1, [], R3.P0, 30, 40, 20, 50),
     path('field', 'valley', R3.P0, [[35, -2880, 115], [5, -3170, 120]], R3.F3, 60, 0, 60),
     // the sinkhole: a short slot into a steep, dark tube that dives through the mesa
     path('sinkgate', 'canyon', R3.F3, [], G3, 14, 45, 18, 40),
-    path('sink', 'cave', G3, [[-34, -3560, 13, 18], [-38, -3640, 12, 18, 642], [-22, -3770, 12, 16, 582]], R3.M3, 14, 16, 14, 20),
+    twist(path('sink', 'cave', G3, [[-34, -3560, 13, 18], [-38, -3640, 12, 18, 642], [-22, -3770, 12, 16, 582]], R3.M3, 14, 16, 14, 20), 10, 190, 0, 1),
     // the switchbacks: an open canyon that snakes down the cliff, longer and gentler
     path('switch', 'canyon', R3.F3, [[25, -3500, 18, 45], [85, -3600, 19, 55], [88, -3720, 19, 60], [48, -3825, 18, 55]], R3.M3, 20, 50, 20, 40),
     path('narrows', 'canyon', R3.M3, [[-10, -4060, 12, 60], [28, -4300, 11, 70], [-12, -4560, 11, 75], [22, -4800, 11, 70], [-14, -5030, 11, 70]], R3.N, 14, 55, 16, 55),
