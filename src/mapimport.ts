@@ -342,6 +342,7 @@ async function loadModel(spec: MapSpec, files: MapFile[]): Promise<{ root: THREE
     if (m.isMesh) drop.push(o);
   });
   for (const o of drop) o.parent?.remove(o);
+  dropSky(wrap);
   // look at home in the game: flat-shaded, lit, both sides (you see tunnel walls from inside), fogged.
   // Parts with no colour of their own (plain white or grey, no texture) get painted like the game's ground.
   const box = new THREE.Box3().setFromObject(wrap);
@@ -384,6 +385,34 @@ function paintGround(m: THREE.Mesh, biome: Biome, box: THREE.Box3) {
   }
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
   g.computeVertexNormals();
+}
+
+/** Game and scene exports often carry a sky dome or skybox: a huge mesh round everything else. As ground it
+ *  would be a roof over the whole map (and every tunnel would read as solid rock under it), so it goes. */
+function dropSky(root: THREE.Object3D) {
+  const meshes: THREE.Mesh[] = [];
+  root.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
+  if (meshes.length < 2) return;
+  const boxes = meshes.map((m) => new THREE.Box3().setFromObject(m));
+  const sky = new Set<THREE.Mesh>();
+  meshes.forEach((m, i) => {
+    const names = [m.name, m.parent?.name ?? '', ...(Array.isArray(m.material) ? m.material : [m.material]).map((x) => x?.name ?? '')].join(' ');
+    if (/sky|dome|backdrop|background|horizon/i.test(names)) { sky.add(m); return; }
+    // encloses everything else, top and sides
+    const rest = new THREE.Box3();
+    boxes.forEach((b, j) => { if (j !== i) rest.union(b); });
+    const b = boxes[i];
+    if (!(b.min.x <= rest.min.x && b.max.x >= rest.max.x && b.min.z <= rest.min.z && b.max.z >= rest.max.z && b.max.y > rest.max.y + 1)) return;
+    // ...and is hollow: almost none of its points are among the rest (the ground itself is full of them)
+    const pos = m.geometry.getAttribute('position');
+    if (!pos) return;
+    const v = new THREE.Vector3(), step = Math.max(1, Math.floor(pos.count / 2000));
+    let n = 0, inside = 0;
+    for (let k = 0; k < pos.count; k += step, n++) if (rest.containsPoint(v.fromBufferAttribute(pos, k).applyMatrix4(m.matrixWorld))) inside++;
+    if (inside < n * 0.02) sky.add(m);
+  });
+  if (sky.size >= meshes.length) return;
+  for (const m of sky) m.parent?.remove(m);
 }
 
 // ---------- Building the course ----------
