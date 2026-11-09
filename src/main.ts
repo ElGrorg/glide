@@ -714,7 +714,9 @@ function rumble(strength: number, ms: number) {
 /** 'over': someone reached the winning score, and the winner screen is up. */
 type Mode = 'title' | 'flying' | 'crashed' | 'over';
 let mode: Mode = 'title';
-let score = 0, combo = 0, comboTimer = 0, slowmo = 0, crashTimer = 0, shake = 0, overT = 0;
+let score = 0, combo = 0, comboTimer = 0, slowmo = 0, crashTimer = 0, shake = 0;
+/** When the winner screen went up (wall clock, ms): a short pause before a press can dismiss it. */
+let overAt = 0;
 let startZ = 0;
 const near = new Map<string, { gap: number; type: string }>(); // obstacle id -> closest gap while passing
 const prevPos = new THREE.Vector3();
@@ -1014,7 +1016,7 @@ function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall 
 // ---------- Winning score: the match ends when someone gets there ----------
 /** Solo arena: you shot down enough birds. */
 function winSolo() {
-  mode = 'over'; overT = 0;
+  mode = 'over'; overAt = performance.now();
   const final = Math.floor(score);
   const isBest = final > best;
   if (isBest) { best = final; try { localStorage.setItem(bestKey(), String(best)); } catch { /* ignore */ } }
@@ -1027,7 +1029,7 @@ function showOnlineResult(r: MatchResult) {
   closePause();
   if (downcam.playing) endDownCam();
   dogfight.reset();
-  mode = 'over'; overT = 0; slowmo = 0;
+  mode = 'over'; overAt = performance.now(); slowmo = 0;
   const me = r.players.find((p) => p.id === online.myId);
   const teams = r.team >= 0;
   const iWon = teams ? me?.team === r.team : r.winner === online.myId;
@@ -1563,7 +1565,7 @@ function frame(now: number) {
   }
   else if (mode === 'crashed' && inp.anyPress && crashTimer > 0.8 && crashTimer > downcamEndT + 0.4) { spawn(); mode = 'flying'; hud.overlay.classList.add('hidden'); }
   else if (mode === 'over') {
-    overT += realDt;
+    const overT = (performance.now() - overAt) / 1000;
     // solo: fly again, or back to the menu. Online: back to the room's lobby (the room stays open).
     if (online.active) { if ((inp.anyPress || menuReq) && overT > 1.2) goToMenu(); }
     else if (menuReq || nav.back || nav.menu) goToMenu();
@@ -1860,7 +1862,7 @@ function frame(now: number) {
     hud.warn.textContent = isSpace() ? '◀ LEAVING THE BATTLE: TURN BACK ▶' : '◀ NO WAY OVER THE WALL: TURN BACK ▶';
     hud.warn.style.opacity = String(0.5 + 0.5 * Math.sin(t * 10));
   }
-  hud.score.textContent = mode === 'title' || replaying ? '' : String(Math.floor(score));
+  hud.score.textContent = mode === 'title' || replaying || (mode === 'over' && online.active) ? '' : String(Math.floor(score));
   hud.combo.style.opacity = combo > 0 && mode === 'flying' ? '1' : '0';
   hud.combo.textContent = `combo x${multiplier().toFixed(1)}`;
   hud.stats.textContent = mode === 'flying'
