@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { makeNoise2D, hash2 } from './noise';
+import { makeNoise2D, hash2, lockWorldSeed } from './noise';
 import { route, type Biome, type LiveBranch } from './route';
 import { SPACE_VOID, spaceBarrier, shipPartsNear, spaceGap } from './space';
+import { Course, type CourseDef } from './course';
 
 // ---------- Terrain shape: an endless downhill mountainside ----------
 // Forward is -Z. The ground falls away by SLOPE metres per metre travelled.
@@ -56,7 +57,32 @@ export function arenaBarrier(pos: { x: number; y: number; z: number }): number {
   return r - ARENA_LID_R;
 }
 let arena: ArenaEnv | null = null;
-export function setArena(a: ArenaEnv | null) { arena = a; }
+export function setArena(a: ArenaEnv | null) { arena = a; if (a) setCourse(null); }
+
+// ---------- Time trial courses (course.ts): a fixed mountain, the same for everyone ----------
+let course: Course | null = null;
+let courseSceneStale = true;
+/** Load a time trial course (null = back to the endless mountain / arenas). Pins the world seed while it's loaded. */
+export function setCourse(def: CourseDef | null) {
+  if ((course?.def ?? null) === def) return;
+  if (def) arena = null;
+  lockWorldSeed(def ? def.seed : null);
+  course = def ? new Course(def) : null;
+  courseSceneStale = true;
+}
+export function getCourse() { return course; }
+/** Metres of free air around a point (negative = inside rock). Cave-aware; elsewhere it's height above the ground. */
+export function solidClearance(x: number, y: number, z: number): number {
+  return course ? course.solidClearance(x, y, z) : y - terrainHeight(x, z);
+}
+/** Height of the ground under a point: a cave's floor when inside one, otherwise the terrain. */
+export function floorBelow(x: number, y: number, z: number): number {
+  return course ? course.floorBelow(x, y, z) : terrainHeight(x, z);
+}
+/** 0..1 along the loaded course's main line (0 when no course). */
+export function courseProgress(x: number, z: number): number { return course ? course.progress(x, z) : 0; }
+/** 0..1: how deep inside a cave a point is (for darkening the fog). */
+export function caveShade(x: number, y: number, z: number): number { return course ? course.caveShade(x, y, z) : 0; }
 export function getArena() { return arena; }
 /** Level-flight cruise speed the arena's flapping holds (m/s). Climbing still costs speed, diving still adds it. */
 export const CRUISE_SPEED = 34;
@@ -81,7 +107,7 @@ const SKIM_DRAG_CUT = 0.25; // fraction of drag the ground cushion takes away
 /** How deep in ground effect a bird at (x, y, z) is: 1 on the deck, 0 above SKIM_HEIGHT. */
 export function skimAmount(x: number, y: number, z: number): number {
   if (isSpace()) return 0;
-  return 1 - smoothstep(y - terrainHeight(x, z), SKIM_FULL, SKIM_HEIGHT);
+  return 1 - smoothstep(y - floorBelow(x, y, z), SKIM_FULL, SKIM_HEIGHT);
 }
 /** Ground-effect acceleration (m/s^2) for a bird at (x, y, z) flying at `speed`. */
 export function skimThrust(x: number, y: number, z: number, speed: number): number {
@@ -140,6 +166,7 @@ export function cliffHeight(z: number): number {
   return a * 55 * smoothstep(-z, 400, 900);
 }
 export function basePlane(z: number): number {
+  if (course) return course.envelope(z) - 60;
   if (arena) return 0;
   const s = (-z / STEP) - Math.floor(-z / STEP); // 0..1 through each stretch
   const saw = s < 0.95 ? s / 0.95 : 1 - smoothstep(s, 0.95, 1);
@@ -158,6 +185,7 @@ const liveTmp2: LiveBranch[] = [];
 
 /** The valley (route branch) nearest to x at depth z. */
 export function nearestBranch(x: number, z: number, lv?: LiveBranch[]): LiveBranch {
+  if (course) { ARENA_BRANCH.biome = ARENA_BRANCH.parent = course.def.biome; return ARENA_BRANCH; }
   if (arena) { ARENA_BRANCH.biome = ARENA_BRANCH.parent = arena.biome; return ARENA_BRANCH; }
   lv ??= route.live(z, liveTmp2);
   let best = lv[0], bd = Infinity;
@@ -179,7 +207,7 @@ function riverAmount(z: number): number {
 }
 /** 0..1: how much (x, z) is river water. */
 export function riverAt(x: number, z: number, nb?: LiveBranch): number {
-  if (arena) return 0;
+  if (arena || course) return 0;
   nb ??= nearestBranch(x, z);
   if (nb.canyon > 0.2) return 0;
   const wet = riverAmount(z) * (1 - biomeWeight(nb, 'desert'));
@@ -189,6 +217,7 @@ export function riverAt(x: number, z: number, nb?: LiveBranch): number {
 }
 
 export function terrainHeight(x: number, z: number): number {
+  if (course) return course.height(x, z);
   if (arena) return arena.id === 'space' ? SPACE_VOID : arenaHeight(x, z);
   const lv = route.live(z, liveTmp);
   // valleys: the nearest open valley wins; closed valleys rise back into the mountainside.
@@ -244,6 +273,7 @@ export function terrainHeight(x: number, z: number): number {
 
 /** How deep in a canyon slot (x, z) is, 0..1. */
 export function canyonAt(x: number, z: number): number {
+  if (course) return 0;
   if (arena) return arena.id === 'canyons' ? smoothstep(arenaCanyon(x, z), 0.4, 0.9) : 0;
   let best = 0;
   for (const b of route.live(z, liveTmp2)) {
@@ -260,7 +290,7 @@ export function gateZ(k: number) { return -GATE_START - k * GATE_SPACING; }
 export function nearestGateIndex(z: number) { return Math.round((-z - GATE_START) / GATE_SPACING); }
 /** Keep trees and rocks off the flight line around each gate. */
 function nearGateLine(x: number, z: number): boolean {
-  if (arena) return false;
+  if (arena || course) return false;
   const k = nearestGateIndex(z);
   if (k < 0) return false;
   const dz = gateZ(k) - z; // positive once past the gate
@@ -303,6 +333,8 @@ export interface Obstacle {
   id: string; type: ObstacleType;
   x: number; z: number; y0: number; top: number; r: number; scale: number; tint: number;
   kind?: TreeKind; biome?: Biome;
+  /** drawn darker (set pieces deep in a cave) */
+  dark?: boolean;
   /** space (a box of a ship's hull): centre height, heading (ax, az) and half sizes along / up / across */
   cy?: number; ax?: number; az?: number; hx?: number; hy?: number; hz?: number;
   /** space: a block's cross-section at its stern / bow ends [height scale, width scale, drop], and its rounded long edges */
@@ -325,7 +357,8 @@ export function treeAt(ix: number, iz: number): Obstacle | null {
   const z = (iz + 0.15 + hash2(ix, iz, 2) * 0.7) * TREE_CELL;
   const biome = biomeAt(x, z, hash2(ix, iz, 6));
   const dens = biome === 'desert' ? 0.3 : forestDensity(x, z);
-  if (hash2(ix, iz, 3) > dens * (arena ? arena.trees : TREE_DENSITY[biome])) return null;
+  if (hash2(ix, iz, 3) > dens * (arena ? arena.trees : course ? course.def.look.trees * TREE_DENSITY[biome] : TREE_DENSITY[biome])) return null;
+  if (course?.keepClear(x, z)) return null; // the racing lines stay open
   if (arena && arena.id === 'canyons' && arenaCanyon(x, z) > 0.3) return null; // keep the slots flyable
   if (nearGateLine(x, z) || riverAt(x, z) > 0.05) return null;
   // avoid steep faces
@@ -345,8 +378,10 @@ export function rockAt(ix: number, iz: number): Obstacle | null {
   const x = (ix + 0.2 + hash2(ix, iz, 12) * 0.6) * ROCK_CELL;
   const z = (iz + 0.2 + hash2(ix, iz, 13) * 0.6) * ROCK_CELL;
   const biome = biomeAt(x, z, hash2(ix, iz, 19));
-  const sp = arena ? arena.spires : SPIRE_P[biome], bp = sp + (arena ? arena.boulders : BOULDER_P[biome]);
+  const sp = arena ? arena.spires : course ? 0 : SPIRE_P[biome];
+  const bp = sp + (arena ? arena.boulders : course ? course.def.look.rocks * BOULDER_P[biome] : BOULDER_P[biome]);
   if (roll >= bp) return null;
+  if (course?.keepClear(x, z, true)) return null;
   if (nearGateLine(x, z) || riverAt(x, z) > 0.05) return null;
   const y0 = terrainHeight(x, z);
   if (roll < sp) {
@@ -362,7 +397,7 @@ export function rockAt(ix: number, iz: number): Obstacle | null {
 // Rock bridges spanning canyon slots: fly under, or over, but not through.
 export const BRIDGE_CELL = 95;
 export function bridgesAt(iz: number, out: Obstacle[]) {
-  if (arena) return;
+  if (arena || course) return;
   const z = (iz + 0.5) * BRIDGE_CELL;
   // keep bridges clear of gates and wind tunnels
   const gd = gateZ(nearestGateIndex(z)) - z;
@@ -415,6 +450,7 @@ export function obstaclesNear(x: number, z: number, radius: number, out: Obstacl
   const r0z = Math.floor((z - radius - 30) / ROCK_CELL), r1z = Math.floor((z + radius + 30) / ROCK_CELL);
   for (let ix = r0x; ix <= r1x; ix++) for (let iz = r0z; iz <= r1z; iz++) { const o = rockAt(ix, iz); if (o) out.push(o); }
   for (let iz = Math.floor((z - radius - 5) / BRIDGE_CELL); iz <= Math.floor((z + radius + 5) / BRIDGE_CELL); iz++) bridgesAt(iz, out);
+  if (course) course.piecesNear(x, z, radius + 12, out as never[]);
   if (arena) {
     const m = 40; // arches reach this far from their cell's anchor
     for (let ix = Math.floor((x - radius - m) / ARCH_CELL); ix <= Math.floor((x + radius + m) / ARCH_CELL); ix++)
@@ -454,13 +490,13 @@ export function cloudAt(ix: number, iz: number): Cloud | null {
   if (arena?.id === 'space') return null;
   const cx0 = (ix + 0.5) * CLOUD_CELL, cz0 = (iz + 0.5) * CLOUD_CELL;
   if (arena && Math.hypot(cx0, cz0) > ARENA_R + 150) return null;
-  const misty = arena ? (arena.lowClouds ? 1 : 0) : biomeWeight(nearestBranch(cx0, cz0), 'misty');
-  if (hash2(ix, iz, 31) > (arena ? arena.clouds : 0.6 + misty * 0.35)) return null;
+  const misty = arena ? (arena.lowClouds ? 1 : 0) : course ? (course.def.look.lowClouds ? 1 : 0) : biomeWeight(nearestBranch(cx0, cz0), 'misty');
+  if (hash2(ix, iz, 31) > (arena ? arena.clouds : course ? course.def.look.clouds : 0.6 + misty * 0.35)) return null;
   const cx = cx0 + (hash2(ix, iz, 32) - 0.5) * 80;
   const cz = cz0 + (hash2(ix, iz, 33) - 0.5) * 80;
   const ground = terrainHeight(cx, cz);
   // misty valleys hang their clouds low, right in the flight path
-  const low = misty > 0.5 && (!arena || hash2(ix, iz, 40) < 0.65);
+  const low = misty > 0.5 && (!(arena || course) || hash2(ix, iz, 40) < 0.65);
   const cy = low ? ground + 8 + hash2(ix, iz, 34) * 22
     : arena ? Math.max(ground + 22, 30 + hash2(ix, iz, 34) * 120)
     : Math.max(ground + 22, basePlane(cz) + 15 + hash2(ix, iz, 34) * 90);
@@ -574,8 +610,8 @@ export class Chunk {
     const N = SEG + 1;
     const hs = new Float32Array(N * N);
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) hs[j * N + i] = terrainHeight(x0 + i * step, z0 + j * step);
-    const pos = new Float32Array(SEG * SEG * 6 * 3);
-    const col = new Float32Array(SEG * SEG * 6 * 3);
+    let pos = new Float32Array(SEG * SEG * 6 * 3);
+    let col = new Float32Array(SEG * SEG * 6 * 3);
     const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
     const e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
     let p = 0;
@@ -583,6 +619,8 @@ export class Chunk {
       a.set(x0 + i0 * step, hs[j0 * N + i0], z0 + j0 * step);
       b.set(x0 + i1 * step, hs[j1 * N + i1], z0 + j1 * step);
       c.set(x0 + i2 * step, hs[j2 * N + i2], z0 + j2 * step);
+      // time trials: leave out the ground across a cave's mouth (the tunnel mesh takes over there)
+      if (course && course.cullGround(a.x, a.y, a.z) && course.cullGround(b.x, b.y, b.z) && course.cullGround(c.x, c.y, c.z)) return;
       e1.subVectors(b, a); e2.subVectors(c, a);
       const nrm = e1.cross(e2).normalize();
       faceColor((a.x + b.x + c.x) / 3, (a.z + b.z + c.z) / 3, Math.abs(nrm.y), (a.y + b.y + c.y) / 3, tmpC);
@@ -596,6 +634,7 @@ export class Chunk {
       if ((i + j) % 2 === 0) { tri(i, j, i, j + 1, i + 1, j); tri(i + 1, j, i, j + 1, i + 1, j + 1); }
       else { tri(i, j, i, j + 1, i + 1, j + 1); tri(i, j, i + 1, j + 1, i + 1, j); }
     }
+    if (p < pos.length) { pos = pos.slice(0, p); col = col.slice(0, p); }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
@@ -622,6 +661,8 @@ export class Chunk {
       for (let iz = Math.floor((z0 - 40) / ARCH_CELL); iz <= Math.floor((z0 + CHUNK + 40) / ARCH_CELL); iz++) archAt(ix, iz, bridgeParts);
     for (const o of bridgeParts) if (o.type === 'spire' && o.x >= x0 && o.x < x0 + CHUNK && o.z >= z0 && o.z < z0 + CHUNK) spires.push(o);
     for (const o of bridgeParts) if (o.type === 'rock' && o.x >= x0 && o.x < x0 + CHUNK && o.z >= z0 && o.z < z0 + CHUNK) rocks.push(o);
+    if (course) for (const o of course.piecesNear(x0 + CHUNK / 2, z0 + CHUNK / 2, CHUNK, []) as Obstacle[])
+      if (o.x >= x0 && o.x < x0 + CHUNK && o.z >= z0 && o.z < z0 + CHUNK) (o.type === 'spire' ? spires : rocks).push(o);
 
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), pv = new THREE.Vector3();
     const c = new THREE.Color();
@@ -645,7 +686,7 @@ export class Chunk {
         q.setFromEuler(new THREE.Euler(r.tint * 3, r.tint * 7, r.tint * 5));
         m.compose(pv.set(r.x, r.y0, r.z), q, s.set(r.scale, r.scale * (0.7 + r.tint * 0.4), r.scale));
         im.setMatrixAt(i, m);
-        im.setColorAt(i, c.copy(ROCK_TINT[r.biome ?? 'meadow']).multiplyScalar(0.85 + r.tint * 0.3));
+        im.setColorAt(i, c.copy(ROCK_TINT[r.biome ?? 'meadow']).multiplyScalar((0.85 + r.tint * 0.3) * (r.dark ? 0.45 : 1)));
       });
       this.group.add(im);
     }
@@ -655,7 +696,7 @@ export class Chunk {
         q.setFromAxisAngle(up, r.tint * 6.28);
         m.compose(pv.set(r.x, r.y0, r.z), q, s.set(r.r, r.top - r.y0, r.r));
         im.setMatrixAt(i, m);
-        im.setColorAt(i, c.copy(ROCK_TINT[r.biome ?? 'meadow']).multiplyScalar(0.8 + r.tint * 0.3));
+        im.setColorAt(i, c.copy(ROCK_TINT[r.biome ?? 'meadow']).multiplyScalar((0.8 + r.tint * 0.3) * (r.dark ? 0.45 : 1)));
       });
       this.group.add(im);
     }
@@ -686,7 +727,21 @@ export class Chunk {
 
 export class World {
   chunks = new Map<string, Chunk>();
+  /** the loaded course's own meshes (cave tubes, timing gates) */
+  private courseGroup: THREE.Group | null = null;
   constructor(private scene: THREE.Scene, public radius = 4) {}
+
+  private syncCourse() {
+    if (!courseSceneStale) return;
+    courseSceneStale = false;
+    if (this.courseGroup) {
+      this.scene.remove(this.courseGroup);
+      this.courseGroup.traverse((o) => { if (o instanceof THREE.Mesh) o.geometry.dispose(); });
+      this.courseGroup = null;
+    }
+    if (course) { this.courseGroup = course.buildScene(); this.scene.add(this.courseGroup); }
+    this.reset();
+  }
 
   /** Drop every chunk (a new run has a new route). */
   reset() {
@@ -697,6 +752,7 @@ export class World {
   /** Stream chunks around a focus point (biased ahead of the bird). Builds at most `budget` per call. */
   update(fx: number, fz: number, budget = 2) {
     if (arena?.id === 'space') { if (this.chunks.size) this.reset(); return 0; } // nothing to stand on up here
+    this.syncCourse();
     const ccx = Math.floor(fx / CHUNK), ccz = Math.floor(fz / CHUNK);
     const R = this.radius;
     const want: [number, number, number][] = [];
