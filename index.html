@@ -117,6 +117,17 @@
   @media (hover: hover) { #overlay button.go-btn:hover { background: #ffd978; } }
   #overlay button.cta { display: block; width: 100%; margin: 16px 0 4px; font-size: 22px; padding: 14px; border-radius: 16px; }
   #overlay button.cta.sel { outline: 3px solid #fff; outline-offset: 3px; }
+  /* online room menu: Esc / Start / B during a match. The match can't pause, so it floats over the game. */
+  #pause { position: fixed; inset: 0; z-index: 40; display: none; align-items: center; justify-content: center; text-align: center; padding: 16px; box-sizing: border-box;
+    background: rgba(10,25,40,.5); }
+  #pause.on { display: flex; }
+  #pause .menu h1 { font-size: clamp(34px, min(9vw, 9vh), 60px); }
+  #pause p { margin: 6px 0; font-size: 16px; }
+  #pause button { font: inherit; font-weight: 800; font-size: 17px; color: #fff; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.3);
+    border-radius: 12px; padding: 10px 18px; min-height: 48px; min-width: 140px; cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  #pause button.sel { outline: 3px solid #fff; outline-offset: 3px; background: rgba(255,255,255,.2); }
+  #pause button.danger { background: #c8402f; border-color: transparent; }
+  #pause .hint { font-size: 13px; opacity: .7; margin-top: 12px; }
   .btns { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
   /* mode tabs: a segmented control that shares its width between however many modes there are */
   .tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; border-radius: 15px; background: rgba(0,0,0,.25); }
@@ -345,6 +356,7 @@
   <div id="gunCross"></div>
   <div id="stick"><div id="knob"></div></div>
   <div id="downcam"><div class="lab"><b>DOWN CAM</b><span id="downcamWho"></span></div><div class="bar"><i id="downcamBar"></i></div><div class="skip" id="downcamSkip"></div></div>
+  <div id="pause"></div>
   <div id="overlay"><div class="menu side"><h1>Glide!</h1></div></div>
   <div id="rotate"><div class="phone"></div><b>Turn your phone sideways</b><p>Glide! plays in landscape.</p><p class="tap">Tap to go full screen</p></div>
   <script type="module" src="/src/main.ts"></script>

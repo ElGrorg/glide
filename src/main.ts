@@ -602,19 +602,69 @@ function menuAct(target: HTMLElement) {
   const [k, v] = act.split(':');
   if (['go', 'host', 'join', 'joinroom'].includes(k)) goLandscape();
   if (k === 'joinroom') { settings.code = cleanCode(v); onlineAction('join'); return; }
+  if (k === 'leave' && online.active && lobbyLeaveNeedsConfirm()) { openPause('confirm', true); return; }
   if (settings.mode === 'online' && ['host', 'join', 'leave', 'copy', 'go'].includes(k)) { onlineAction(k); return; }
+  if (k === 'pause') { if (online.phase === 'playing') openPause('confirm'); return; }
   if (k === 'go') startReq = true;
   else if (k === 'menu') menuReq = true;
   else if (k === 'mode') { menuRow = 0; menuChange('mode', MODES.indexOf(v as GameMode) - MODES.indexOf(settings.mode)); }
   else { menuRow = MENU_ROWS.indexOf(k as typeof MENU_ROWS[number]); menuChange(k, Number(v)); }
 }
 function goToMenu() {
+  closePause();
   if (online.phase === 'playing') online.leave();
   mode = 'title';
   spawn(true);
   renderMenu();
   hud.overlay.classList.remove('hidden');
 }
+
+// Online room menu. Leaving (and, for the host, closing the room for everyone) is never one button press
+// away: Esc / Start / B opens this menu with "Keep flying" picked, and leaving needs a second "are you sure".
+// The match can't pause, so the game carries on underneath (and you still respawn on time).
+const pauseEl = $('pause');
+let pause: null | 'menu' | 'confirm' = null, pauseSel = 0, pauseFromLobby = false, pauseDirect = false;
+function openPause(step: 'menu' | 'confirm' = 'menu', fromLobby = false) {
+  pause = step; pauseSel = 0; pauseFromLobby = fromLobby; pauseDirect = step === 'confirm';
+  renderPause();
+}
+function closePause() { pause = null; pauseEl.classList.remove('on'); pauseEl.innerHTML = ''; }
+function renderPause() {
+  if (!pause) return closePause();
+  const host = online.isHost;
+  const opts = pause === 'menu'
+    ? [['Keep flying', ''], [host ? 'Close room…' : 'Leave room…', '']]
+    : [['Cancel', ''], [host ? 'Close room' : 'Leave room', 'danger']];
+  const text = pause === 'menu'
+    ? `<h1>Room menu</h1><p>The match keeps going while this is open.</p>`
+    : host
+      ? `<h1>Close the room?</h1><p>You're the host. Everyone in the room goes back to the menu.</p>`
+      : `<h1>Leave the room?</h1><p>You'll go back to the menu. The match carries on without you.</p>`;
+  const hint = isTouch ? '' : `<p class="hint">${pause === 'menu' ? 'Esc / Start / B to keep flying' : 'Esc / B to go back'}</p>`;
+  pauseEl.innerHTML = `<div class="menu"><div class="panel center">${text}<div class="btns">${opts.map(([label, cls], i) =>
+    `<button data-p="${i}" class="${cls}${i === pauseSel ? ' sel' : ''}">${label}</button>`).join('')}</div>${hint}</div></div>`;
+  pauseEl.classList.add('on');
+}
+function pauseBack() {
+  if (pause === 'confirm' && !pauseDirect) { pause = 'menu'; pauseSel = 0; renderPause(); } else closePause();
+}
+function pauseAct(i: number) {
+  audio.start();
+  if (pause === 'menu') { if (i === 1) { pause = 'confirm'; pauseSel = 0; renderPause(); } else closePause(); }
+  else if (pause === 'confirm') {
+    if (i !== 1) return pauseBack();
+    const lobby = pauseFromLobby;
+    closePause();
+    if (lobby) onlineAction('leave'); else { settings.mode = 'online'; goToMenu(); }
+  }
+}
+// a click fires on finger lift, and not after a drag, so taps behave like the rest of the menus
+pauseEl.addEventListener('click', (e) => {
+  const b = (e.target as HTMLElement).closest('[data-p]');
+  if (b) pauseAct(Number(b.getAttribute('data-p')));
+});
+/** Host in a lobby other players have joined: leaving closes the room on them, so ask first. */
+const lobbyLeaveNeedsConfirm = () => online.isHost && online.roster().length > 1;
 
 // Pop-up announcements (forks ahead, new enemy, close call +pts, ...) are switched off: the screen stays
 // clean. Lock-on reticles, the dart / stall warning bar, the score and the dart counter still show.
@@ -760,6 +810,7 @@ function spawn(fresh = true) {
 
 /** Online: the host started the match (or you joined one in progress). Everyone builds the same arena from the same seed. */
 function startOnlineMatch(rules: MatchRules) {
+  if (pauseFromLobby) closePause(); // the host started while you were deciding whether to leave
   clearTimeout(previewTimer);
   arenaIdx = THREE.MathUtils.clamp(rules.arena, 0, ARENAS.length - 1);
   setArena(rules.space ? SPACE_ARENA : ARENAS[arenaIdx]);
@@ -916,7 +967,7 @@ function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall 
     // online: no game over, you're straight back in
     online.downed(by, how);
     const who = by && by !== 'ai' ? esc(online.nameOf(by)) : by === 'ai' ? 'a wild bird' : '';
-    hud.overlay.innerHTML = `<div class="menu"><h1>${title}</h1><div class="panel center">${who ? `<p>by <b>${who}</b></p>` : ''}<p class="big">${online.kills} down · ${online.deaths} time${online.deaths === 1 ? '' : 's'} downed</p><div class="go" id="respawnIn">Back in the air in 3…</div><div class="btns"><button data-act="menu">${isTouch ? 'Leave room' : 'Leave room (Esc)'}</button></div></div></div>`;
+    hud.overlay.innerHTML = `<div class="menu"><h1>${title}</h1><div class="panel center">${who ? `<p>by <b>${who}</b></p>` : ''}<p class="big">${online.kills} down · ${online.deaths} time${online.deaths === 1 ? '' : 's'} downed</p><div class="go" id="respawnIn">Back in the air in 3…</div><div class="btns"><button data-act="pause">${isTouch ? 'Leave room…' : 'Room menu (Esc)'}</button></div></div></div>`;
     setTimeout(() => { if (mode === 'crashed' && !downcam.playing) hud.overlay.classList.remove('hidden'); }, 500);
     return;
   }
@@ -1349,7 +1400,15 @@ function frame(now: number) {
   if (inp.anyPress) audio.start();
   if (inp.view && mode !== 'title') { settings.view = settings.view === 'cockpit' ? 'chase' : 'cockpit'; saveSettings(); }
   const nav = inp.nav;
-  if (mode === 'title') {
+  if (pause && !online.active) closePause();
+  if (pause) {
+    // the room menu has the buttons; the online respawn still counts down underneath
+    if (nav.x || nav.y) { pauseSel = THREE.MathUtils.clamp(pauseSel + (nav.x || nav.y), 0, 1); renderPause(); }
+    if (nav.menu) closePause();
+    else if (nav.back) pauseBack();
+    else if (nav.ok) pauseAct(pauseSel);
+    if (mode === 'crashed' && online.phase === 'playing' && !downcam.playing && crashTimer > respawnAt) respawnOnline();
+  } else if (mode === 'title') {
     const rows = menuRows() as readonly string[];
     if (nav.y) {
       let i = rows.indexOf(MENU_ROWS[menuRow]);
@@ -1363,19 +1422,21 @@ function frame(now: number) {
       const row = MENU_ROWS[menuRow];
       if (nav.ok && rows.includes(row) && ['host', 'join', 'go'].includes(row)) onlineAction(row);
       if (nav.ok && row === 'rooms' && openRooms[roomSel] && openRooms[roomSel].players < openRooms[roomSel].max) { settings.code = openRooms[roomSel].code; onlineAction('join'); }
-      if (nav.back && online.active) onlineAction('leave');
+      if (nav.back && online.active) { if (lobbyLeaveNeedsConfirm()) openPause('confirm', true); else onlineAction('leave'); }
     } else if (startReq || (nav.ok && !inp.nav.back)) {
       clearTimeout(previewTimer);
       spawn(false); // keeps the world the title was showing
       mode = 'flying'; hud.overlay.classList.add('hidden');
     }
-  } else if (mode === 'crashed' && (menuReq || nav.back || nav.menu)) goToMenu();
+  } else if (mode === 'crashed' && online.phase === 'playing' && (nav.back || nav.menu)) openPause();
+  else if (mode === 'crashed' && (menuReq || nav.back || nav.menu)) goToMenu();
   else if (mode === 'crashed' && downcam.playing) { if (inp.anyPress && downcam.elapsed > 0.35) endDownCam(); }
   else if (mode === 'crashed' && online.phase === 'playing') {
     if (crashTimer > respawnAt) respawnOnline();
     else { const el = document.getElementById('respawnIn'); if (el) el.textContent = `Back in the air in ${Math.ceil(respawnAt - crashTimer)}…`; }
   }
   else if (mode === 'crashed' && inp.anyPress && crashTimer > 0.8 && crashTimer > downcamEndT + 0.4) { spawn(); mode = 'flying'; hud.overlay.classList.add('hidden'); }
+  else if (mode === 'flying' && online.phase === 'playing' && nav.menu) openPause();
   else if (mode === 'flying' && (nav.menu || menuReq)) goToMenu();
   startReq = false; menuReq = false;
   const inArena = !!getArena();
@@ -1699,5 +1760,5 @@ addEventListener('resize', () => {
 
 // ?debug exposes the game objects to the console (used for the two-browser online tests)
 if (new URLSearchParams(location.search).has('debug')) {
-  (window as any).glide = { online, dogfight, glider, get hp() { return hp; }, get shield() { return spawnShield; }, get t() { return t; }, get mode() { return mode; }, get score() { return score; } };
+  (window as any).glide = { online, dogfight, glider, get hp() { return hp; }, get shield() { return spawnShield; }, get t() { return t; }, get mode() { return mode; }, get score() { return score; }, get pause() { return pause; }, crash: (how: 'pea' | 'dart' | 'crash' = 'pea') => crash('Shot down!', how) };
 }
