@@ -10,13 +10,14 @@ export function setWorldSeed(seed: number) {
   for (const r of reseeders) r();
 }
 
-// Compact 2D simplex noise with a permutation table seeded from `seed` mixed with the world seed.
-export function makeNoise2D(seed = 1) {
+// Compact 2D simplex noise with a permutation table seeded from `seed` mixed with the world seed
+// (`pure`: from `seed` alone, never reshuffled: for fixed shapes such as the time trial courses).
+export function makeNoise2D(seed = 1, pure = false) {
   const perm = new Uint8Array(512);
   const p = new Uint8Array(256);
   const shuffle = () => {
     for (let i = 0; i < 256; i++) p[i] = i;
-    let s = (seed ^ Math.imul(worldSeed, 2654435761)) >>> 0 || 1;
+    let s = (seed ^ (pure ? 0x5bd1e995 : Math.imul(worldSeed, 2654435761))) >>> 0 || 1;
     const rand = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
     for (let i = 255; i > 0; i--) {
       const j = Math.floor(rand() * (i + 1));
@@ -25,7 +26,7 @@ export function makeNoise2D(seed = 1) {
     for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
   };
   shuffle();
-  reseeders.push(shuffle);
+  if (!pure) reseeders.push(shuffle);
   const grad = [[1,1],[-1,1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
   const F2 = 0.5 * (Math.sqrt(3) - 1);
   const G2 = (3 - Math.sqrt(3)) / 6;
