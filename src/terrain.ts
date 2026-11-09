@@ -197,7 +197,7 @@ export class MeshTerrain implements TerrainSource {
     if (++this.tick === 0xffffffff) { st.fill(0); this.tick = 1; }
     const tick = this.tick;
     const ci = Math.floor((x - this.gx0) / CELL), cj = Math.floor((z - this.gz0) / CELL);
-    let best = FAR * FAR;
+    let best = FAR * FAR, bt = -1;
     const R = Math.ceil(FAR / CELL);
     // grow square rings of cells; stop once the ring is further away than the best hit
     for (let r = 0; r <= R; r++) {
@@ -211,12 +211,23 @@ export class MeshTerrain implements TerrainSource {
           if (st[t] === tick) continue;
           st[t] = tick;
           const d = pointTri2(x, y, z, T, t * 9);
-          if (d < best) best = d;
+          if (d < best) { best = d; bt = t; }
         }
       }
     }
     const d = Math.sqrt(best);
-    return this.inside(x, y, z) ? -d : d;
+    // Inside rock only when both tests agree: an odd number of surfaces overhead, and the nearest face turned
+    // away from the point. Game and scan models are rarely closed solids (a road is a sheet, a tunnel is an
+    // open tube, there can be a sky dome overhead), so parity alone would call a tunnel solid rock. When in
+    // doubt it's air: the distance check and the segment sweep still catch every surface you fly into.
+    return bt >= 0 && this.facesAway(bt, x, y, z) && this.inside(x, y, z) ? -d : d;
+  }
+  private facesAway(t: number, x: number, y: number, z: number) {
+    const T = this.tris, o = t * 9;
+    const e1x = T[o + 3] - T[o], e1y = T[o + 4] - T[o + 1], e1z = T[o + 5] - T[o + 2];
+    const e2x = T[o + 6] - T[o], e2y = T[o + 7] - T[o + 1], e2z = T[o + 8] - T[o + 2];
+    const nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+    return (x - T[o]) * nx + (y - T[o + 1]) * ny + (z - T[o + 2]) * nz < 0;
   }
   crossed(ax: number, ay: number, az: number, bx: number, by: number, bz: number) {
     const T = this.tris, st = this.stamp;
