@@ -18,7 +18,9 @@ const { smoothstep, clamp, lerp } = THREE.MathUtils;
 export type PathKind = 'valley' | 'canyon' | 'cave';
 /** [x, z, floorY, halfWidth, height]: height is a cave's floor-to-roof height or a canyon's wall depth. */
 export type CtrlPt = [number, number, number, number, number?];
-export interface PathDef { id: string; kind: PathKind; pts: CtrlPt[] }
+/** `dens`: how thick the trees, boulders and pillars grow on this path's floor (1 = as thick as the hillsides;
+ *  default 0.45; valleys only: canyons and caves get only their set pieces). */
+export interface PathDef { id: string; kind: PathKind; pts: CtrlPt[]; dens?: number }
 /** A set-piece obstacle placed against a path: `at` is the fraction along it, `lat` metres right of centre.
  *  A column in a cave runs floor to roof; in the open it stands `h` metres tall. A rock sits on the floor. */
 export interface PieceDef { path: string; at: number; lat: number; type: 'column' | 'rock' | 'spire'; r: number; h?: number }
@@ -31,6 +33,8 @@ export interface CourseLook {
   caveRock: number; crystal: number;
   /** tree / boulder / cloud densities (1 = normal) */
   trees: number; rocks: number; clouds: number; lowClouds: boolean;
+  /** chance of a tall rock pillar per rock cell (out on the open ground), and a size factor for the trees */
+  spires: number; tall: number;
 }
 export interface CourseDef {
   id: string;
@@ -151,11 +155,11 @@ export class Course {
   private caveBox = { x0: 0, x1: 0, z0: 0, z1: 0, y0: 0, y1: 0 };
   pieces: Piece[] = [];
   private pieceGrid = new Map<number, Piece[]>();
-  private n1 = makeNoise2D(9101); private n2 = makeNoise2D(9102); private n3 = makeNoise2D(9103);
+  private n1 = makeNoise2D(9101, true); private n2 = makeNoise2D(9102, true); private n3 = makeNoise2D(9103, true);
   /** the main line, for progress along the course */
   private main: { x: number[]; z: number[]; s: number[]; len: number } = { x: [], z: [], s: [], len: 1 };
   // scratch for nearest-segment queries
-  private bd: Float32Array; private bk: Int32Array; private bt: Float32Array; private touched: number[] = [];
+  private bd: Float32Array; private bk: Int32Array; private bt: Float32Array; private bo: Float32Array; private touched: number[] = [];
 
   constructor(public def: CourseDef) {
     def.paths.forEach((pd, idx) => {
@@ -172,11 +176,12 @@ export class Course {
       this.paths.push(p); this.byId.set(pd.id, p);
       if (pd.kind === 'cave') this.caves.push(p);
     });
-    this.bd = new Float32Array(this.paths.length); this.bk = new Int32Array(this.paths.length); this.bt = new Float32Array(this.paths.length);
+    this.bd = new Float32Array(this.paths.length); this.bk = new Int32Array(this.paths.length); this.bt = new Float32Array(this.paths.length); this.bo = new Float32Array(this.paths.length);
     this.buildGrid();
     this.buildEnvelope();
     this.buildMain();
     this.buildPieces();
+    this.buildClearSpots();
   }
 
   private buildGrid() {
@@ -288,14 +293,27 @@ export class Course {
       const sm = this.paths[pi].sm;
       const ax = sm.x[k], az = sm.z[k], dx = sm.x[k + 1] - ax, dz = sm.z[k + 1] - az;
       const l2 = dx * dx + dz * dz || 1e-6;
-      const f = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1);
+      const raw = ((x - ax) * dx + (z - az) * dz) / l2, f = clamp(raw, 0, 1);
       const ex = ax + dx * f - x, ez = az + dz * f - z;
       const d = ex * ex + ez * ez;
       if (t.indexOf(pi) < 0) { t.push(pi); bd[pi] = Infinity; }
-      if (d < bd[pi]) { bd[pi] = d; this.bk[pi] = k; this.bt[pi] = f; }
+      if (d < bd[pi]) {
+        bd[pi] = d; this.bk[pi] = k; this.bt[pi] = f;
+        // metres past the path's open end (before the start: negative), for carrying its grade on over a junction
+        this.bo[pi] = k === 0 && raw < 0 ? raw * Math.sqrt(l2) : k === sm.n - 2 && raw > 1 ? (raw - 1) * Math.sqrt(l2) : 0;
+      }
     }
     for (const pi of t) bd[pi] = Math.sqrt(bd[pi]);
     return t;
+  }
+  /** Floor height of an open path at the scanned point; past its ends the floor carries on at the end grade
+   *  (so where paths meet, neither one's end leaves a dish or a step in the other's floor). */
+  private floorY(p: Path, pi: number) {
+    const fy = this.lerpS(p, p.sm.y, pi), o = this.bo[pi];
+    if (o === 0) return fy;
+    const sm = p.sm, k = this.bk[pi];
+    const g = (sm.y[k + 1] - sm.y[k]) / (Math.hypot(sm.x[k + 1] - sm.x[k], sm.z[k + 1] - sm.z[k]) || 1);
+    return fy + clamp(g, -0.45, 0.2) * clamp(o, -40, 40);
   }
   private lerpS(p: Path, arr: Float32Array, pi: number) { const k = this.bk[pi]; return lerp(arr[k], arr[k + 1], this.bt[pi]); }
 
@@ -326,7 +344,7 @@ export class Course {
       const p = this.paths[pi];
       if (p.kind === 'cave') continue;
       const d = this.bd[pi];
-      const w = this.lerpS(p, p.sm.w, pi), fy = this.lerpS(p, p.sm.y, pi);
+      const w = this.lerpS(p, p.sm.w, pi), fy = this.floorY(p, pi);
       let v: number;
       if (p.kind === 'valley') {
         const core = w * 0.42;
@@ -341,17 +359,31 @@ export class Course {
     return h;
   }
 
-  /** How open (x, z) must be kept of trees and rocks: true on a path's racing floor. */
-  keepClear(x: number, z: number, rocks = false): boolean {
-    let caveTop = -Infinity;
+  /** How thick obstacles may grow at (x, z), as a factor of the hillside density: 0 keeps it bare (the timing
+   *  lines, the spawn run, canyon slots, cave mouths), a path's own `dens` on its floor, 1 out on the slopes. */
+  floorDensity(x: number, z: number, rocks = false): number {
+    for (const c of this.clearSpots) if ((x - c[0]) ** 2 + (z - c[1]) ** 2 < c[2] * c[2]) return 0;
+    let f = 1, caveTop = -Infinity;
     for (const pi of this.scan(x, z)) {
       const p = this.paths[pi], d = this.bd[pi], w = this.lerpS(p, p.sm.w, pi);
-      if (p.kind === 'valley' && d < w * (rocks ? 0.38 : 0.55)) return true;
-      if (p.kind === 'canyon' && d < w + 10) return true;
-      if (p.kind === 'cave' && d < w + 12) caveTop = Math.max(caveTop, this.lerpS(p, p.sm.y, pi) + this.lerpS(p, p.sm.h, pi));
+      if (p.kind === 'valley' && d < w) f = Math.min(f, (p.def.dens ?? 0.45) * (rocks ? smoothstep(d, w * 0.15, w * 0.4) * 0.6 + 0.4 : 1));
+      else if (p.kind === 'canyon' && d < w + 10) return 0; // slots: only their set pieces
+      else if (p.kind === 'cave' && d < w + 12) caveTop = Math.max(caveTop, this.lerpS(p, p.sm.y, pi) + this.lerpS(p, p.sm.h, pi));
     }
     // near a cave's mouth the slope above the portal stays bare too
-    return caveTop > -Infinity && this.height(x, z) < caveTop + 22;
+    if (caveTop > -Infinity && this.height(x, z) < caveTop + 22) return 0;
+    return f;
+  }
+  /** Bare circles [x, z, radius]: round each timing line, and along the run in from the spawn point. */
+  private clearSpots: [number, number, number][] = [];
+  private buildClearSpots() {
+    const d = this.def;
+    for (const g of [d.startGate, ...d.splits, d.finish]) if (g) {
+      this.clearSpots.push([g.x, g.z, g.halfW + 14]);
+      this.clearSpots.push([g.x - g.nx * 30, g.z - g.nz * 30, g.halfW + 8], [g.x + g.nx * 30, g.z + g.nz * 30, g.halfW + 8]);
+    }
+    if (d.start && d.startGate) for (let f = 0; f <= 1; f += 0.25)
+      this.clearSpots.push([lerp(d.start.x, d.startGate.x, f), lerp(d.start.z, d.startGate.z, f), 34]);
   }
 
   // ---------- caves ----------

@@ -357,8 +357,10 @@ export function treeAt(ix: number, iz: number): Obstacle | null {
   const z = (iz + 0.15 + hash2(ix, iz, 2) * 0.7) * TREE_CELL;
   const biome = biomeAt(x, z, hash2(ix, iz, 6));
   const dens = biome === 'desert' ? 0.3 : forestDensity(x, z);
-  if (hash2(ix, iz, 3) > dens * (arena ? arena.trees : course ? course.def.look.trees * TREE_DENSITY[biome] : TREE_DENSITY[biome])) return null;
-  if (course?.keepClear(x, z)) return null; // the racing lines stay open
+  const roll = hash2(ix, iz, 3);
+  if (roll > dens * (arena ? arena.trees : course ? course.def.look.trees * TREE_DENSITY[biome] * 1.5 : TREE_DENSITY[biome])) return null;
+  // courses: thick on the slopes, thinner (or bare) on the racing floors
+  if (course && roll > dens * course.def.look.trees * TREE_DENSITY[biome] * course.floorDensity(x, z)) return null;
   if (arena && arena.id === 'canyons' && arenaCanyon(x, z) > 0.3) return null; // keep the slots flyable
   if (nearGateLine(x, z) || riverAt(x, z) > 0.05) return null;
   // avoid steep faces
@@ -368,7 +370,7 @@ export function treeAt(ix: number, iz: number): Obstacle | null {
   if (Math.hypot(gx, gz) / 4 > 1.0) return null;
   const kind = TREE_KIND[biome];
   const shape = TREE_SHAPE[kind];
-  const scale = 0.8 + hash2(ix, iz, 4) * 1.4;
+  const scale = course ? (1 + hash2(ix, iz, 4) * 1.6) * course.def.look.tall : 0.8 + hash2(ix, iz, 4) * 1.4;
   const h = shape.h * scale;
   return { id: `t${ix},${iz}`, type: 'tree', x, z, y0: y0 - 0.8, top: y0 + h - 0.8, r: shape.r * scale, scale, tint: hash2(ix, iz, 5), kind, biome };
 }
@@ -378,12 +380,15 @@ export function rockAt(ix: number, iz: number): Obstacle | null {
   const x = (ix + 0.2 + hash2(ix, iz, 12) * 0.6) * ROCK_CELL;
   const z = (iz + 0.2 + hash2(ix, iz, 13) * 0.6) * ROCK_CELL;
   const biome = biomeAt(x, z, hash2(ix, iz, 19));
-  const sp = arena ? arena.spires : course ? 0 : SPIRE_P[biome];
-  const bp = sp + (arena ? arena.boulders : course ? course.def.look.rocks * BOULDER_P[biome] : BOULDER_P[biome]);
+  // courses: pillars and boulders on the open ground, thinner on the racing floors (floorDensity)
+  const fd = course && roll < course.def.look.spires + course.def.look.rocks * BOULDER_P[biome] ? course.floorDensity(x, z, true) : 1;
+  const sp = arena ? arena.spires : course ? course.def.look.spires * fd : SPIRE_P[biome];
+  const bp = sp + (arena ? arena.boulders : course ? course.def.look.rocks * BOULDER_P[biome] * fd : BOULDER_P[biome]);
   if (roll >= bp) return null;
-  if (course?.keepClear(x, z, true)) return null;
   if (nearGateLine(x, z) || riverAt(x, z) > 0.05) return null;
   const y0 = terrainHeight(x, z);
+  // courses: nothing perched on the cliffs (a boulder stuck to a slot wall looks like it's floating)
+  if (course && Math.hypot(terrainHeight(x + 3, z) - terrainHeight(x - 3, z), terrainHeight(x, z + 3) - terrainHeight(x, z - 3)) / 6 > 1.1) return null;
   if (roll < sp) {
     // tall spire: something to thread between (pillar fields in the desert, ice needles up high)
     const scale = 0.7 + hash2(ix, iz, 14) * 0.9;
