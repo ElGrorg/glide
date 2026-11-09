@@ -13,7 +13,8 @@ import { SPACE_R, clearSpawnY } from './space';
 //   judged by whoever fired and confirmed by the host, and a dart at another player is flown on their machine,
 //   so they can shake it exactly like a dart from an AI bird.
 
-export interface MatchRules { seed: number; arena: number; bots: number; myDarts: boolean; enemyDarts: boolean; allies: boolean; /** space fighters in the fleet battle */ space?: boolean }
+export interface MatchRules { seed: number; arena: number; bots: number; myDarts: boolean; enemyDarts: boolean; allies: boolean; /** space fighters in the fleet battle */ space?: boolean;
+  /** first to this many kills wins (a player's own in free for all, the team's total in Team up); 0 or missing = no limit */ winAt?: number }
 export interface PlayerInfo { id: string; name: string; kills: number; deaths: number; /** Team up: 0 or 1 */ team: number }
 
 /** Team up: two teams. Everyone picks one in the lobby; teammates can't hurt each other. */
@@ -60,7 +61,11 @@ export type OnlineEvent =
   | { type: 'wave'; wave: number; count: number; cleared: boolean }
   | { type: 'dartIn'; pos: THREE.Vector3; dir: THREE.Vector3; speed: number; by: string }
   | { type: 'hitConfirmed' }
-  | { type: 'chat'; from: string; line: number };                // a quick chat line (a preset, by number)
+  | { type: 'chat'; from: string; line: number }                 // a quick chat line (a preset, by number)
+  | { type: 'end'; result: MatchResult };                         // someone reached the winning score: back to the lobby
+
+/** How a match with a winning score ended: who won, and everyone's final kills and downs. */
+export interface MatchResult { winner: string; /** Team up: the winning team (0 / 1), else -1 */ team: number; winAt: number; players: PlayerInfo[] }
 
 export class Online {
   net = new Net();
@@ -84,6 +89,8 @@ export class Online {
   team = 0;
   /** The host's Players setting as the lobby sees it (clients learn it from the roster, before the match starts). */
   lobbyAllies = false;
+  /** The host's winning score as the lobby sees it (0 = no limit). */
+  lobbyWin = 0;
 
   constructor(private dogfight: Dogfight) {
     this.net.onMessage = (m) => this.receive(m);
@@ -117,6 +124,51 @@ export class Online {
   }
   /** Host: switch Team up on or off in the lobby, so everyone sees the team picker. */
   setTeams(on: boolean) { this.lobbyAllies = on; if (this.isHost && this.phase !== 'off') this.sendRoster(); }
+  /** Host: the winning score shown in the lobby (0 = no limit). */
+  setWinAt(n: number) { if (this.lobbyWin === n) return; this.lobbyWin = n; if (this.isHost && this.phase === 'lobby') this.sendRoster(); }
+  /** Kills toward the winning score: a player's own, or their team's total in Team up. */
+  scoreOf(id: string) {
+    const all = this.roster();
+    if (!this.teams) return all.find((p) => p.id === id)?.kills ?? 0;
+    const team = this.teamOf(id);
+    return all.reduce((a, p) => a + (p.team === team ? p.kills : 0), 0);
+  }
+  /** Host, every frame of a match: has a player (or a team) reached the winning score? Then the match ends for everyone. */
+  checkWin() {
+    const winAt = this.rules?.winAt ?? 0;
+    if (!this.isHost || this.phase !== 'playing' || winAt <= 0) return;
+    const all = this.roster();
+    let winner = '', team = -1;
+    if (this.teams) {
+      const k = [0, 0]; for (const p of all) k[p.team ? 1 : 0] += p.kills;
+      if (k[0] >= winAt || k[1] >= winAt) {
+        team = k[0] >= k[1] ? 0 : 1;
+        // the team's top scorer gets named as the one who did it
+        winner = all.filter((p) => p.team === team).sort((a, b) => b.kills - a.kills)[0]?.id ?? '';
+      }
+    } else {
+      const top = [...all].sort((a, b) => b.kills - a.kills || a.deaths - b.deaths)[0];
+      if (top && top.kills >= winAt) winner = top.id;
+    }
+    if (!winner && team < 0) return;
+    const result: MatchResult = { winner, team, winAt, players: all.map(({ id, name, kills, deaths, team }) => ({ id, name, kills, deaths, team })) };
+    this.net.send({ t: 'end', result });
+    this.endMatch(result);
+  }
+  /** A new match: everyone starts from nothing. */
+  private clearScores() { this.kills = 0; this.deaths = 0; for (const r of this.remotes.values()) { r.kills = 0; r.deaths = 0; } }
+  /** The match is over: everyone goes back to the room's lobby, scores cleared, ready for the host to start another. */
+  private endMatch(result: MatchResult) {
+    this.phase = 'lobby'; this.rules = null; this.alive = false; this.kills = 0; this.deaths = 0;
+    for (const r of this.remotes.values()) {
+      r.kills = 0; r.deaths = 0; r.alive = false; r.buf.length = 0; r.target.active = false;
+      if (r.puppet) { r.puppet.alive = false; r.puppet.dying = 99; r.puppet = null; }
+    }
+    this.ai.clear();
+    this.dogfight.targets = [];
+    if (this.isHost) { this.net.meta({ phase: 'lobby' }); this.sendRoster(); }
+    this.events.push({ type: 'end', result }, { type: 'lobby' });
+  }
   nameOf(id: string) { return id === this.myId ? 'you' : id === 'ai' ? 'a wild bird' : this.remotes.get(id)?.name ?? 'someone'; }
   drain() { const e = this.events; this.events = []; return e; }
 
@@ -124,8 +176,8 @@ export class Online {
   /** Listed in the room browser (relay servers only); private rooms are joined by code. */
   isPublic = true;
 
-  async host(name: string, isPublic = true, teams = false) {
-    this.reset(); this.name = name; this.lobbyAllies = teams; this.phase = 'connecting'; this.isPublic = isPublic;
+  async host(name: string, isPublic = true, teams = false, winAt = 0) {
+    this.reset(); this.name = name; this.lobbyAllies = teams; this.lobbyWin = winAt; this.phase = 'connecting'; this.isPublic = isPublic;
     try { await this.net.host({ name, public: isPublic }); this.phase = 'lobby'; }
     catch (err) { this.fail((err as Error).message); return; }
     this.net.onJoin = () => { /* waits for their hello */ };
@@ -145,6 +197,7 @@ export class Online {
     if (!this.isHost) return;
     this.rules = rules;
     this.phase = 'playing';
+    this.clearScores();
     this.sendRoster(); // everyone's team, as it stands at the start
     this.net.send({ t: 'start', rules });
     this.net.meta({ phase: 'playing', arena: rules.space ? 99 : rules.arena }); // (99 = space, for the room list)
@@ -167,7 +220,7 @@ export class Online {
   private reset() {
     for (const r of this.remotes.values()) if (r.puppet) r.puppet.alive = false;
     this.remotes.clear(); this.ai.clear(); this.targets.length = 0;
-    this.phase = 'off'; this.rules = null; this.team = 0; this.lobbyAllies = false; this.kills = 0; this.deaths = 0; this.alive = false; this.error = '';
+    this.phase = 'off'; this.rules = null; this.team = 0; this.lobbyAllies = false; this.lobbyWin = 0; this.kills = 0; this.deaths = 0; this.alive = false; this.error = '';
     this.dogfight.targets = [];
   }
 
@@ -198,7 +251,7 @@ export class Online {
   }
 
   private sendRoster() {
-    this.net.send({ t: 'roster', allies: this.phase === 'playing' ? !!this.rules?.allies : this.lobbyAllies,
+    this.net.send({ t: 'roster', allies: this.phase === 'playing' ? !!this.rules?.allies : this.lobbyAllies, win: this.phase === 'playing' ? this.rules?.winAt ?? 0 : this.lobbyWin,
       players: this.roster().map(({ id, name, kills, deaths, team }) => ({ id, name, kills, deaths, team })) });
   }
 
@@ -229,7 +282,7 @@ export class Online {
       case 'full': this.leave(); this.events.push({ type: 'left', reason: 'That room is full (8 players).' }); break;
       case 'roster': {
         const list = m.players as PlayerInfo[];
-        if (!this.isHost) this.lobbyAllies = !!m.allies;
+        if (!this.isHost) { this.lobbyAllies = !!m.allies; this.lobbyWin = Math.max(0, Math.round(Number(m.win) || 0)); }
         for (const p of list) {
           const team = Number(p.team) ? 1 : 0;
           if (p.id === this.myId) this.team = team;
@@ -240,7 +293,7 @@ export class Online {
         break;
       }
       case 'start':
-        this.rules = m.rules as MatchRules; this.phase = 'playing';
+        this.rules = m.rules as MatchRules; this.phase = 'playing'; this.clearScores();
         this.events.push({ type: 'start', rules: this.rules, late: false });
         break;
       case 'team': { // host: a player picked a team
@@ -249,6 +302,10 @@ export class Online {
         if (r) { r.team = Number(m.team) ? 1 : 0; this.sendRoster(); this.events.push({ type: 'lobby' }); }
         break;
       }
+      case 'end': // client: the host says someone reached the winning score
+        if (this.isHost || this.phase !== 'playing' || from !== 'p0') return;
+        this.endMatch(cleanResult(m.result));
+        break;
       case 'bye': this.playerLeft(from); break;
       case 'st': this.onState(from, m); break;
       case 'ai': this.onAi(m); break;
@@ -320,6 +377,7 @@ export class Online {
 
   private onState(from: string, m: NetMsg) {
     const r = this.remotes.get(from) ?? this.remote(from);
+    if (this.phase !== 'playing') return; // (a late update from a match that has just ended)
     r.kills = Number(m.k ?? r.kills); r.deaths = Number(m.d ?? r.deaths);
     r.lockOn = String(m.lk ?? ''); r.lockP = Number(m.lp ?? 0);
     const alive = !!m.a;
@@ -518,4 +576,12 @@ const arr = (v: THREE.Vector3) => [r2(v.x), r2(v.y), r2(v.z)];
 const vec = (a: unknown) => { const v = (a as number[]) ?? [0, 0, 0]; return new THREE.Vector3(+v[0] || 0, +v[1] || 0, +v[2] || 0); };
 const quat = (a: unknown) => { const v = (a as number[]) ?? [0, 0, 0, 1]; return new THREE.Quaternion(+v[0] || 0, +v[1] || 0, +v[2] || 0, +v[3] || 1).normalize(); };
 const clip = (s: string) => s.replace(/[<>&"]/g, '').trim().slice(0, 16) || 'Bird';
+/** A match result from the host, made safe to show. */
+function cleanResult(r: unknown): MatchResult {
+  const o = (r ?? {}) as Partial<MatchResult>;
+  const players = (Array.isArray(o.players) ? o.players : []).slice(0, 8).map((p) => ({
+    id: String(p?.id ?? ''), name: clip(String(p?.name ?? 'Bird')), kills: Math.max(0, Number(p?.kills) || 0), deaths: Math.max(0, Number(p?.deaths) || 0), team: Number(p?.team) ? 1 : 0,
+  }));
+  return { winner: String(o.winner ?? ''), team: o.team === 0 || o.team === 1 ? o.team : -1, winAt: Math.max(0, Number(o.winAt) || 0), players };
+}
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
