@@ -59,7 +59,8 @@ export type OnlineEvent =
   | { type: 'scored' }                                        // you got credit for a kill
   | { type: 'wave'; wave: number; count: number; cleared: boolean }
   | { type: 'dartIn'; pos: THREE.Vector3; dir: THREE.Vector3; speed: number; by: string }
-  | { type: 'hitConfirmed' };
+  | { type: 'hitConfirmed' }
+  | { type: 'chat'; from: string; line: number };                // a quick chat line (a preset, by number)
 
 export class Online {
   net = new Net();
@@ -106,6 +107,8 @@ export class Online {
   teamOf(id: string) { return id === this.myId ? this.team : this.remotes.get(id)?.team ?? -1; }
   /** On your team (Team up only): no lock-on, peas pass through, their shots can't hurt you. */
   isAlly(id: string) { return this.teams && id !== 'ai' && id !== this.myId && this.teamOf(id) === this.team; }
+  /** Quick chat: send a preset line (by number only, never free text) to everyone in the room. */
+  say(line: number) { if (this.phase === 'lobby' || this.phase === 'playing') this.net.send({ t: 'qc', l: line }); }
   /** Pick your team. Clients ask the host, who sends the roster back with it. */
   pickTeam(team: number) {
     this.team = team ? 1 : 0;
@@ -276,6 +279,11 @@ export class Online {
           for (const ev of out) if (ev.type === 'kill') this.aiKilled(ev.enemy, from, ev.ground);
           this.net.send({ t: 'hitok', to: from });
         }
+        break;
+      }
+      case 'qc': { // quick chat: only known preset numbers get through
+        const line = Number(m.l);
+        if (Number.isInteger(line) && line >= 0 && line < 16 && this.remotes.has(from)) this.events.push({ type: 'chat', from, line });
         break;
       }
       case 'hitok': this.events.push({ type: 'hitConfirmed' }); break;

@@ -8,12 +8,13 @@ import { Gates, type GateEvent } from './gates';
 import { BirdMesh, Glider, PLAYER_COLORS } from './bird';
 import { Input } from './input';
 import { WindAudio } from './audio';
-import { Dogfight, MAX_DARTS, peaSpeed, peaLife, flapAmount, type DogfightEvent } from './dogfight';
+import { Dogfight, MAX_DARTS, peaSpeed, peaLife, flapAmount, type DogfightEvent, type Enemy } from './dogfight';
 import { setWorldSeed } from './noise';
 import { Online, PLAYER_CSS, TEAM_CSS, TEAM_NAMES, colorIndex, type MatchRules } from './online';
 import { cleanCode, hasRoomBrowser, listRooms, type RoomInfo } from './net';
 import { DownCam, type Tracked } from './downcam';
 import { sfx } from './spacefx';
+import { QuickChat, lineText, botReply, BOT_NAMES, OOPS, BANTER } from './quickchat';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
@@ -231,25 +232,27 @@ const PAD_HELP: Record<string, Help> = {
   classic: [['Left stick', 'Steer (keep pulling down to loop)']],
   wings: [[`Left stick ${kb('↑↓')}`, 'Left wing'], [`Right stick ${kb('↑↓')}`, 'Right wing'], ['Both up / both down', 'Dive / climb'], ['One up, one down', 'Sharp turn']],
 };
-const PAD_COMMON: Help = [[kb('RT') + ' / ' + kb('X'), 'Shoot'], [kb('Y'), 'Homing dart'], [kb('LT') + ' / ' + kb('A'), 'Air-brake'], [kb('Back'), 'Next stick layout'], [kb('R3'), 'First-person view']];
+const PAD_COMMON: Help = [[kb('RT') + ' / ' + kb('X'), 'Shoot'], [kb('Y'), 'Homing dart'], [kb('LT') + ' / ' + kb('A'), 'Air-brake'], [kb('Back'), 'Next stick layout'], [kb('R3'), 'First-person view'], [kb('D-pad'), 'Quick chat: a direction opens a group, another sends a line']];
 const KEYS_HELP = (): Help => [
   [kb('W', 'S') + ' / ' + kb('↑', '↓'), 'Dive / pull up (hold S to loop)'],
   [kb('A', 'D') + ' / ' + kb('←', '→'), input.scheme === 'flight' ? 'Roll (bank holds)' : 'Bank'],
   [kb('Z', 'C'), 'Rudder'], [kb('Space'), 'Air-brake'], [kb('F') + ' or click', 'Shoot'],
   [kb('R') + ' or right-click', 'Homing dart (hold your nose on a bird for 1 s to lock)'], [kb('V'), 'Change layout'], [kb('T'), 'First-person view'],
+  [kb('1', '2', '3', '4'), 'Quick chat: pick a group, then a line'],
 ];
 // space fighters
 const SPACE_PAD: Help = [[`Left stick ${kb('↑↓')}`, 'Pitch'], [`Right stick ${kb('←→')}`, 'Roll'], 
-  [kb('RT') + ' / ' + kb('X'), 'Lasers'], [kb('Y'), 'Missile'], [kb('RB'), 'Boost'], [kb('LB'), 'Drift: slide and aim'], [kb('R3'), 'Cockpit view']];
+  [kb('RT') + ' / ' + kb('X'), 'Lasers'], [kb('Y'), 'Missile'], [kb('RB'), 'Boost'], [kb('LB'), 'Drift: slide and aim'], [kb('R3'), 'Cockpit view'], [kb('D-pad'), 'Quick chat']];
 const SPACE_KEYS: Help = [[kb('W', 'S') + ' / ' + kb('↑', '↓'), 'Pitch'], [kb('A', 'D') + ' / ' + kb('←', '→'), 'Roll'], [kb('Z', 'C'), 'Yaw'],
   [kb('Shift'), 'Boost'], [kb('Space'), 'Drift: slide and aim'], [kb('F') + ' or click', 'Lasers'],
-  [kb('R') + ' or right-click', 'Missile (hold your nose on a fighter for 1 s to lock)'], [kb('T'), 'Cockpit view']];
+  [kb('R') + ' or right-click', 'Missile (hold your nose on a fighter for 1 s to lock)'], [kb('T'), 'Cockpit view'], [kb('1', '2', '3', '4'), 'Quick chat']];
 const TILT_HELP: Help = [['Tilt the phone', 'Steer like a wheel: turn it to roll, tip the top away to dive, toward you to pull up'],
   ['Level', 'However you hold the phone when you launch']];
 const SPACE_TOUCH = (): Help => [...(settings.tilt ? TILT_HELP : [['Left thumb ↑↓', 'Pitch'], ['Right thumb ←→', 'Roll']] as Help),
   ['Left slider', 'Throttle: up boosts, the notch cruises, down drifts (it stays put)'],
-  ['Hold FIRE', 'Lasers'], ['Tap MSL', 'Missile, once your nose has locked a fighter'], ['Tap VIEW', 'Cockpit view']];
-const TOUCH_HELP = (): Help => settings.tilt
+  ['Hold FIRE', 'Lasers'], ['Tap MSL', 'Missile, once your nose has locked a fighter'], ['Tap VIEW', 'Cockpit view'], ['Tap CHAT', 'Quick chat']];
+const TOUCH_HELP = (): Help => [...TOUCH_FLY(), ['Tap CHAT', 'Quick chat: tap a group, then a line']];
+const TOUCH_FLY = (): Help => settings.tilt
   ? [...TILT_HELP, ['Hold anywhere else', 'Air-brake'], ['Hold FIRE', 'Shoot'], ['Tap DART', 'Homing dart, once your nose has locked a bird']]
   : input.scheme === 'flight'
   ? [['Left thumb ↑↓', 'Dive / pull up (keep pulling down to loop)'], ['Right thumb ←→', 'Roll, all the way round (bank holds)'], ['Hold FIRE', 'Shoot'], ['Tap DART', 'Homing dart, once your nose has locked a bird']]
@@ -912,6 +915,7 @@ function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall 
   // whoever hit you in the last few seconds gets the credit (and the down cam watches from their bird)
   const by = how !== 'crash' || t - lastHitT < 6 ? lastAttacker : '';
   downcamReq = { by, how };
+  if (online.phase !== 'playing' && Math.random() < (by === 'ai' ? 0.5 : 0.3)) botSay([...BANTER, 11, 11]); // (11 = "Enjoy the ground!")
   if (online.phase === 'playing') {
     // online: no game over, you're straight back in
     online.downed(by, how);
@@ -952,6 +956,7 @@ function onDogfight(ev: DogfightEvent) {
       combo++; comboTimer = 4;
       const pts = Math.round((ev.role === 'hunter' ? 600 : 450) * (ev.ground ? 1.5 : 1) * multiplier());
       score += pts;
+      if (Math.random() < 0.3) botSay(OOPS, ev.enemy);
       popup(ev.ground ? `Ground kill! +${pts}` : `Shot down! +${pts}`, `${ev.role === 'hunter' ? 'hunter' : 'bandit'} · ${dogfight.kills} down`);
       audio.thud(); audio.whoosh(0.8); rumble(0.6, 200); slowmo = 0.4;
       break;
@@ -1177,6 +1182,49 @@ function drawOnlineHud(dt: number) {
   $('feed').innerHTML = feed.map((f) => `<div>${esc(f.text)}</div>`).join('');
 }
 
+// ---------- Quick chat: the wheel and the chat lines ----------
+const quick = new QuickChat();
+const chat: { html: string; t: number }[] = [];
+let chatDirty = false;
+const ME_CSS = '#ff9a5a', BOT_CSS = '#c9d6e2';
+function pushChat(html: string) {
+  chat.push({ html, t: performance.now() / 1000 });
+  if (chat.length > 5) chat.shift();
+  chatDirty = true;
+}
+function chatLine(name: string, css: string, line: number) {
+  const text = lineText(line);
+  if (!text) return;
+  pushChat(`<b style="color:${css}">${esc(name)}:</b> ${esc(text)}`);
+  audio.beep(1250, 0.04, 0.04);
+}
+function chatNote(text: string) { pushChat(`<i>${esc(text)}</i>`); }
+/** You sent a line: everyone in the room sees it. Offline, an AI bird might answer. */
+function say(line: number) {
+  const online_ = online.phase === 'playing';
+  chatLine(online_ ? online.name : 'You', online_ ? PLAYER_CSS[colorIndex(online.myId)] : ME_CSS, line);
+  if (online_) online.say(line);
+  else { const reply = botReply(line); if (reply >= 0) botSay([reply]); }
+}
+/** An AI bird says one of these lines after a moment (solo modes only, and only when one is around). */
+function botSay(lines: number[], who?: Enemy) {
+  const bots = dogfight.enemies.filter((e) => e.alive && !e.remote && !e.friendly);
+  const e = who ?? bots[Math.floor(Math.random() * bots.length)];
+  if (!e) return;
+  const name = BOT_NAMES[Math.max(0, dogfight.enemies.indexOf(e)) % BOT_NAMES.length];
+  const line = lines[Math.floor(Math.random() * lines.length)];
+  setTimeout(() => { if (mode !== 'title' && online.phase !== 'playing') chatLine(name, BOT_CSS, line); }, 700 + Math.random() * 1100);
+}
+function drawChat() {
+  const now = performance.now() / 1000;
+  while (chat.length && now - chat[0].t > 8) { chat.shift(); chatDirty = true; }
+  const el = $('chat');
+  el.style.display = mode === 'title' || !chat.length ? 'none' : 'block';
+  if (!chatDirty) return;
+  chatDirty = false;
+  el.innerHTML = chat.map((c) => `<div>${c.html}</div>`).join('');
+}
+
 // ---------- Lead marker (optional): where to point your nose so a pea meets the bird ----------
 // Your peas leave at PEA_SPEED on top of your own velocity, so in your frame of reference the bird moves at
 // (its velocity - yours). Solve for the time a pea takes to reach where it will be, and mark that spot.
@@ -1324,6 +1372,7 @@ function onlineEvents() {
       case 'feed': feed.push({ text: ev.text, t }); if (feed.length > 5) feed.shift(); break;
       case 'scored': { const pts = Math.round(600 * multiplier()); score += pts; combo++; comboTimer = 4; audio.thud(); audio.whoosh(0.8); rumble(0.6, 200); break; }
       case 'hitConfirmed': audio.beep(1700, 0.03, 0.05); break;
+      case 'chat': chatLine(online.nameOf(ev.from), PLAYER_CSS[colorIndex(ev.from)], ev.line); break;
       case 'wave': onDogfight(ev.cleared ? { type: 'waveCleared', wave: ev.wave } : { type: 'wave', wave: ev.wave, count: ev.count }); break;
       case 'dartIn':
         if (mode !== 'flying' || spawnShield > 0) break;
@@ -1347,6 +1396,17 @@ function frame(now: number) {
   onlineEvents();
 
   if (inp.anyPress) audio.start();
+  // quick chat (any time you're in the air or waiting to respawn)
+  const sec = now / 1000;
+  if (mode !== 'title') {
+    if (inp.chatToggle) quick.toggle(sec);
+    if (inp.chat) {
+      const line = quick.press(inp.chat, sec);
+      if (line >= 0) say(line);
+      else if (line === -2) chatNote('Easy on the chat! Muted for a few seconds.');
+    }
+  }
+  quick.update(sec, mode !== 'title', isTouch && mode === 'flying');
   if (inp.view && mode !== 'title') { settings.view = settings.view === 'cockpit' ? 'chase' : 'cockpit'; saveSettings(); }
   const nav = inp.nav;
   if (mode === 'title') {
@@ -1651,7 +1711,8 @@ function frame(now: number) {
   hud.edge.style.opacity = replaying ? '0' : String(Math.max(danger * 0.7, hitFlash));
   hud.edge.style.boxShadow = hitFlash > danger * 0.7 ? 'inset 0 0 140px 40px rgba(255, 40, 40, .85)' : '';
   drawDogfightHud(mode === 'flying');
-  if (isTouch) { const d = mode === 'flying' ? 'flex' : 'none'; $('fire').style.display = d; $('dartBtn').style.display = myDartsOn() ? d : 'none'; $('viewBtn').style.display = d; }
+  if (isTouch) { const d = mode === 'flying' ? 'flex' : 'none'; $('fire').style.display = d; $('dartBtn').style.display = myDartsOn() ? d : 'none'; $('viewBtn').style.display = d; $('chatBtn').style.display = d; }
+  drawChat();
   $('pipper').style.display = firstPerson() && !replaying && !isSpace() ? 'block' : 'none';
   // space: boost fuel gauge
   const boostEl = $('boost');
