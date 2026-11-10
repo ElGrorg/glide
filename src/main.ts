@@ -14,7 +14,7 @@ import { setWorldSeed } from './noise';
 import { Online, PLAYER_CSS, TEAM_CSS, TEAM_NAMES, colorIndex, type MatchRules, type MatchResult } from './online';
 import { cleanCode, hasRoomBrowser, listRooms, type RoomInfo } from './net';
 import { DownCam, type Tracked } from './downcam';
-import { RaceRun, Ghost, GhostData, boardKey, sectionName, fmtTime, fmtDelta, fetchBoard, fetchGhost, submitRun, localBest, myPid, hasGlobalBoard, type Board, type BoardEntry } from './race';
+import { RaceRun, MISSED, Ghost, GhostData, boardKey, sectionName, fmtTime, fmtDelta, fetchBoard, fetchGhost, submitRun, localBest, myPid, hasGlobalBoard, type Board, type BoardEntry } from './race';
 import type { CourseDef } from './course';
 import { buildMap, guessSpec, checkSpec, filesFor, mapId, listMaps, saveMap, deleteMap, ACCEPT, BIOMES, LIMITS, type MapFile, type MapSpec, type StoredMap } from './mapimport';
 import { sfx } from './spacefx';
@@ -1360,7 +1360,15 @@ async function loadRaceRefs() {
 }
 function stepRace(dt: number) {
   glider.applyTo(bird);
+  const owed = run.next;
   const g = run.step(dt, prevPos, glider.pos, bird.quaternion);
+  if (g === MISSED) {
+    // skipped a checkpoint: back to the top, like a crash
+    mode = 'crashed'; crashTimer = 0;
+    raceCrashed(`Missed checkpoint ${owed + 1}`);
+    audio.thud(); rumble(0.6, 200);
+    return;
+  }
   if (g < 0) return;
   splitFlash = 2.5;
   audio.beep(g === run.gates.length - 1 ? 1500 : 1200, 0.12, 0.08);

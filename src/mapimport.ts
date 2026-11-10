@@ -40,7 +40,7 @@ export interface AssetSpec { type: ObjectDef['type']; x: number; y: number; z: n
 export interface MapFile { name: string; data: ArrayBuffer }
 export interface StoredMap { id: string; spec: MapSpec; files: MapFile[]; at: number }
 
-export const LIMITS = { fileMB: 40, totalMB: 80, heightSamples: 2049, mapSide: 16000, tris: 400_000, objects: 5000, gates: 40, maps: 30 };
+export const LIMITS = { fileMB: 100, totalMB: 120, heightSamples: 2049, mapSide: 16000, tris: 400_000, objects: 5000, gates: 40, maps: 30 };
 
 const ext = (n: string) => (n.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? '');
 export const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'];
