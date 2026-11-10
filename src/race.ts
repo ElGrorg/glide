@@ -172,7 +172,9 @@ export class Ghost {
 }
 
 // ---------- One run: the clock and the splits ----------
-export type RunState = 'ready' | 'running' | 'finished';
+export type RunState = 'ready' | 'running' | 'finished' | 'missed';
+/** step()'s answer when the bird flew through a later gate having missed the one it owed: the run is void */
+export const MISSED = -2;
 export class RaceRun {
   state: RunState = 'ready';
   /** Seconds since the clock started. */
@@ -203,6 +205,8 @@ export class RaceRun {
       if (this.next >= this.gates.length) { this.state = 'finished'; this.time = at; }
       return this.next - 1;
     }
+    // through a gate further on with this one still owed: a skipped checkpoint, so the run doesn't count
+    for (let i = this.next + 1; i < this.gates.length; i++) if (crossed(this.gates[i], prev, cur)) { this.state = 'missed'; return MISSED; }
     return -1;
   }
 }
