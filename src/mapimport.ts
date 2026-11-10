@@ -22,7 +22,7 @@ export interface MapSpec {
   name: string; blurb?: string; biome?: Biome;
   terrain:
     | { heightmap: string; size?: number | [number, number]; height?: number | [number, number]; colormap?: string }
-    | { model: string; scale?: number; rotate?: number };
+    | { model: string; scale?: number; rotate?: number; /** metres across the model's wider side (it's scaled to fit) */ size?: number };
   /** where the bird appears; defaults to a short way back from the start line */
   spawn?: [number, number, number]; heading?: number;
   /** start line, splits..., finish line. Leave it out and the map runs from its highest point to its lowest. */
@@ -55,10 +55,14 @@ export function guessSpec(files: MapFile[]): MapSpec {
   if (json) {
     let raw: unknown;
     try { raw = JSON.parse(new TextDecoder().decode(json.data)); } catch (e) { throw new Error(`${json.name} isn't valid JSON (${(e as Error).message}).`); }
+    const model = files.find((f) => MODEL_EXT.includes(ext(f.name)));
+    if ((raw as { format?: string })?.format === 'glide-course') {
+      if (!model) throw new Error(`${json.name} is a course (start, checkpoints, finish). Pick it together with its map model (.glb).`);
+      return checkSpec(fromCourseFile(raw as CourseFile, model.name, title(model.name)));
+    }
     return checkSpec(raw);
   }
   const model = files.find((f) => MODEL_EXT.includes(ext(f.name)));
-  const title = (n: string) => n.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).slice(0, 40);
   if (model) return { glide: 1, name: title(model.name), biome: 'alpine', terrain: { model: model.name, scale: 1, rotate: 0 } };
   const imgs = files.filter((f) => IMAGE_EXT.includes(ext(f.name)) || RAW_EXT.includes(ext(f.name)));
   if (!imgs.length) throw new Error('Pick a heightmap image (PNG, JPG, RAW), a 3D model (GLB, glTF, OBJ) or a Glide map (.json).');
@@ -67,6 +71,45 @@ export function guessSpec(files: MapFile[]): MapSpec {
   const hm = imgs.find((f) => !isColor(f.name)) ?? imgs[0];
   const cm = imgs.find((f) => f !== hm && isColor(f.name));
   return { glide: 1, name: title(hm.name), biome: 'alpine', terrain: { heightmap: hm.name, size: 3000, height: [0, 700], ...(cm ? { colormap: cm.name } : {}) } };
+}
+
+const title = (n: string) => n.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).slice(0, 40);
+
+/** A course file made outside the game for a model map: start, checkpoints and finish as rings
+ *  ({ position, forward, radius } in metres, Y up, origin at the map's centre). */
+interface CourseRing { position: number[]; forward?: number[]; radius?: number }
+interface CourseFile { format: 'glide-course'; name?: string; worldSize?: number; maxHeight?: number; start: CourseRing; checkpoints?: CourseRing[]; finish: CourseRing }
+function fromCourseFile(c: CourseFile, model: string, name: string): MapSpec {
+  const ok = (r: CourseRing | undefined) => !!r && Array.isArray(r.position) && r.position.length >= 3 && r.position.slice(0, 3).every((n) => typeof n === 'number' && Number.isFinite(n));
+  if (!ok(c.start) || !ok(c.finish)) throw new Error('The course file needs a start and a finish, each with a "position": [x, y, z].');
+  const rings = [c.start, ...(Array.isArray(c.checkpoints) ? c.checkpoints.filter(ok) : []), c.finish];
+  const heading = (r: CourseRing, i: number) => {
+    // the way through a ring: its forward, else towards the next ring (from the one before, for the finish)
+    let f = r.forward;
+    if (!(Array.isArray(f) && f.length >= 3 && Math.hypot(f[0], f[2]) > 1e-3)) {
+      const a = rings[Math.max(0, i === rings.length - 1 ? i - 1 : i)].position, b = rings[i === rings.length - 1 ? i : i + 1].position;
+      f = [b[0] - a[0], 0, b[2] - a[2]];
+    }
+    return THREE.MathUtils.radToDeg(Math.atan2(-f[0], -f[2]));
+  };
+  // a ring of radius r: a line r either side and r up and down of its centre
+  const gates = rings.map((r, i) => {
+    const rad = typeof r.radius === 'number' && r.radius > 0 ? r.radius : 20;
+    return { x: r.position[0], y: r.position[1], z: r.position[2], w: rad, h: rad, heading: heading(r, i) };
+  });
+  // spawn a little way back along the start's forward line (and above it), already flying through it
+  const s = c.start, f = Array.isArray(s.forward) && s.forward.length >= 3 ? s.forward : null;
+  const fl = f ? Math.hypot(f[0], f[1], f[2]) || 1 : 1;
+  const spawn: [number, number, number] = f
+    ? [s.position[0] - f[0] / fl * 45, s.position[1] - f[1] / fl * 45 + 2, s.position[2] - f[2] / fl * 45]
+    : [s.position[0], s.position[1] + 8, s.position[2]];
+  const n = rings.length - 2;
+  return {
+    glide: 1, name: String(c.name ?? name), biome: 'alpine',
+    terrain: { model, scale: 1, rotate: 0, ...(typeof c.worldSize === 'number' && c.worldSize > 0 ? { size: c.worldSize } : {}) },
+    spawn, heading: gates[0].heading, gates,
+    sections: Array.from({ length: n + 1 }, (_, i) => (i < n ? `Checkpoint ${i + 1}` : 'Finish')),
+  } as MapSpec;
 }
 
 /** Check a map file's shape (it came from anyone) and clamp it to the limits. */
@@ -82,7 +125,7 @@ export function checkSpec(raw: unknown): MapSpec {
     blurb: o.blurb ? String(o.blurb).slice(0, 140) : undefined,
     biome: BIOMES.includes(o.biome) ? o.biome : 'alpine',
     terrain: typeof t.model === 'string'
-      ? { model: t.model, scale: num(t.scale, 0.001, 1000, 1), rotate: num(t.rotate, -360, 360, 0) }
+      ? { model: t.model, scale: num(t.scale, 0.001, 1000, 1), rotate: num(t.rotate, -360, 360, 0), ...(typeof t.size === 'number' ? { size: num(t.size, 10, LIMITS.mapSide, 1000) } : {}) }
       : { heightmap: t.heightmap, size: Array.isArray(t.size) ? [num(t.size[0], 50, LIMITS.mapSide, 3000), num(t.size[1], 50, LIMITS.mapSide, 3000)] : num(t.size, 50, LIMITS.mapSide, 3000),
         height: Array.isArray(t.height) ? [num(t.height[0], -5000, 9000, 0), num(t.height[1], -5000, 9000, 700)] : num(t.height, 1, 9000, 700),
         ...(typeof t.colormap === 'string' ? { colormap: t.colormap } : {}) },
@@ -321,6 +364,11 @@ async function loadModel(spec: MapSpec, files: MapFile[]): Promise<{ root: THREE
   const wrap = new THREE.Group();
   wrap.add(root);
   wrap.scale.setScalar(t.scale ?? 1);
+  if (t.size) {
+    // a known size (a course file's worldSize): if the model came out at another scale, fit it, about the origin
+    const b = new THREE.Box3().setFromObject(root), side = Math.max(b.max.x - b.min.x, b.max.z - b.min.z);
+    if (side > 0 && Math.abs(side * (t.scale ?? 1) / t.size - 1) > 0.1) wrap.scale.setScalar(t.size / side);
+  }
   wrap.rotation.y = THREE.MathUtils.degToRad(t.rotate ?? 0);
   wrap.updateMatrixWorld(true);
   // markers: read them, then take them out of the model (they're not ground)
