@@ -92,6 +92,22 @@ This spells everything out. Pick the `.json` together with the heightmap or mode
 * **objects**: trees, boulders (`r`) and rock pillars (`h`, `r`). Add `y` to put one on the floor of a tunnel under that height.
 * **look**: how thick the self-growing trees, rocks, pillars and clouds are (1 = normal, 0 = none).
 
+## A course file for a model (`glide-course`)
+
+If a tool gives you the start, checkpoints and finish as a separate file, pick it together with the model (`.glb`):
+
+```json
+{
+  "format": "glide-course", "version": 1, "units": "metres", "up": "Y", "origin": "map centre",
+  "worldSize": 1536, "maxHeight": 320,
+  "start":       { "position": [-19.9, 311.4, -764.4], "forward": [-0.61, -0.37, 0.70], "radius": 10 },
+  "checkpoints": [ { "position": [-130.9, 244.3, -637.3], "forward": [-0.85, -0.18, 0.50], "radius": 10 } ],
+  "finish":      { "position": [-62.1, 36.4, 711.9], "forward": [-0.84, 0.05, 0.54], "radius": 10 }
+}
+```
+
+Each ring becomes a timing line facing along its `forward`, `radius` metres either side and up and down. The checkpoints are the splits, in order. The bird starts 45 m back along the start's forward line, already flying through it. If the model's wider side isn't `worldSize` metres, it's scaled about its origin to fit.
+
 ## Limits
 
 40 MB a file, 80 MB a map, heightmaps up to 2049 samples a side (larger ones are shrunk), 400,000 triangles, 16 km a side, 5,000 objects, 40 timing lines, and 30 maps on a device.
