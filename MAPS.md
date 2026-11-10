@@ -36,6 +36,8 @@ The model itself is the ground, so tunnels, arches, bridges and overhangs all wo
 * **OBJ**: pick the `.mtl` too (and any textures) if you want the colours.
 * **glTF with separate files**: pick the `.gltf`, its `.bin` and its textures together.
 
+**Close calls on your own trees and rocks**: meshes or groups named like trees or rocks (tree, pine, fir, oak, palm, bush, rock, boulder, stone, pillar, cactus…) give the same close-call speed kick as the game's own. Your model still draws them and handles the collision.
+
 ### Markers
 
 Add **empties** (or tiny meshes, which is the only option in OBJ) with these names. Blender's `.001` suffixes are fine.
@@ -106,7 +108,7 @@ If a tool gives you the start, checkpoints and finish as a separate file, pick i
 }
 ```
 
-Each ring becomes a timing line facing along its `forward`, `radius` metres either side and up and down. The checkpoints are the splits, in order. The bird starts 45 m back along the start's forward line, already flying through it. If the model's wider side isn't `worldSize` metres, it's scaled about its origin to fit.
+Each ring is drawn as a glowing hoop and counts anywhere within 1.5 × its `radius` (at least 15 m), facing along its `forward`. The checkpoints are the splits, in order. The bird starts 45 m back along the start's forward line, already flying through it. If the model is clearly in other units (its wider side is far from `worldSize`), it's scaled to fit. If it was built from a corner rather than its centre, it's moved to match the course.
 
 ## Limits
 

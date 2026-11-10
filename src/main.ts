@@ -2053,7 +2053,7 @@ function frame(now: number) {
     const seen = new Set<string>();
     for (const o of nearby) {
       const gap = obstacleGap(o, p.x, p.y, p.z) - 0.5; // bird radius
-      if (gap < 0 && mode === 'flying') { crash(crunch, 'crash', true); break; }
+      if (gap < 0 && mode === 'flying' && !o.soft) { crash(crunch, 'crash', true); break; }
       if (gap < 6) {
         seen.add(o.id);
         const prev = near.get(o.id);

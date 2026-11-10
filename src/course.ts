@@ -27,7 +27,7 @@ export interface PathDef { id: string; kind: PathKind; pts: CtrlPt[]; dens?: num
 export interface PieceDef { path: string; at: number; lat: number; type: 'column' | 'rock' | 'spire'; r: number; h?: number }
 /** A timing line: crossing the vertical plane through (x, y, z) with normal (nx, nz) (pointing downhill),
  *  within halfW sideways and halfH up or down of its centre. */
-export interface Gate { x: number; y: number; z: number; nx: number; nz: number; halfW: number; halfH: number }
+export interface Gate { x: number; y: number; z: number; nx: number; nz: number; halfW: number; halfH: number; /** drawn as a hoop to fly through (imported course rings) */ ring?: boolean }
 export interface Vec3Like { x: number; y: number; z: number }
 export interface CourseLook {
   /** cave rock colour, and the colour of the glow crystals on the walls */
@@ -61,7 +61,9 @@ export interface CourseDef {
   /** a map from this device (imported): its times stay on this device */
   local?: boolean;
 }
-export interface ObjectDef { type: 'tree' | 'rock' | 'spire'; x: number; z: number; y?: number; r?: number; h?: number }
+export interface ObjectDef { type: 'tree' | 'rock' | 'spire'; x: number; z: number; y?: number; r?: number; h?: number;
+  /** a model's own tree or rock: no shape of ours drawn or hit (the model has both), but you still get close calls off it */
+  soft?: { y0: number; top: number } }
 
 /** Did the bird cross gate `g` (in its downhill direction) between `prev` and `cur`? */
 export function gateCrossed(g: Gate, prev: Vec3Like, cur: Vec3Like): boolean {
@@ -616,8 +618,8 @@ export class Course {
     }
     // gates: the start and finish banners, and a pair of beacons at each split
     const d = this.def;
-    group.add(this.banner(d.startGate, 0x3a7bd5), this.banner(d.finish, 0xffffff, true));
-    d.splits.forEach((g) => group.add(this.beacons(g)));
+    group.add(d.startGate.ring ? this.hoop(d.startGate, 0x3a7bd5) : this.banner(d.startGate, 0x3a7bd5), d.finish.ring ? this.hoop(d.finish, 0xffffff) : this.banner(d.finish, 0xffffff, true));
+    d.splits.forEach((g) => group.add(g.ring ? this.hoop(g, 0xffd23f) : this.beacons(g)));
     return group;
   }
 
@@ -647,6 +649,13 @@ export class Course {
     band.rotation.y = Math.atan2(-g.nx, -g.nz);
     grp.add(band);
     return grp;
+  }
+  /** A ring to fly through (imported courses): a glowing hoop the size of the timing window. */
+  private hoop(g: Gate, color: number) {
+    const m = new THREE.Mesh(new THREE.TorusGeometry(Math.min(g.halfW, g.halfH), 0.6, 6, 32), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 }));
+    m.position.set(g.x, g.y, g.z);
+    m.rotation.y = Math.atan2(g.nx, g.nz);
+    return m;
   }
   /** A split: a glowing beacon post either side of the line. */
   private beacons(g: Gate) {

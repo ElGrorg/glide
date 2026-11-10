@@ -16,7 +16,7 @@ import { mapGroundColor } from './world';
 
 export const BIOMES: Biome[] = ['meadow', 'autumn', 'desert', 'alpine', 'misty'];
 /** [x, y, z, halfWidth?, halfHeight?, heading in degrees? (0 = towards -z)] or the same as an object. */
-export type GateSpec = number[] | { x: number; y: number; z: number; w?: number; h?: number; heading?: number };
+export type GateSpec = number[] | { x: number; y: number; z: number; w?: number; h?: number; heading?: number; ring?: boolean };
 export interface MapSpec {
   glide: 1;
   name: string; blurb?: string; biome?: Biome;
@@ -92,17 +92,16 @@ function fromCourseFile(c: CourseFile, model: string, name: string): MapSpec {
     }
     return THREE.MathUtils.radToDeg(Math.atan2(-f[0], -f[2]));
   };
-  // a ring of radius r: a line r either side and r up and down of its centre
+  // a ring of radius r counts anywhere inside a hoop half as big again (min 15 m): at 150 km/h a 10 m ring is
+  // a pin-prick, and a clipped edge shouldn't cost the run
   const gates = rings.map((r, i) => {
-    const rad = typeof r.radius === 'number' && r.radius > 0 ? r.radius : 20;
-    return { x: r.position[0], y: r.position[1], z: r.position[2], w: rad, h: rad, heading: heading(r, i) };
+    const rad = Math.max(15, (typeof r.radius === 'number' && r.radius > 0 ? r.radius : 20) * 1.5);
+    return { x: r.position[0], y: r.position[1], z: r.position[2], w: rad, h: rad, heading: heading(r, i), ring: true };
   });
-  // spawn a little way back along the start's forward line (and above it), already flying through it
-  const s = c.start, f = Array.isArray(s.forward) && s.forward.length >= 3 ? s.forward : null;
-  const fl = f ? Math.hypot(f[0], f[1], f[2]) || 1 : 1;
-  const spawn: [number, number, number] = f
-    ? [s.position[0] - f[0] / fl * 45, s.position[1] - f[1] / fl * 45 + 2, s.position[2] - f[2] / fl * 45]
-    : [s.position[0], s.position[1] + 8, s.position[2]];
+  // spawn level with the start ring, a little way back from it, flying straight at it (the bird starts level,
+  // so starting back along a sloping forward line would sail right over the ring)
+  const s = c.start, hd = THREE.MathUtils.degToRad(gates[0].heading);
+  const spawn: [number, number, number] = [s.position[0] + Math.sin(hd) * 45, s.position[1] + 1, s.position[2] + Math.cos(hd) * 45];
   const n = rings.length - 2;
   return {
     glide: 1, name: String(c.name ?? name), biome: 'alpine',
@@ -320,7 +319,30 @@ function markerKind(o: THREE.Object3D): { kind: Marker['kind']; order: number } 
   return { kind, order };
 }
 
-async function loadModel(spec: MapSpec, files: MapFile[]): Promise<{ root: THREE.Object3D; markers: Marker[] }> {
+/** A model's own trees and rocks (meshes or groups named like them): close calls off them pay like the game's own. */
+const ASSET_RE = /tree|pine|fir|spruce|conifer|oak|birch|palm|bush|shrub|rock|boulder|stone|pillar|spire|column|cactus/i;
+function softAssets(root: THREE.Object3D): ObjectDef[] {
+  const out: ObjectDef[] = [];
+  const box = new THREE.Box3(), size = new THREE.Vector3(), c = new THREE.Vector3();
+  const visit = (o: THREE.Object3D, inAsset: boolean) => {
+    const named = !inAsset && ASSET_RE.test(o.name) && !/street|road|track|terrain|ground|landscape|mountain|cliff|wall/i.test(o.name);
+    if (named || (!inAsset && (o as THREE.Mesh).isMesh && ASSET_RE.test(matName(o as THREE.Mesh)))) {
+      box.setFromObject(o); box.getSize(size); box.getCenter(c);
+      // something you fly past, not the landscape: a few metres to a few dozen across
+      if (size.x < 60 && size.z < 60 && size.y > 0.5 && out.length < LIMITS.objects) {
+        const type = /rock|boulder|stone/i.test(o.name + matName(o as THREE.Mesh)) ? 'rock' : /pillar|spire|column/i.test(o.name) ? 'spire' : 'tree';
+        out.push({ type, x: c.x, z: c.z, r: Math.max(0.5, Math.max(size.x, size.z) / 2 * 0.8), soft: { y0: box.min.y, top: box.max.y } });
+      }
+      return; // (its parts are the same asset)
+    }
+    for (const ch of o.children) visit(ch, inAsset);
+  };
+  visit(root, false);
+  return out;
+}
+const matName = (m: THREE.Mesh) => (m.isMesh ? (Array.isArray(m.material) ? m.material : [m.material]).map((x) => x?.name ?? '').join(' ') : '');
+
+async function loadModel(spec: MapSpec, files: MapFile[]): Promise<{ root: THREE.Object3D; markers: Marker[]; soft: ObjectDef[] }> {
   const t = spec.terrain as Extract<MapSpec['terrain'], { model: string }>;
   const f = findFile(files, t.model);
   if (!f) throw new Error(`The map uses ${t.model}, but that file wasn't picked.`);
@@ -367,7 +389,12 @@ async function loadModel(spec: MapSpec, files: MapFile[]): Promise<{ root: THREE
   if (t.size) {
     // a known size (a course file's worldSize): if the model came out at another scale, fit it, about the origin
     const b = new THREE.Box3().setFromObject(root), side = Math.max(b.max.x - b.min.x, b.max.z - b.min.z);
-    if (side > 0 && Math.abs(side * (t.scale ?? 1) / t.size - 1) > 0.1) wrap.scale.setScalar(t.size / side);
+    // (only when it's clearly in other units: a skirt or a backdrop round the map makes it a bit bigger anyway)
+    const k = side * (t.scale ?? 1) / t.size;
+    if (side > 0 && (k > 1.6 || k < 0.6)) wrap.scale.setScalar(t.size / side);
+    // the course is laid out about the map's centre: a model built from a corner gets moved to match
+    const cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2;
+    if (Math.hypot(cx, cz) > side * 0.3) root.position.set(-cx, 0, -cz);
   }
   wrap.rotation.y = THREE.MathUtils.degToRad(t.rotate ?? 0);
   wrap.updateMatrixWorld(true);
@@ -380,7 +407,7 @@ async function loadModel(spec: MapSpec, files: MapFile[]): Promise<{ root: THREE
     if (!k) return;
     const m = o as THREE.Mesh;
     // a real tree or rock model stays a model; only empties (and marker meshes for gates) are markers
-    if (m.isMesh && ['tree', 'rock', 'spire'].includes(k.kind)) return;
+    if (m.isMesh && ['tree', 'rock', 'spire'].includes(k.kind)) return; // (a real model: see softAssets)
     const pos = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
     o.matrixWorld.decompose(pos, q, s);
     // a marker drawn as a little mesh (OBJ has no empties): its middle is where it is
@@ -413,7 +440,7 @@ async function loadModel(spec: MapSpec, files: MapFile[]): Promise<{ root: THREE
     }
     m.castShadow = m.receiveShadow = false;
   }
-  return { root: wrap, markers };
+  return { root: wrap, markers, soft: softAssets(wrap) };
 }
 
 /** Give an uncoloured mesh per-face colours: grass on the flats, rock on the steep bits, snow up high. */
@@ -470,9 +497,9 @@ const LOOK_DEFAULT: CourseLook = { caveRock: 0x6b625a, crystal: 0x8ff3ff, trees:
 export async function buildMap(stored: StoredMap): Promise<CourseDef> {
   const { spec, files } = stored;
   let terrain: TerrainSource;
-  let markers: Marker[] = [];
+  let markers: Marker[] = [], soft: ObjectDef[] = [];
   if ('model' in spec.terrain) {
-    const { root, markers: mk } = await loadModel(spec, files);
+    const { root, markers: mk, soft: sa } = await loadModel(spec, files);
     const tris = modelTriangles(root, LIMITS.tris);
     const mt = new MeshTerrain(tris, root);
     // a floor far below, so falling off the edge of the model looks like falling, not a hole in the world
@@ -481,7 +508,7 @@ export async function buildMap(stored: StoredMap): Promise<CourseDef> {
     floor.position.set((b.x0 + b.x1) / 2, mt.voidY, (b.z0 + b.z1) / 2);
     root.add(floor);
     terrain = mt;
-    markers = mk;
+    markers = mk; soft = sa;
   } else terrain = await heightmapTerrain(spec, files);
   const b = terrain.bounds;
   if (b.x1 - b.x0 > LIMITS.mapSide * 1.5 || b.z1 - b.z0 > LIMITS.mapSide * 1.5) throw new Error(`That map is ${Math.round(b.x1 - b.x0)} x ${Math.round(b.z1 - b.z0)} m. Keep it under ${LIMITS.mapSide / 1000} km a side (try a smaller scale).`);
@@ -490,12 +517,12 @@ export async function buildMap(stored: StoredMap): Promise<CourseDef> {
   const gates: Gate[] = [];
   let spawn: THREE.Vector3 | null = spec.spawn ? new THREE.Vector3(...spec.spawn) : null;
   let heading: number | null = spec.heading !== undefined ? THREE.MathUtils.degToRad(spec.heading) : null;
-  const pts: { x: number; y: number; z: number; w: number; h: number; dir?: THREE.Vector3 }[] = [];
+  const pts: { x: number; y: number; z: number; w: number; h: number; dir?: THREE.Vector3; ring?: boolean }[] = [];
   if (spec.gates) {
     for (const g of spec.gates) {
-      const a = Array.isArray(g) ? { x: g[0], y: g[1], z: g[2], w: g[3], h: g[4], heading: g[5] } : g;
+      const a: { x: number; y: number; z: number; w?: number; h?: number; heading?: number; ring?: boolean } = Array.isArray(g) ? { x: g[0], y: g[1], z: g[2], w: g[3], h: g[4], heading: g[5] } : g;
       const dir = a.heading !== undefined ? new THREE.Vector3(-Math.sin(THREE.MathUtils.degToRad(a.heading)), 0, -Math.cos(THREE.MathUtils.degToRad(a.heading))) : undefined;
-      pts.push({ x: a.x, y: a.y, z: a.z, w: a.w ?? 60, h: a.h ?? 40, dir });
+      pts.push({ x: a.x, y: a.y, z: a.z, w: a.w ?? 60, h: a.h ?? 40, dir, ring: !!a.ring });
     }
   } else {
     const st = markers.find((m) => m.kind === 'start'), fin = markers.find((m) => m.kind === 'finish');
@@ -522,7 +549,7 @@ export async function buildMap(stored: StoredMap): Promise<CourseDef> {
       if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
       dir.normalize();
     }
-    gates.push({ x: p.x, y: p.y, z: p.z, nx: dir.x, nz: dir.z, halfW: p.w, halfH: p.h });
+    gates.push({ x: p.x, y: p.y, z: p.z, nx: dir.x, nz: dir.z, halfW: p.w, halfH: p.h, ...(p.ring ? { ring: true } : {}) });
   }
   const sg = gates[0];
   if (!spawn) {
@@ -539,7 +566,7 @@ export async function buildMap(stored: StoredMap): Promise<CourseDef> {
   const paths: PathDef[] = [{ id: 'route', kind: 'valley', pts: dedupe(line), dens: 0.25 }];
   (spec.tunnels ?? []).forEach((tn, i) => { if (!('model' in spec.terrain)) paths.push({ id: `tunnel${i}`, kind: 'cave', pts: tn.pts }); });
 
-  const objects: ObjectDef[] = [...(spec.objects ?? [])];
+  const objects: ObjectDef[] = [...(spec.objects ?? []), ...soft];
   for (const m of markers) if (m.kind === 'tree' || m.kind === 'rock' || m.kind === 'spire') {
     const s = Math.max(Math.abs(m.scale.x), Math.abs(m.scale.z));
     objects.push({ type: m.kind, x: m.pos.x, z: m.pos.z, y: m.pos.y, ...(Math.abs(s - 1) > 1e-3 ? { r: s } : {}), ...(m.kind !== 'rock' && Math.abs(m.scale.y - 1) > 1e-3 ? { h: Math.abs(m.scale.y) } : {}) });
