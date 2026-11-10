@@ -31,8 +31,12 @@ export interface MapSpec {
   /** tunnels bored through a heightmap: control points [x, z, floorY, halfWidth, height] */
   tunnels?: { pts: CtrlPt[] }[];
   objects?: ObjectDef[];
+  /** a glide-map file's placed trees and rocks: where each stands (its ground point) and its size. If the model
+   *  already has them baked in, they're measured off it and give close calls; otherwise the game grows them. */
+  assets?: AssetSpec[];
   look?: Partial<CourseLook>;
 }
+export interface AssetSpec { type: ObjectDef['type']; x: number; y: number; z: number; s: number }
 export interface MapFile { name: string; data: ArrayBuffer }
 export interface StoredMap { id: string; spec: MapSpec; files: MapFile[]; at: number }
 
@@ -59,6 +63,14 @@ export function guessSpec(files: MapFile[]): MapSpec {
     if ((raw as { format?: string })?.format === 'glide-course') {
       if (!model) throw new Error(`${json.name} is a course (start, checkpoints, finish). Pick it together with its map model (.glb).`);
       return checkSpec(fromCourseFile(raw as CourseFile, model.name, title(model.name)));
+    }
+    if ((raw as { format?: string })?.format === 'glide-map') {
+      // a whole map for a model: its course (start, checkpoints, finish) and its placed trees and rocks
+      const m = raw as { course?: CourseFile; worldSize?: number; maxHeight?: number; name?: string; assets?: unknown[] };
+      if (!model) throw new Error(`${json.name} is a map for a model. Pick it together with its model (.glb).`);
+      if (!m.course) throw new Error(`${json.name} has no "course" (start, checkpoints, finish).`);
+      const spec = fromCourseFile({ worldSize: m.worldSize, maxHeight: m.maxHeight, name: m.name, ...m.course }, model.name, title(model.name));
+      return checkSpec({ ...spec, assets: fromAssetList(m.assets) });
     }
     return checkSpec(raw);
   }
@@ -111,6 +123,20 @@ function fromCourseFile(c: CourseFile, model: string, name: string): MapSpec {
   } as MapSpec;
 }
 
+/** A glide-map's "assets": { type, name?, position, scale, ground } each (the ground point is where it stands). */
+function fromAssetList(list: unknown): AssetSpec[] {
+  if (!Array.isArray(list)) return [];
+  const out: AssetSpec[] = [];
+  for (const a of list as Record<string, any>[]) {
+    const p = Array.isArray(a?.ground) ? a.ground : a?.position;
+    if (!Array.isArray(p) || p.length < 3 || !p.slice(0, 3).every((n: unknown) => typeof n === 'number' && Number.isFinite(n))) continue;
+    const kind = `${a.type ?? ''} ${a.name ?? ''}`;
+    const type = /rock|boulder|stone/i.test(kind) ? 'rock' : /pillar|spire|column/i.test(kind) ? 'spire' : 'tree';
+    out.push({ type, x: p[0], y: p[1], z: p[2], s: typeof a.scale === 'number' ? a.scale : Array.isArray(a.scale) ? Math.max(a.scale[0], a.scale[2] ?? a.scale[0]) : 1 });
+  }
+  return out;
+}
+
 /** Check a map file's shape (it came from anyone) and clamp it to the limits. */
 export function checkSpec(raw: unknown): MapSpec {
   const o = raw as Record<string, any>;
@@ -142,6 +168,9 @@ export function checkSpec(raw: unknown): MapSpec {
   if (Array.isArray(o.objects)) spec.objects = o.objects.slice(0, LIMITS.objects)
     .filter((b: any) => b && ['tree', 'rock', 'spire'].includes(b.type) && typeof b.x === 'number' && typeof b.z === 'number')
     .map((b: any) => ({ type: b.type, x: b.x, z: b.z, ...(typeof b.y === 'number' ? { y: b.y } : {}), ...(typeof b.r === 'number' ? { r: num(b.r, 0.3, 60, 4) } : {}), ...(typeof b.h === 'number' ? { h: num(b.h, 1, 400, 40) } : {}) }));
+  if (Array.isArray(o.assets)) spec.assets = o.assets.slice(0, LIMITS.objects)
+    .filter((a: any) => a && ['tree', 'rock', 'spire'].includes(a.type) && [a.x, a.y, a.z].every((n) => typeof n === 'number' && Number.isFinite(n)))
+    .map((a: any) => ({ type: a.type, x: a.x, y: a.y, z: a.z, s: num(a.s, 0.05, 20, 1) }));
   if (o.look && typeof o.look === 'object') {
     const l = o.look, look: Partial<CourseLook> = {};
     for (const k of ['trees', 'rocks', 'clouds', 'spires', 'tall'] as const) if (typeof l[k] === 'number') look[k] = num(l[k], 0, 3, 1);
@@ -440,7 +469,55 @@ async function loadModel(spec: MapSpec, files: MapFile[]): Promise<{ root: THREE
     }
     m.castShadow = m.receiveShadow = false;
   }
+  // a glide-map's placed assets are measured off the model (they're baked into it); the rest are left to softAssets
+  if (spec.assets?.length) return { root: wrap, markers, soft: measureAssets(wrap, spec.assets) };
   return { root: wrap, markers, soft: softAssets(wrap) };
+}
+
+/** A glide-map lists where its trees and rocks stand. When the model has them baked in (meshes named like assets),
+ *  each one's size comes from the model's own vertices around it, and it gives close calls (the model collides);
+ *  when it doesn't, the game puts its own tree or rock there, with collision. */
+function measureAssets(root: THREE.Object3D, assets: AssetSpec[]): ObjectDef[] {
+  const C = 8, key = (x: number, z: number) => `${Math.floor(x / C)},${Math.floor(z / C)}`;
+  const grid = new Map<string, number[]>();
+  assets.forEach((a, i) => { const k = key(a.x, a.z); (grid.get(k) ?? grid.set(k, []).get(k)!).push(i); });
+  const n = assets.length, r2 = new Float32Array(n), lo = new Float32Array(n).fill(Infinity), hi = new Float32Array(n).fill(-Infinity), hits = new Uint32Array(n);
+  const v = new THREE.Vector3();
+  const isAsset = (o: THREE.Object3D) => {
+    for (let p: THREE.Object3D | null = o; p && p !== root; p = p.parent) {
+      if (/terrain|ground|landscape|course/i.test(p.name)) return false;
+      if (/asset|prop|scatter|foliage|vegetation/i.test(p.name) || ASSET_RE.test(p.name)) return true;
+    }
+    return ASSET_RE.test(matName(o as THREE.Mesh));
+  };
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh || !isAsset(m)) return;
+    const pos = m.geometry.getAttribute('position');
+    if (!pos) return;
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+      // the nearest listed asset (sideways) within a cell or so owns this vertex
+      let best = -1, bd = 24 * 24;
+      const cx = Math.floor(v.x / C), cz = Math.floor(v.z / C);
+      for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) {
+        const ids = grid.get(`${cx + dx},${cz + dz}`);
+        if (ids) for (const j of ids) { const d = (v.x - assets[j].x) ** 2 + (v.z - assets[j].z) ** 2; if (d < bd) { bd = d; best = j; } }
+      }
+      if (best < 0) continue;
+      hits[best]++;
+      if (bd > r2[best]) r2[best] = bd;
+      if (v.y < lo[best]) lo[best] = v.y;
+      if (v.y > hi[best]) hi[best] = v.y;
+    }
+  });
+  return assets.map((a, i): ObjectDef => {
+    if (hits[i] >= 4 && hi[i] - lo[i] > 0.3) {
+      return { type: a.type, x: a.x, z: a.z, r: Math.max(0.5, Math.sqrt(r2[i]) * 0.8), soft: { y0: Math.min(lo[i], a.y), top: hi[i] } };
+    }
+    // not in the model: the game's own, sized by the asset's scale
+    return { type: a.type, x: a.x, z: a.z, y: a.y, ...(a.type === 'rock' ? { r: 3 * a.s } : a.type === 'spire' ? { r: 6 * a.s, h: 40 * a.s } : {}) };
+  });
 }
 
 /** Give an uncoloured mesh per-face colours: grass on the flats, rock on the steep bits, snow up high. */

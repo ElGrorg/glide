@@ -110,6 +110,26 @@ If a tool gives you the start, checkpoints and finish as a separate file, pick i
 
 Each ring is drawn as a glowing hoop and counts anywhere within 1.5 × its `radius` (at least 15 m), facing along its `forward`. The checkpoints are the splits, in order. The bird starts 45 m back along the start's forward line, already flying through it. If the model is clearly in other units (its wider side is far from `worldSize`), it's scaled to fit. If it was built from a corner rather than its centre, it's moved to match the course.
 
+## A whole map file for a model (`glide-map`)
+
+A `glide-map` file holds the course and the placed trees and rocks together. Pick it with its model (`.glb`):
+
+```json
+{
+  "format": "glide-map", "version": 1, "worldSize": 1024, "maxHeight": 320,
+  "course": { "start": { … }, "checkpoints": [ … ], "finish": { … } },
+  "assets": [
+    { "type": "pine", "position": [13.0, 190.4, 85.2], "rotation": [0, -0.8, 0, 0.6], "scale": 1.1, "ground": [13.0, 190.7, 85.2] },
+    { "type": "boulder", "position": [78.4, 236.9, 103.4], "scale": 0.9, "ground": [78.4, 237.1, 103.4] }
+  ]
+}
+```
+
+The `course` works exactly like a course file (above). Each asset stands at its `ground` point (or its `position`). Types with rock, boulder or stone in them are rocks, pillar or spire are rock pillars, and anything else (pine, fir, round, bush…) is a tree.
+
+* **Assets baked into the model** (meshes or groups named like `Asset_Pine`, `Assets`, or tree and rock names): the model draws them and gives the collision. Each one's size is measured from the model, and flying close past it gives a close-call speed kick.
+* **Assets not in the model**: the game puts its own tree or rock there, with collision, sized by `scale`.
+
 ## Limits
 
 40 MB a file, 80 MB a map, heightmaps up to 2049 samples a side (larger ones are shrunk), 400,000 triangles, 16 km a side, 5,000 objects, 40 timing lines, and 30 maps on a device.
