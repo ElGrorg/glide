@@ -98,7 +98,10 @@ function placePlaced(def: CourseDef | null) {
     const y0 = od.y !== undefined ? c.floorBelow(od.x, od.y + 1, od.z) : c.height(od.x, od.z);
     const tint = hash2(i, 91, 7);
     let o: Obstacle;
-    if (od.type === 'tree') {
+    if (od.soft) {
+      const r = od.r ?? 3;
+      o = { id: `p${i}`, type: od.type, x: od.x, z: od.z, y0: od.type === 'rock' ? (od.soft.y0 + od.soft.top) / 2 : od.soft.y0, top: od.soft.top, r, scale: od.type === 'rock' ? r : 1, tint, kind: 'pine', biome: def.biome, soft: true };
+    } else if (od.type === 'tree') {
       const kind = TREE_KIND[def.biome], shape = TREE_SHAPE[kind];
       const scale = od.h ? od.h / shape.h : od.r ? od.r / shape.r : 1 + tint * 1.2;
       o = { id: `p${i}`, type: 'tree', x: od.x, z: od.z, y0: y0 - 0.8, top: y0 + shape.h * scale - 0.8, r: shape.r * scale, scale, tint, kind, biome: def.biome };
@@ -372,6 +375,8 @@ export type ObstacleType = 'tree' | 'rock' | 'spire' | 'box';
 export type TreeKind = 'pine' | 'round' | 'cactus' | 'snowpine';
 export interface Obstacle {
   id: string; type: ObstacleType;
+  /** close calls only (an imported model's own tree or rock: the model is drawn and collides already) */
+  soft?: boolean;
   x: number; z: number; y0: number; top: number; r: number; scale: number; tint: number;
   kind?: TreeKind; biome?: Biome;
   /** drawn darker (set pieces deep in a cave) */
@@ -732,7 +737,7 @@ export class Chunk {
       if (o.x >= x0 && o.x < x0 + CHUNK && o.z >= z0 && o.z < z0 + CHUNK) (o.type === 'spire' ? spires : rocks).push(o);
     const placed: Obstacle[] = [];
     placedNear(x0 + CHUNK / 2, z0 + CHUNK / 2, CHUNK, placed);
-    for (const o of placed) if (o.x >= x0 && o.x < x0 + CHUNK && o.z >= z0 && o.z < z0 + CHUNK)
+    for (const o of placed) if (!o.soft && o.x >= x0 && o.x < x0 + CHUNK && o.z >= z0 && o.z < z0 + CHUNK)
       (o.type === 'tree' ? trees[o.kind!] : o.type === 'spire' ? spires : rocks).push(o);
 
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), pv = new THREE.Vector3();
