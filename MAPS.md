@@ -32,7 +32,7 @@ The model itself is the ground, so tunnels, arches, bridges and overhangs all wo
 * **Up** is +Y (the glTF default; Blender's exporter handles this). Use **Turn** on import to point the run the way you want.
 * **Colours**: materials and textures are kept and drawn flat-shaded. Parts left plain white or grey are painted like the game's ground: grass on the flats, rock on the steep faces, snow up high on alpine.
 * **Compression**: Draco- and meshopt-compressed files aren't supported. Export with compression off.
-* **Size**: up to 400,000 triangles, 40 MB a file and 16 km a side. Decimate big scans first.
+* **Size**: up to 400,000 triangles, 100 MB a file and 16 km a side. Decimate big scans first.
 * **OBJ**: pick the `.mtl` too (and any textures) if you want the colours.
 * **glTF with separate files**: pick the `.gltf`, its `.bin` and its textures together.
 
@@ -132,7 +132,7 @@ The `course` works exactly like a course file (above). Each asset stands at its 
 
 ## Limits
 
-40 MB a file, 80 MB a map, heightmaps up to 2049 samples a side (larger ones are shrunk), 400,000 triangles, 16 km a side, 5,000 objects, 40 timing lines, and 30 maps on a device.
+100 MB a file, 120 MB a map, heightmaps up to 2049 samples a side (larger ones are shrunk), 400,000 triangles, 16 km a side, 5,000 objects, 40 timing lines, and 30 maps on a device.
 
 ## Coming later
 
