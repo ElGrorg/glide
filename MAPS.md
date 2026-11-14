@@ -1,6 +1,6 @@
 # Your own maps
 
-Race mode can load maps you make yourself. Open **Race**, go to **Your maps** and press **Import…**. On a computer you can also drop the files anywhere on the title screen. Imported maps are kept in your browser on this device, and your best times and ghosts on them are kept on this device too.
+Time trials can load maps you make yourself. Open **Time trials**, go to **Your maps** and press **Import…**. On a computer you can also drop the files anywhere on the title screen. Imported maps are kept in your browser on this device, and your best times and ghosts on them are kept on this device too.
 
 There are three kinds of map you can import.
 

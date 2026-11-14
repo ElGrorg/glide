@@ -14,7 +14,9 @@ import { SPACE_R, clearSpawnY } from './space';
 //   so they can shake it exactly like a dart from an AI bird.
 
 export interface MatchRules { seed: number; arena: number; bots: number; myDarts: boolean; enemyDarts: boolean; allies: boolean; /** space fighters in the fleet battle */ space?: boolean;
-  /** first to this many kills wins (a player's own in free for all, the team's total in Team up); 0 or missing = no limit */ winAt?: number }
+  /** first to this many kills wins (a player's own in free for all, the team's total in Team up); 0 or missing = no limit */ winAt?: number;
+  /** Race: the course everyone races down (a built-in course id), and who's on the grid (late joiners wait for the next one) */
+  race?: string; racers?: string[] }
 export interface PlayerInfo { id: string; name: string; kills: number; deaths: number; /** Team up: 0 or 1 */ team: number }
 
 /** Team up: two teams. Everyone picks one in the lobby; teammates can't hurt each other. */
@@ -46,6 +48,8 @@ interface Remote extends PlayerInfo {
   hp: number;
   /** round trip to them in ms (measured with pings; 0 = not measured yet) */
   rtt: number;
+  /** Race: checkpoints they've passed, and their finish time in ms (0 = still racing) */
+  gates: number; fin: number;
 }
 interface AiPuppet { e: Enemy; buf: Snap[]; seen: number; target: string; lock: number; hp: number }
 
@@ -65,7 +69,9 @@ export type OnlineEvent =
   | { type: 'end'; result: MatchResult };                         // someone reached the winning score: back to the lobby
 
 /** How a match with a winning score ended: who won, and everyone's final kills and downs. */
-export interface MatchResult { winner: string; /** Team up: the winning team (0 / 1), else -1 */ team: number; winAt: number; players: PlayerInfo[] }
+export interface MatchResult { winner: string; /** Team up: the winning team (0 / 1), else -1 */ team: number; winAt: number;
+  /** in finishing order for a race, each with their time in ms (-1 = didn't finish) */ players: (PlayerInfo & { ms?: number })[];
+  /** Race: the course's name */ race?: string }
 
 export class Online {
   net = new Net();
@@ -91,6 +97,14 @@ export class Online {
   lobbyAllies = false;
   /** The host's winning score as the lobby sees it (0 = no limit). */
   lobbyWin = 0;
+  /** A race room (rather than a dogfight): the course picked, as the lobby sees it. */
+  lobbyRace = false; lobbyCourse = '';
+  /** In the lobby while the host's match is still going (you joined a race part way through): wait for the next one. */
+  lobbyBusy = false;
+  /** Race: your checkpoints passed and finish time (ms, 0 = racing), sent with your state. */
+  raceGates = 0; raceFin = 0;
+  /** Race: who's on the grid this race. */
+  racers = new Set<string>();
 
   constructor(private dogfight: Dogfight) {
     this.net.onMessage = (m) => this.receive(m);
@@ -156,12 +170,28 @@ export class Online {
     this.endMatch(result);
   }
   /** A new match: everyone starts from nothing. */
-  private clearScores() { this.kills = 0; this.deaths = 0; for (const r of this.remotes.values()) { r.kills = 0; r.deaths = 0; } }
+  private clearScores() {
+    this.kills = 0; this.deaths = 0; this.raceGates = 0; this.raceFin = 0; this.lobbyBusy = false;
+    this.racers = new Set(this.rules?.racers ?? []);
+    for (const r of this.remotes.values()) { r.kills = 0; r.deaths = 0; r.gates = 0; r.fin = 0; }
+  }
+  /** Host, race: everyone's over the line (or time's up). `order` is the finishing order, with each time (-1 = didn't finish). */
+  endRace(order: { id: string; ms: number }[], course: string) {
+    if (!this.isHost || this.phase !== 'playing' || !this.rules?.race) return;
+    const all = this.roster();
+    const players = order.flatMap(({ id, ms }) => {
+      const p = all.find((q) => q.id === id);
+      return p ? [{ id, name: p.name, kills: p.kills, deaths: p.deaths, team: 0, ms }] : [];
+    });
+    const result: MatchResult = { winner: order[0]?.ms > 0 ? order[0].id : '', team: -1, winAt: 0, players, race: course };
+    this.net.send({ t: 'end', result });
+    this.endMatch(result);
+  }
   /** The match is over: everyone goes back to the room's lobby, scores cleared, ready for the host to start another. */
   private endMatch(result: MatchResult) {
-    this.phase = 'lobby'; this.rules = null; this.alive = false; this.kills = 0; this.deaths = 0;
+    this.phase = 'lobby'; this.rules = null; this.alive = false; this.kills = 0; this.deaths = 0; this.raceGates = 0; this.raceFin = 0; this.lobbyBusy = false;
     for (const r of this.remotes.values()) {
-      r.kills = 0; r.deaths = 0; r.alive = false; r.buf.length = 0; r.target.active = false;
+      r.kills = 0; r.deaths = 0; r.alive = false; r.gates = 0; r.fin = 0; r.buf.length = 0; r.target.active = false;
       if (r.puppet) { r.puppet.alive = false; r.puppet.dying = 99; r.puppet = null; }
     }
     this.ai.clear();
@@ -176,10 +206,13 @@ export class Online {
   /** Listed in the room browser (relay servers only); private rooms are joined by code. */
   isPublic = true;
 
-  async host(name: string, isPublic = true, teams = false, winAt = 0) {
+  /** `race`: a race room on this course (by id); `raceTag` is how the room list shows it (100 + the course's number). */
+  async host(name: string, isPublic = true, teams = false, winAt = 0, race = '', raceTag = -1) {
     this.reset(); this.name = name; this.lobbyAllies = teams; this.lobbyWin = winAt; this.phase = 'connecting'; this.isPublic = isPublic;
+    this.lobbyRace = !!race; this.lobbyCourse = race;
     try { await this.net.host({ name, public: isPublic }); this.phase = 'lobby'; }
     catch (err) { this.fail((err as Error).message); return; }
+    if (race) this.net.meta({ arena: raceTag });
     this.net.onJoin = () => { /* waits for their hello */ };
     this.events.push({ type: 'lobby' });
   }
@@ -192,9 +225,17 @@ export class Online {
     this.events.push({ type: 'lobby' });
   }
 
+  /** Host, race room: the course picked in the lobby (shown to everyone, and in the room list). */
+  setRaceCourse(id: string, tag: number) {
+    if (!this.isHost || this.lobbyCourse === id) return;
+    this.lobbyCourse = id; this.net.meta({ arena: tag });
+    if (this.phase === 'lobby') this.sendRoster();
+  }
+
   /** Host: start the match for everyone. */
   start(rules: MatchRules) {
     if (!this.isHost) return;
+    if (rules.race) rules.racers = this.roster().map((p) => p.id);
     this.rules = rules;
     this.phase = 'playing';
     this.clearScores();
@@ -220,7 +261,8 @@ export class Online {
   private reset() {
     for (const r of this.remotes.values()) if (r.puppet) r.puppet.alive = false;
     this.remotes.clear(); this.ai.clear(); this.targets.length = 0;
-    this.phase = 'off'; this.rules = null; this.team = 0; this.lobbyAllies = false; this.lobbyWin = 0; this.kills = 0; this.deaths = 0; this.alive = false; this.error = '';
+    this.phase = 'off'; this.rules = null; this.team = 0; this.lobbyAllies = false; this.lobbyWin = 0; this.lobbyRace = false; this.lobbyCourse = ''; this.lobbyBusy = false;
+    this.raceGates = 0; this.raceFin = 0; this.racers.clear(); this.kills = 0; this.deaths = 0; this.alive = false; this.error = '';
     this.dogfight.targets = [];
   }
 
@@ -228,7 +270,7 @@ export class Online {
     let r = this.remotes.get(id);
     if (!r) {
       r = {
-        id, name, kills: 0, deaths: 0, team: 0, alive: false, buf: [], puppet: null, lockOn: '', lockP: 0, hp: 3, rtt: 0,
+        id, name, kills: 0, deaths: 0, team: 0, alive: false, buf: [], puppet: null, lockOn: '', lockP: 0, hp: 3, rtt: 0, gates: 0, fin: 0,
         target: { id, pos: new THREE.Vector3(), vel: new THREE.Vector3(), dir: new THREE.Vector3(0, 0, -1), speed: 34, brake: 0, trick: null, active: false, inCloud: false },
       };
       this.remotes.set(id, r);
@@ -252,6 +294,7 @@ export class Online {
 
   private sendRoster() {
     this.net.send({ t: 'roster', allies: this.phase === 'playing' ? !!this.rules?.allies : this.lobbyAllies, win: this.phase === 'playing' ? this.rules?.winAt ?? 0 : this.lobbyWin,
+      race: this.lobbyRace ? 1 : 0, course: this.lobbyCourse, busy: this.phase === 'playing' ? 1 : 0,
       players: this.roster().map(({ id, name, kills, deaths, team }) => ({ id, name, kills, deaths, team })) });
   }
 
@@ -267,7 +310,8 @@ export class Online {
         // put them on the smaller team; they can switch in the lobby
         const sizes = [0, 0]; for (const p of this.roster()) if (p.id !== from) sizes[p.team ? 1 : 0]++;
         r.team = sizes[1] < sizes[0] ? 1 : 0;
-        this.net.send({ t: 'welcome', to: from, you: from, team: r.team, rules: this.phase === 'playing' ? this.rules : null });
+        // (a race under way: they wait in the lobby for the next one, rather than starting from the grid alone)
+        this.net.send({ t: 'welcome', to: from, you: from, team: r.team, rules: this.phase === 'playing' && !this.rules?.race ? this.rules : null });
         this.sendRoster();
         this.events.push({ type: 'feed', text: `${r.name} joined` }, { type: 'lobby' });
         break;
@@ -282,7 +326,10 @@ export class Online {
       case 'full': this.leave(); this.events.push({ type: 'left', reason: 'That room is full (8 players).' }); break;
       case 'roster': {
         const list = m.players as PlayerInfo[];
-        if (!this.isHost) { this.lobbyAllies = !!m.allies; this.lobbyWin = Math.max(0, Math.round(Number(m.win) || 0)); }
+        if (!this.isHost) {
+          this.lobbyAllies = !!m.allies; this.lobbyWin = Math.max(0, Math.round(Number(m.win) || 0));
+          this.lobbyRace = !!m.race; this.lobbyCourse = typeof m.course === 'string' ? m.course.slice(0, 40) : ''; this.lobbyBusy = !!m.busy;
+        }
         for (const p of list) {
           const team = Number(p.team) ? 1 : 0;
           if (p.id === this.myId) this.team = team;
@@ -371,7 +418,7 @@ export class Online {
     const v = victim === this.name ? 'you' : victim;
     const text = killer
       ? `${cap(killer)} ${how === 'dart' ? 'darted' : ground ? 'drove' : 'downed'} ${v}${ground ? ' into the ground' : ''}`
-      : how === 'crash' ? `${cap(v)} crashed` : `${cap(v)} ${v === 'you' ? 'were' : 'was'} shot down by a wild bird`;
+      : how === 'crash' ? `${cap(v)} crashed` : `${cap(v)} ${v === 'you' ? 'were' : 'was'} shot down${this.rules?.bots ? ' by a wild bird' : ''}`;
     this.events.push({ type: 'feed', text });
   }
 
@@ -379,6 +426,7 @@ export class Online {
     const r = this.remotes.get(from) ?? this.remote(from);
     if (this.phase !== 'playing') return; // (a late update from a match that has just ended)
     r.kills = Number(m.k ?? r.kills); r.deaths = Number(m.d ?? r.deaths);
+    if (this.rules?.race) { r.gates = Math.max(0, Number(m.rg) || 0); r.fin = Math.max(0, Number(m.rf) || 0); }
     r.lockOn = String(m.lk ?? ''); r.lockP = Number(m.lp ?? 0);
     const alive = !!m.a;
     const hp = m.h === undefined ? 3 : Number(m.h);
@@ -480,7 +528,8 @@ export class Online {
         r.puppet = this.dogfight.addPuppet('human', r.id, 'hunter', PLAYER_PALETTES[colorIndex(r.id)]);
         r.puppet.hp = r.hp; r.puppet.maxHp = 3;
       }
-      if (r.puppet) r.puppet.friendly = this.isAlly(r.id);
+      // (race: a bird that's over the line is out of it, so no locking on or shooting at it)
+      if (r.puppet) r.puppet.friendly = this.isAlly(r.id) || (!!this.rules?.race && r.fin > 0);
       if (alive && r.puppet) interp(r.puppet, r.buf, at);
     }
     for (const [id, a] of this.ai) {
@@ -517,6 +566,7 @@ export class Online {
         t: 'st', p: arr(g.pos), q: [quat.x, quat.y, quat.z, quat.w].map(r4), v: arr(g.vel), s: r2(g.speed), b: r2(g.brake),
         a: this.alive ? 1 : 0, h: this.hp, c: inCloud ? 1 : 0, k: this.kills, d: this.deaths,
         lk: lockE?.remote === 'human' ? lockE.netId : '', lp: df.locked ? 1 : r2(df.lockT),
+        ...(this.rules?.race ? { rg: this.raceGates, rf: this.raceFin } : {}),
       });
     }
     if (this.isHost) {
@@ -581,7 +631,9 @@ function cleanResult(r: unknown): MatchResult {
   const o = (r ?? {}) as Partial<MatchResult>;
   const players = (Array.isArray(o.players) ? o.players : []).slice(0, 8).map((p) => ({
     id: String(p?.id ?? ''), name: clip(String(p?.name ?? 'Bird')), kills: Math.max(0, Number(p?.kills) || 0), deaths: Math.max(0, Number(p?.deaths) || 0), team: Number(p?.team) ? 1 : 0,
+    ...(p?.ms !== undefined ? { ms: Number(p.ms) > 0 ? Math.round(Number(p.ms)) : -1 } : {}),
   }));
-  return { winner: String(o.winner ?? ''), team: o.team === 0 || o.team === 1 ? o.team : -1, winAt: Math.max(0, Number(o.winAt) || 0), players };
+  return { winner: String(o.winner ?? ''), team: o.team === 0 || o.team === 1 ? o.team : -1, winAt: Math.max(0, Number(o.winAt) || 0), players,
+    ...(o.race ? { race: clip(String(o.race)).slice(0, 40) } : {}) };
 }
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
