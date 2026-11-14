@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { BirdMesh, MAX_LIFT_G, type BirdPalette, type Glider } from './bird'; // MAX_LIFT_G: same hardest pull as yours
-import { terrainHeight, nearestBranch, cruiseThrust, skimThrust, getArena, obstaclesNear, obstacleGap, ARENA_R, CRUISE_SPEED, arenaBarrier, isSpace, type Obstacle } from './world';
+import { terrainHeight, groundHeight, nearestBranch, cruiseThrust, skimThrust, getArena, obstaclesNear, obstacleGap, ARENA_R, CRUISE_SPEED, arenaBarrier, isSpace, type Obstacle } from './world';
 import { ShipMesh, type Craft } from './ship';
 import { sfx } from './spacefx';
 import { SPACE_CRUISE, SPACE_BOOST, SPACE_PITCH_RATE, SPACE_R, SPACE_CEIL, SPACE_FLOOR, SPACE_SPAWN_Y, LASER_SPEED, LASER_LIFE, MISSILE_SPEED, PICKUP_FUEL, spaceTurnMul, stepSpaceVel, stepFuel, nearestPickup, grabPickup } from './space';
@@ -31,8 +31,10 @@ export const peaSpeed = () => (isSpace() ? LASER_SPEED : PEA_SPEED);
 export const peaLife = () => (isSpace() ? LASER_LIFE : PEA_LIFE);
 /** Space ranges are a bit longer: faster guns, faster fighters. */
 const rangeK = () => (isSpace() ? 1.35 : 1);
-const ENEMY_HIT_R = 1.6;    // generous: these are small birds moving fast
-const PLAYER_HIT_R = ENEMY_HIT_R; // same-sized birds, same hit box
+export const ENEMY_HIT_R = 1.6;    // generous: these are small birds moving fast
+export const PLAYER_HIT_R = ENEMY_HIT_R; // same-sized birds, same hit box
+/** An enemy's body against trees, rocks and pillars: the same 0.5 m as yours (main.ts). */
+export const ENEMY_CRASH_R = 0.5;
 // Hunter darts: a hunter that holds you in its sights locks on, then launches a homing dart.
 const DART_LOCK_TIME = 1.6;  // seconds it must keep you in its cone
 const DART_CONE = 0.45;      // ~25° either side of its nose
@@ -77,7 +79,7 @@ export function flapAmount(speed: number, brake = 0) {
   return getArena() && !isSpace() ? THREE.MathUtils.clamp(0.25 + (CRUISE_SPEED - speed) / 12, 0, 1) * (1 - brake) : 0;
 }
 /** True if the point is inside a tree, rock or spire. */
-export function hitsObstacle(p: THREE.Vector3, pad = 0.3) {
+export function hitsObstacle(p: THREE.Vector3, pad = ENEMY_CRASH_R) {
   for (const o of obstaclesNear(p.x, p.z, 5, nearObs)) if (obstacleGap(o, p.x, p.y, p.z) < pad) return true;
   return false;
 }
@@ -92,7 +94,7 @@ export function shotImpact(a: THREE.Vector3, b: THREE.Vector3, pad = 0): number 
   for (let i = 1; i <= steps; i++) {
     const f = i / steps;
     const x = a.x + (b.x - a.x) * f, y = a.y + (b.y - a.y) * f, z = a.z + (b.z - a.z) * f;
-    if (y < terrainHeight(x, z) + pad) return f;
+    if (y < groundHeight(x, z) + pad) return f;
     for (const o of obs) if (obstacleGap(o, x, y, z) < pad) return f;
   }
   return -1;

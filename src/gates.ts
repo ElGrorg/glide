@@ -130,7 +130,7 @@ function makeGate(k: number, b: LiveBranch): Gate {
         lump.position.set(lx, ly, lz); lump.scale.set(r * 1.2, r, r);
         lump.rotation.set(i, i * 2, i * 3);
         group.add(lump);
-        obstacles.push({ id: `g${k}l${i}`, type: 'rock', x: lx, z: lz, y0: ly, top: ly + r, r: r * 0.95, scale: r, tint: 0 });
+        obstacles.push({ id: `g${k}l${i}`, type: 'rock', x: lx, z: lz, y0: ly, top: ly + r, r: r * 0.95, scale: r, tint: 0, lump: true });
       }
       // mark the opening with a soft golden ring
       const glow = new THREE.Mesh(ringGeo, ringDoneMat);
