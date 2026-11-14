@@ -450,11 +450,13 @@ export class Course {
     return g;
   }
 
+  /** The open ground for collision (the world sets this to the ground as drawn). */
+  surface = (x: number, z: number) => this.height(x, z);
   /** Metres of free air around (x, y, z): negative inside rock. Free air is open sky above the ground or the inside of any cave. */
   solidClearance(x: number, y: number, z: number): number {
     const t = this.def.terrain;
     if (t?.clearance) return t.clearance(x, y, z);
-    const open = y - this.height(x, z);
+    const open = y - this.surface(x, z);
     if (open > 30) return open;
     const c = this.caveAt(x, y, z);
     return Math.max(open, c.gap);
@@ -463,7 +465,7 @@ export class Course {
   floorBelow(x: number, y: number, z: number): number {
     const t = this.def.terrain;
     if (t?.floor) return t.floor(x, y, z);
-    const h = this.height(x, z);
+    const h = this.surface(x, z);
     if (y > h - 0.5) return h;
     const c = this.caveAt(x, y, z);
     return c.gap > -2 ? c.floor : h;

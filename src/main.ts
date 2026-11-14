@@ -18,6 +18,7 @@ import { RaceRun, MISSED, Ghost, GhostData, boardKey, sectionName, fmtTime, fmtD
 import type { CourseDef } from './course';
 import { buildMap, guessSpec, checkSpec, filesFor, mapId, listMaps, saveMap, deleteMap, ACCEPT, BIOMES, LIMITS, type MapFile, type MapSpec, type StoredMap } from './mapimport';
 import { sfx } from './spacefx';
+import { HitboxView } from './hitbox';
 import { QuickChat, lineText, botReply, BOT_NAMES, OOPS, BANTER } from './quickchat';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
@@ -39,6 +40,9 @@ scene.background = SKY;
 scene.fog = new THREE.Fog(SKY, 140, 640);
 
 const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.3, 900);
+/** debug: every collision shape near you (H, or ?hitboxes in the address) */
+const hitboxes = new HitboxView(scene);
+hitboxes.keyOk = () => mode !== 'title';
 scene.add(camera);
 
 // space is drawn through a bloom pass (lasers, engines, explosions and the sun glow) with filmic tone mapping;
@@ -2224,6 +2228,12 @@ function frame(now: number) {
   if (!inArena && !racing()) gates.update(gp.z, t);
 
   placeCamera(false, dt, mode === 'crashed' ? Math.min(10, crashTimer * 8) : 0);
+  hitboxes.show(mode !== 'title');
+  if (hitboxes.on && mode !== 'title') {
+    const extra: Obstacle[] = [];
+    if (!inArena && !racing()) gates.obstacles(extra);
+    hitboxes.update(dt, { pos: glider.pos, dir: glider.dir, others: dogfight.enemies, extra, firstPerson: firstPerson(), crashed: mode !== 'flying', camera });
+  }
   // (a fixed camera for screenshots and tests: window.__glide.camOverride = { pos: [x, y, z], look: [x, y, z] })
   const co = (window as any).__glide?.camOverride;
   if (co) { camera.position.fromArray(co.pos); camera.up.set(0, 1, 0); camera.lookAt(tmp.fromArray(co.look)); if (co.fov) { camera.fov = co.fov; camera.updateProjectionMatrix(); } }
@@ -2327,5 +2337,5 @@ addEventListener('resize', () => {
 
 // ?debug exposes the game objects to the console (used for the two-browser online tests)
 if (new URLSearchParams(location.search).has('debug')) {
-  (window as any).glide = { online, dogfight, glider, camera, course: getCourse, get hp() { return hp; }, get shield() { return spawnShield; }, get t() { return t; }, get mode() { return mode; }, get score() { return score; }, get pause() { return pause; }, crash: (how: 'pea' | 'dart' | 'crash' = 'pea') => crash('Shot down!', how) };
+  (window as any).glide = { online, dogfight, glider, camera, hitboxes, course: getCourse, get hp() { return hp; }, get shield() { return spawnShield; }, get t() { return t; }, get mode() { return mode; }, get score() { return score; }, get pause() { return pause; }, crash: (how: 'pea' | 'dart' | 'crash' = 'pea') => crash('Shot down!', how) };
 }

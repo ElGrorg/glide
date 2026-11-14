@@ -68,17 +68,18 @@ export function setCourse(def: CourseDef | null) {
   if (def) arena = null;
   lockWorldSeed(def ? def.seed : null);
   course = def ? new Course(def) : null;
+  if (course && !(def!.terrain && !def!.terrain.drawGround)) course.surface = groundHeight; // collide with the drawn ground
   placePlaced(def);
   courseSceneStale = true;
 }
 export function getCourse() { return course; }
 /** Metres of free air around a point (negative = inside rock). Cave-aware; elsewhere it's height above the ground. */
 export function solidClearance(x: number, y: number, z: number): number {
-  return course ? course.solidClearance(x, y, z) : y - terrainHeight(x, z);
+  return course ? course.solidClearance(x, y, z) : y - groundHeight(x, z);
 }
 /** Height of the ground under a point: a cave's floor when inside one, otherwise the terrain. */
 export function floorBelow(x: number, y: number, z: number): number {
-  return course ? course.floorBelow(x, y, z) : terrainHeight(x, z);
+  return course ? course.floorBelow(x, y, z) : groundHeight(x, z);
 }
 /** Did the bird pass through a surface between two frames? (an imported model's thin walls) */
 export function solidCrossed(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): boolean {
@@ -379,6 +380,8 @@ export interface Obstacle {
   soft?: boolean;
   x: number; z: number; y0: number; top: number; r: number; scale: number; tint: number;
   kind?: TreeKind; biome?: Biome;
+  /** a plain ball of radius r (a gate's lintel lumps), not a drawn twenty-sider */
+  lump?: boolean;
   /** drawn darker (set pieces deep in a cave) */
   dark?: boolean;
   /** space (a box of a ship's hull): centre height, heading (ax, az) and half sizes along / up / across */
@@ -516,12 +519,67 @@ export function obstaclesNear(x: number, z: number, radius: number, out: Obstacl
   return out;
 }
 
-/** Signed gap between a point and an obstacle's surface (negative = inside). */
+/** How far into the drawn low-poly shapes a hitbox sits: hexagonal trunks and cones are 1.0 at their corners and
+ *  0.87 across their flats, so 0.93 splits the difference (a bird skimming a flat face doesn't die on air). */
+const HEX_K = 0.93;
+/** A twenty-sided rock: 1.0 at its points, 0.79 across its faces. */
+const ROCK_K = 0.85;
+const cl = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
+/** Gap to an upright cone (or cylinder when r1 = r0) standing at (cx, cz) from yb to yt, in the tree's own units. */
+function uprightGap(px: number, py: number, pz: number, cx: number, cz: number, r0: number, r1: number, yb: number, yt: number) {
+  const horiz = Math.hypot(px - cx, pz - cz);
+  const y = cl(py, yb, yt);
+  const r = (r0 + (r1 - r0) * (y - yb) / (yt - yb)) * HEX_K;
+  return Math.hypot(Math.max(0, horiz - r), py - y) - (py === y && horiz < r ? r - horiz : 0);
+}
+/** Gap to a cactus arm lying along x from x0 to x1 at height y. */
+function armGap(px: number, py: number, pz: number, x0: number, x1: number, y: number, r: number) {
+  return Math.hypot(px - cl(px, x0, x1), py - y, pz) - r * HEX_K;
+}
+/** Gap to a tree's drawn shape (TREE_GEO), in the tree's own (unscaled) units, its base at y = 0. */
+function treeShapeGap(kind: TreeKind, x: number, y: number, z: number): number {
+  switch (kind) {
+    case 'pine': return Math.min(uprightGap(x, y, z, 0, 0, 0.5, 0.35, 0, 2.4), uprightGap(x, y, z, 0, 0, 2.3, 0, 1.5, 5.7),
+      uprightGap(x, y, z, 0, 0, 1.7, 0, 3.9, 7.3), uprightGap(x, y, z, 0, 0, 1.0, 0, 5.8, 8.2));
+    case 'snowpine': return Math.min(uprightGap(x, y, z, 0, 0, 0.5, 0.35, 0, 2.4), uprightGap(x, y, z, 0, 0, 2.1, 0, 1.6, 6.0),
+      uprightGap(x, y, z, 0, 0, 1.6, 0, 4.3, 7.7), uprightGap(x, y, z, 0, 0, 0.9, 0, 6.4, 9.0));
+    case 'round': {
+      const crown = (Math.hypot(x / 2.8, (y - 4.8) / 2.94, z / 2.8) - ROCK_K) * 2.8;
+      return Math.min(uprightGap(x, y, z, 0, 0, 0.45, 0.3, 0, 3.2), crown);
+    }
+    case 'cactus': return Math.min(uprightGap(x, y, z, 0, 0, 0.55, 0.5, 0, 5.5), armGap(x, y, z, 0, 1.6, 2.4, 0.3),
+      uprightGap(x, y, z, 1.5, 0, 0.3, 0.28, 2.3, 4.1), armGap(x, y, z, -1.3, -0.1, 3.4, 0.28), uprightGap(x, y, z, -1.25, 0, 0.28, 0.26, 3.25, 4.75));
+  }
+}
+const rockQ = new THREE.Quaternion(), rockE = new THREE.Euler(), rockV = new THREE.Vector3();
+
+/** Signed gap between a point and an obstacle's surface (negative = inside). Shaped to match what's drawn
+ *  (buildObstacles): see scripts/hitbox-check.ts, which compares the two. */
 export function obstacleGap(o: Obstacle, px: number, py: number, pz: number): number {
   if (o.cy !== undefined) return spaceGap(o, px, py, pz);
   const dx = px - o.x, dz = pz - o.z;
-  if (o.type === 'rock') return Math.hypot(dx, py - o.y0, dz) - o.r;
+  if (o.type === 'rock') {
+    if (o.soft || o.lump) return Math.hypot(dx, py - o.y0, dz) - o.r;
+    // drawn as a squashed, tumbled twenty-sider: undo the tumble and the squash, then measure
+    rockQ.setFromEuler(rockE.set(o.tint * 3, o.tint * 7, o.tint * 5)).invert();
+    rockV.set(dx, py - o.y0, dz).applyQuaternion(rockQ);
+    const sy = 0.7 + o.tint * 0.4;
+    return (Math.hypot(rockV.x, rockV.y / sy, rockV.z) / o.scale - ROCK_K) * o.scale * Math.min(1, sy);
+  }
+  if (o.type === 'tree' && !o.soft && o.kind) {
+    if (py < o.y0) return 99;
+    const a = o.tint * 6.28, c = Math.cos(a), s = Math.sin(a);
+    // into the tree's own frame (it's drawn turned by tint about the vertical), then its unscaled units
+    return treeShapeGap(o.kind, (dx * c - dz * s) / o.scale, (py - o.y0) / o.scale, (dx * s + dz * c) / o.scale) * o.scale;
+  }
   const horiz = Math.hypot(dx, dz);
+  if (o.type === 'spire' && !o.soft) {
+    // a six-sided column that narrows to 0.55 of its foot at the top (spireGeo; gate legs 0.6)
+    if (py < o.y0) return 99;
+    const t = Math.min(1, (py - o.y0) / (o.top - o.y0));
+    const r = o.r * HEX_K * (1 - 0.45 * t);
+    return py > o.top ? Math.hypot(Math.max(0, horiz - r), py - o.top) : horiz - r;
+  }
   if (py > o.top) return Math.hypot(Math.max(0, horiz - (o.type === 'spire' ? o.r : 0)), py - o.top);
   if (py < o.y0) return 99;
   let rEff = o.r;
@@ -606,6 +664,8 @@ const AUTUMN_TINTS = [new THREE.Color(1, 1, 1), new THREE.Color(1.05, 0.62, 0.5)
 const rockGeo = colorize(new THREE.IcosahedronGeometry(1, 0).toNonIndexed(), 0x8d877c);
 const spireGeo = colorize(new THREE.CylinderGeometry(0.55, 1, 1, 6, 3).translate(0, 0.5, 0).toNonIndexed(), 0x857c70);
 const cloudGeo = new THREE.IcosahedronGeometry(1, 1);
+/** The drawn shapes, for the hitbox check script (scripts/hitbox-check.ts). */
+export const OBSTACLE_GEO = { tree: TREE_GEO, rock: rockGeo, spire: spireGeo };
 const ROCK_TINT: Record<Biome, THREE.Color> = {
   meadow: new THREE.Color(1, 1, 1), autumn: new THREE.Color(1.02, 0.97, 0.9), desert: new THREE.Color(1.3, 0.82, 0.62),
   alpine: new THREE.Color(0.95, 1.08, 1.22), misty: new THREE.Color(0.72, 0.95, 0.8),
@@ -619,6 +679,22 @@ export const cloudMat = new THREE.MeshLambertMaterial({
 // ---------- Chunks ----------
 export const CHUNK = 120;
 const SEG = 30;
+/** The ground as it's drawn: the chunk mesh samples terrainHeight every 4 m and joins the samples with flat
+ *  triangles, so between samples the true height can sit metres above or below what you see (most on ridges and
+ *  canyon rims). Collision uses this, so you hit the ground you can see. */
+export function groundHeight(x: number, z: number): number {
+  if (arena?.id === 'space' || (course?.def.terrain && !course.def.terrain.drawGround)) return terrainHeight(x, z);
+  const step = CHUNK / SEG;
+  const gx = x / step, gz = z / step, i = Math.floor(gx), j = Math.floor(gz), fx = gx - i, fz = gz - j;
+  const h = (a: number, b: number) => terrainHeight(a * step, b * step);
+  // the same triangles as buildGround: the diagonal alternates with (i + j)
+  if (((i + j) & 1) === 0) {
+    if (fx + fz <= 1) { const h00 = h(i, j); return h00 + (h(i + 1, j) - h00) * fx + (h(i, j + 1) - h00) * fz; }
+    const h11 = h(i + 1, j + 1); return h11 + (h(i, j + 1) - h11) * (1 - fx) + (h(i + 1, j) - h11) * (1 - fz);
+  }
+  const h00 = h(i, j), h11 = h(i + 1, j + 1);
+  return fx >= fz ? h00 + (h(i + 1, j) - h00) * fx + (h11 - h(i + 1, j)) * fz : h00 + (h(i, j + 1) - h00) * fz + (h11 - h(i, j + 1)) * fx;
+}
 const tmpC = new THREE.Color(), tmpC2 = new THREE.Color();
 const WATER = new THREE.Color(0x4f9fd1), FOAM = new THREE.Color(0xeaf6fb);
 
