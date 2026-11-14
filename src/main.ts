@@ -967,13 +967,16 @@ function myDartsOn() { return online.phase === 'playing' ? !!online.rules?.myDar
 
 function multiplier() { return 1 + Math.min(combo, 8) * 0.5; }
 
+/** A pass this close (metres from the hitbox, which now hugs the drawn shape) is a close call. It was 3.5 when
+ *  pillar and rock hitboxes were 1-3 m fatter than drawn; 5 keeps the same passes paying now they're accurate. */
+const CLOSE_CALL = 5;
 function addCloseCall(gap: number, label: string) {
   combo++; comboTimer = 4;
-  const pts = Math.round((60 + (3.5 - gap) * 80) * multiplier());
+  const pts = Math.round((60 + (CLOSE_CALL - gap) * 56) * multiplier());
   score += pts;
-  const veryClose = gap < 1.2;
+  const veryClose = gap < 1.5;
   // flying dangerously pays: a slipstream speed kick and a chunk of dart recharge, more the closer you cut it
-  const kick = veryClose ? 7 : 3 + (3.5 - gap) * 1.2;
+  const kick = veryClose ? 7 : 3 + (CLOSE_CALL - gap) * 1.1;
   // (space: no slipstream off a hull in a vacuum, and boost only comes from pickups)
   if (!isSpace()) glider.speed = Math.min(95, glider.speed + kick); // (time trials too: risk pays)
   const refilled = dogfight.chargeDart(veryClose ? 0.5 : 0.25);
@@ -2333,7 +2336,7 @@ function frame(now: number) {
     for (const o of nearby) {
       const gap = obstacleGap(o, p.x, p.y, p.z) - 0.5; // bird radius
       if (gap < 0 && mode === 'flying' && !o.soft) { crash(crunch, 'crash', true); break; }
-      if (gap < 6) {
+      if (gap < CLOSE_CALL + 2.5) {
         seen.add(o.id);
         const prev = near.get(o.id);
         near.set(o.id, { gap: prev === undefined ? gap : Math.min(prev.gap, gap), type: o.type === 'box' ? 'hull' : o.type });
@@ -2342,7 +2345,7 @@ function frame(now: number) {
     if (mode === 'flying') for (const [id, nr] of near) {
       if (!seen.has(id)) {
         near.delete(id);
-        if (nr.gap < 3.5) addCloseCall(nr.gap, nr.type);
+        if (nr.gap < CLOSE_CALL) addCloseCall(nr.gap, nr.type);
       }
     }
 
