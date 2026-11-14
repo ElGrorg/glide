@@ -9,7 +9,7 @@ import { Gates, type GateEvent } from './gates';
 import { BirdMesh, Glider, PLAYER_COLORS } from './bird';
 import { Input } from './input';
 import { WindAudio } from './audio';
-import { Dogfight, MAX_DARTS, peaSpeed, peaLife, flapAmount, type DogfightEvent, type Enemy } from './dogfight';
+import { Dogfight, MAX_DARTS, peaSpeed, peaLife, flapAmount, waveTier, waveBirds, type DogfightEvent, type Enemy } from './dogfight';
 import { setWorldSeed } from './noise';
 import { Online, PLAYER_CSS, TEAM_CSS, TEAM_NAMES, colorIndex, type MatchRules, type MatchResult } from './online';
 import { cleanCode, hasRoomBrowser, listRooms, type RoomInfo } from './net';
@@ -301,7 +301,8 @@ const settings = { mode: 'endless' as GameMode, env: ARENAS.length /* = random *
   /* camera: behind you, or first person */ view: 'chase' as ViewSetting,
   /* phones: steer by tilting */ tilt: false,
   /* race: which course */ course: 0, /* (or one of your imported maps, by id) */ mapId: '',
-  /* arena + online: first to this many kills wins (0 = no limit, -1 = custom, which uses winN) */ winAt: 0, winN: 15 };
+  /* arena + online: first to this many kills wins (0 = no limit, -1 = custom, which uses winN) */ winAt: 0, winN: 15,
+  /* solo arena: each wave brings one more bird, and smarter ones */ escalate: true };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('glide.settings') || '{}')); } catch { /* storage unavailable */ }
 settings.env = THREE.MathUtils.clamp(Math.round(settings.env) || 0, 0, SPACE_ENV);
 settings.enemies = THREE.MathUtils.clamp(Math.round(settings.enemies) || 3, 1, 12);
@@ -320,6 +321,7 @@ settings.winN = THREE.MathUtils.clamp(Math.round(settings.winN) || 15, 1, 95);
 const winTarget = () => (settings.winAt < 0 ? settings.winN : settings.winAt);
 /** The winning score rows: the picker, plus the number when it's on Custom. */
 const winRows = () => ['winAt', ...(settings.winAt < 0 ? ['winN'] : [])];
+settings.escalate = settings.escalate !== false;
 settings.name = String(settings.name || '').slice(0, 16);
 // an invite link (?room=CODE) opens straight onto the online menu, ready to join
 const inviteCode = cleanCode(new URLSearchParams(location.search).get('room') || '');
@@ -329,10 +331,15 @@ const bestKey = () => (settings.mode === 'arena' ? 'glide.best.arena' : settings
 let best = 0;
 const loadBest = () => { try { best = Number(localStorage.getItem(bestKey()) || 0); } catch { best = 0; } };
 loadBest();
+/** Solo arena with escalating waves: the most waves you've cleared, per starting number of birds. */
+const bestWaveKey = () => `glide.bestWave.arena.${settings.enemies}`;
+const loadBestWave = () => { try { return Number(localStorage.getItem(bestWaveKey()) || 0); } catch { return 0; } };
+/** Waves cleared this match, and whether that beat the record. */
+let wavesCleared = 0, waveRecord = false;
 /** The arena chosen for this match ("random" rolls one per match). */
 let arenaIdx = 0;
 
-const MENU_ROWS = ['mode', 'course', 'import', 'board', 'env', 'enemies', 'bots', 'allies', 'team', 'winAt', 'winN', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'tilt', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
+const MENU_ROWS = ['mode', 'course', 'import', 'board', 'env', 'enemies', 'waves', 'bots', 'allies', 'team', 'winAt', 'winN', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'tilt', 'go', 'vis', 'host', 'join', 'rooms', 'help'] as const;
 const GO_ROW = MENU_ROWS.indexOf('go');
 let menuRow = inviteCode ? MENU_ROWS.indexOf('join') : GO_ROW;
 /** On a phone the Steering row (thumbs or tilt) follows Camera. */
@@ -347,7 +354,7 @@ function baseRows(): readonly string[] {
       : online.phase === 'lobby' ? [...(online.teams ? ['team'] : []), 'lead', 'downcam', 'view'] : [])
     : ['mode', ...(browser && openRooms.length ? ['rooms'] : []), 'join', ...(browser ? ['vis'] : []), 'host', 'lead', 'downcam', 'view', 'help'];
   if (settings.mode === 'race') return ['mode', 'course', 'import', 'board', 'view', 'go', 'help'];
-  return settings.mode === 'arena' ? ['mode', 'env', 'enemies', ...winRows(), 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
+  return settings.mode === 'arena' ? ['mode', 'env', 'enemies', 'waves', ...winRows(), 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
     : settings.mode === 'space' ? ['mode', 'enemies', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help']
     : ['mode', 'myDarts', 'enemyDarts', 'lead', 'downcam', 'view', 'go', 'help'];
 }
@@ -422,7 +429,7 @@ function renderMenu() {
   const arena = settings.mode === 'arena', space = settings.mode === 'space';
   const dw = space ? 'missiles' : 'darts';
   const head = `${modeRow(sel('mode'))}<p class="blurb">${MODE_BLURB[settings.mode]}</p>`;
-  const sets = `${arena ? `${sect('Match')}${pickRow(sel('env'), 'env', 'Arena', envName, envBlurb)}${pickRow(sel('enemies'), 'enemies', 'Enemies', `${settings.enemies} per wave`)}${winRow(sel)}` : ''}
+  const sets = `${arena ? `${sect('Match')}${pickRow(sel('env'), 'env', 'Arena', envName, envBlurb)}${pickRow(sel('enemies'), 'enemies', 'Enemies', settings.escalate ? `${settings.enemies} to start` : `${settings.enemies} per wave`)}${wavesRow(sel('waves'))}${winRow(sel)}` : ''}
       ${space ? `${sect('Match')}${pickRow(sel('enemies'), 'enemies', 'Enemies', `${settings.enemies} per wave`)}` : ''}
       ${sect(space ? 'Missiles' : 'Darts')}
       ${pickRow(sel('myDarts'), 'myDarts', `Your ${dw}`, onOff(settings.myDarts))}
@@ -451,11 +458,18 @@ function visRow(sel: string) {
   const on = online.active ? online.isPublic : settings.public;
   return pickRow(sel, 'vis', 'Room', on ? 'Public' : 'Private', on ? 'Listed under Open rooms for anyone to join' : 'Hidden: friends join with the code or invite link');
 }
+/** Solo arena: waves get harder, or stay the same. Shows your record for this starting number. */
+function wavesRow(sel: string) {
+  const rec = loadBestWave();
+  const note = !settings.escalate ? 'Every wave the same birds'
+    : `One more bird each wave, and smarter ones${rec ? ` · best: ${rec} cleared` : ''}`;
+  return pickRow(sel, 'waves', 'Waves', settings.escalate ? 'Get harder' : 'Stay the same', note);
+}
 /** Winning score: No limit, or first to 3 / 5 / 10 / any number of kills. */
 function winRow(sel: (r: string) => string) {
   const n = winTarget(), online_ = settings.mode === 'online';
   const value = settings.winAt === 0 ? 'No limit' : settings.winAt < 0 ? 'Custom' : `First to ${n}`;
-  const note = !n ? (online_ ? 'Play on until the host closes the room' : 'Fight wave after wave until you go down')
+  const note = !n ? (online_ ? 'Play on until the host closes the room' : settings.escalate ? 'Survive as many waves as you can' : 'Fight wave after wave until you go down')
     : !online_ ? `Shoot down ${n} bird${n > 1 ? 's' : ''} to win`
     : settings.allies ? `First team to ${n} kills between them wins` : `First player to ${n} kill${n > 1 ? 's' : ''} wins`;
   return pickRow(sel('winAt'), 'winAt', 'Win at', value, note)
@@ -620,6 +634,7 @@ function menuChange(row: string, d: number) {
   else if (row === 'myDarts') settings.myDarts = !settings.myDarts;
   else if (row === 'enemyDarts') settings.enemyDarts = !settings.enemyDarts;
   else if (row === 'enemies') settings.enemies = THREE.MathUtils.clamp(settings.enemies + d, 1, 12);
+  else if (row === 'waves') settings.escalate = !settings.escalate;
   else if (row === 'winAt') settings.winAt = WIN_OPTS[(WIN_OPTS.indexOf(settings.winAt) + d + WIN_OPTS.length) % WIN_OPTS.length];
   else if (row === 'winN') settings.winN = THREE.MathUtils.clamp(settings.winN + (settings.winN + d > 20 ? 5 * d : d), 1, 95);
   if (row === 'winAt' || row === 'winN') online.setWinAt(winTarget());
@@ -854,6 +869,8 @@ function spawn(fresh = true) {
   dogfight.playerDarts = settings.myDarts; dogfight.enemyDarts = settings.enemyDarts;
   dogfight.reset(); hp = 3; hpRegen = 0; hitFlash = 0;
   dogfight.arenaCount = arena ? settings.enemies : 0;
+  dogfight.escalate = arena && !space && settings.escalate;
+  wavesCleared = 0; waveRecord = false;
   // build the opening stretch straight away
   for (let i = 0; i < 10 && world.update(glider.pos.x, glider.pos.z - 150, 8) > 0; i++);
   placeCamera(true);
@@ -873,6 +890,7 @@ function startOnlineMatch(rules: MatchRules) {
   dogfight.reset();
   dogfight.spawning = online.isHost && rules.bots > 0;
   dogfight.arenaCount = rules.bots;
+  dogfight.escalate = false;
   score = 0; combo = 0; comboTimer = 0;
   feed.length = 0;
   respawnOnline();
@@ -1031,8 +1049,15 @@ function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall 
   const what = getArena()
     ? `${getArena()!.name} · wave ${Math.max(1, dogfight.wave)} · ${dogfight.kills} shot down`
     : `${dist} m downhill${dogfight.kills ? ` · ${dogfight.kills} shot down` : ''}`;
-  hud.overlay.innerHTML = `<div class="menu"><h1>${title}</h1><div class="panel center"><p class="score"><b>${final}</b><span>points</span></p><p>${what}</p><p class="best${isBest ? ' new' : ''}">${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div><div class="btns"><button data-act="menu">${isTouch ? 'Menu' : 'Menu (Esc / B)'}</button></div></div></div>`;
+  hud.overlay.innerHTML = `<div class="menu"><h1>${title}</h1><div class="panel center"><p class="score"><b>${final}</b><span>points</span></p><p>${what}</p>${waveLine()}<p class="best${isBest ? ' new' : ''}">${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div><div class="btns"><button data-act="menu">${isTouch ? 'Menu' : 'Menu (Esc / B)'}</button></div></div></div>`;
   setTimeout(() => { if (mode === 'crashed' && !downcam.playing) hud.overlay.classList.remove('hidden'); }, 700);
+}
+
+/** Escalating waves, on the end screens: how many you cleared, and the record for this starting number. */
+function waveLine() {
+  if (!dogfight.escalate) return '';
+  const rec = loadBestWave();
+  return `<p class="best${waveRecord ? ' new' : ''}">${wavesCleared} wave${wavesCleared === 1 ? '' : 's'} cleared${waveRecord ? ' · new record!' : rec ? ` · record ${rec}` : ''}</p>`;
 }
 
 // ---------- Winning score: the match ends when someone gets there ----------
@@ -1043,7 +1068,7 @@ function winSolo() {
   const isBest = final > best;
   if (isBest) { best = final; try { localStorage.setItem(bestKey(), String(best)); } catch { /* ignore */ } }
   audio.whoosh(1); audio.beep(1400, 0.2, 0.07); setTimeout(() => audio.beep(2100, 0.25, 0.07), 160); rumble(0.6, 250);
-  hud.overlay.innerHTML = `<div class="menu"><h1>You win!</h1><div class="panel center"><p class="big">First to ${winTarget()} · ${dogfight.kills} shot down</p><p class="score"><b>${final}</b><span>points</span></p><p>${getArena()?.name ?? 'Arena'} · wave ${Math.max(1, dogfight.wave)}</p><p class="best${isBest ? ' new' : ''}">${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div><div class="btns"><button data-act="menu">${isTouch ? 'Menu' : 'Menu (Esc / B)'}</button></div></div></div>`;
+  hud.overlay.innerHTML = `<div class="menu"><h1>You win!</h1><div class="panel center"><p class="big">First to ${winTarget()} · ${dogfight.kills} shot down</p><p class="score"><b>${final}</b><span>points</span></p><p>${getArena()?.name ?? 'Arena'} · wave ${Math.max(1, dogfight.wave)}</p>${waveLine()}<p class="best${isBest ? ' new' : ''}">${isBest ? 'New best!' : `Best: ${best}`}</p><div class="go">${isTouch ? 'Tap to fly again' : 'Press any key or button to fly again'}</div><div class="btns"><button data-act="menu">${isTouch ? 'Menu' : 'Menu (Esc / B)'}</button></div></div></div>`;
   setTimeout(() => { if (mode === 'over') hud.overlay.classList.remove('hidden'); }, 900);
 }
 /** Online: the host called the match. Show who won and the final scores, then everyone goes back to the room. */
@@ -1114,7 +1139,14 @@ function onDogfight(ev: DogfightEvent) {
       if (dodgeCd <= 0) { const pts = Math.round(50 * multiplier()); score += pts; popup(`Dodged! +${pts}`, 'rolled through the shots'); dodgeCd = 0.8; }
       break;
     case 'escaped': popup('Bandit escaped'); break;
-    case 'wave': audio.beep(700, 0.25, 0.08); popup(`Wave ${ev.wave}`, `${ev.count} bird${ev.count > 1 ? 's' : ''}`); break;
+    case 'wave': {
+      audio.beep(700, 0.25, 0.08);
+      // escalating: name the birds, and say when they've got sharper
+      const tier = dogfight.escalate ? waveTier(ev.wave) : '';
+      const sharper = tier && ev.wave > 1 && tier !== waveTier(ev.wave - 1);
+      popup(`Wave ${ev.wave}`, `${ev.count} bird${ev.count > 1 ? 's' : ''}${tier ? ` · ${tier}${sharper ? ': sharper flyers!' : ''}` : ''}`);
+      break;
+    }
     case 'waveCleared': {
       // clearing a wave pays out, grows a feather back and refills your darts
       const pts = Math.round(500 * ev.wave * multiplier());
@@ -1122,8 +1154,17 @@ function onDogfight(ev: DogfightEvent) {
       hp = Math.min(3, hp + 1); hpRegen = 0;
       if (myDartsOn()) { dogfight.dartsLeft = MAX_DARTS; dogfight.dartCharge = 0; }
       audio.whoosh(1); audio.beep(1400, 0.2, 0.07);
-      popup(`Wave ${ev.wave} cleared! +${pts}`);
       waveClearedT = 4;
+      if (dogfight.escalate) {
+        // a record for this starting number of birds
+        wavesCleared = ev.wave;
+        if (ev.wave > loadBestWave()) {
+          try { localStorage.setItem(bestWaveKey(), String(ev.wave)); } catch { /* storage off */ }
+          waveRecord = true;
+        }
+        const next = waveBirds(settings.enemies, ev.wave + 1);
+        popup(`Wave ${ev.wave} cleared! +${pts}`, `${waveRecord ? 'New record! · ' : ''}next: ${next} bird${next > 1 ? 's' : ''}`);
+      } else popup(`Wave ${ev.wave} cleared! +${pts}`);
       break;
     }
     case 'myDart': popup('Dart away!', `${dogfight.dartsLeft} left`); break;
@@ -1324,7 +1365,7 @@ function spawnRace() {
   const c = course();
   enterCourse(c);
   input.recenter(); input.setThrottle(0);
-  dogfight.spawning = false; dogfight.targets = []; dogfight.reset(); dogfight.arenaCount = 0;
+  dogfight.spawning = false; dogfight.targets = []; dogfight.reset(); dogfight.arenaCount = 0; dogfight.escalate = false;
   gates.reset(); puffs.clear(); resetDownCam();
   const { x, y, z } = c.start;
   glider.reset(x, y, z, c.start.heading); glider.speed = c.start.speed;
@@ -2315,7 +2356,7 @@ function frame(now: number) {
   hud.wave.textContent = rules && mode !== 'title'
     ? rules.bots === 0 ? (rules.allies ? teamBanner() : 'FREE FOR ALL') : dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`
     : inArena && mode === 'flying'
-    ? (dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave} · ${alive} LEFT`)
+    ? (dogfight.wave === 0 ? 'GET READY' : waveClearedT > 0 || alive === 0 ? `WAVE ${dogfight.wave} CLEARED` : `WAVE ${dogfight.wave}${dogfight.escalate ? ` · ${waveTier(dogfight.wave).toUpperCase()}` : ''} · ${alive} LEFT`)
       + (settings.mode === 'arena' && winTarget() > 0 ? ` · ${dogfight.kills}/${winTarget()} DOWN` : '')
     : '';
   audio.update(glider.speed, mist, mode === 'flying' && !isSpace()); // (no wind in space)
