@@ -163,7 +163,7 @@
   .btns { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
   /* mode tabs: a segmented control that shares its width between however many modes there are */
   .tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; border-radius: 15px; background: rgba(0,0,0,.25); }
-  #overlay .tabs button { flex: 1 1 0; min-width: 84px; border: 0; background: transparent; padding: 8px 6px; border-radius: 11px; }
+  #overlay .tabs button { flex: 1 1 30%; min-width: 84px; border: 0; background: transparent; padding: 8px 6px; border-radius: 11px; }
   #overlay .tabs button.on { background: var(--accent); color: #2b2412; box-shadow: 0 2px 8px rgba(0,0,0,.2); }
   .tabs.sel { box-shadow: 0 0 0 2px var(--accent); }
   /* setting rows: label left, ◀ value ▶ right */
@@ -336,7 +336,7 @@
     .split .opt { min-height: 42px; }
     .split .sect { margin: 10px 6px 2px; }
     .split .rooms { max-height: 150px; }
-    #overlay .split .tabs button { min-width: 0; padding: 8px 2px; font-size: 14px; }
+    #overlay .split .tabs button { flex: 1 1 30%; min-width: 0; padding: 7px 2px; font-size: 14px; }
     .split .opt .ctl b { min-width: 96px; }
     #overlay .split .opt .ctl button { width: 34px; }
     .split .opt .lab { white-space: nowrap; }
@@ -376,6 +376,11 @@
   #race .splits div.done { opacity: .95; } #race .splits div.cur { opacity: .8; }
   #race .splits div.flash { animation: splitflash .5s ease-out 3; }
   #race .splits i { font-style: normal; min-width: 54px; } #race .splits i:last-child { min-width: 46px; }
+  #race .splits.live div { opacity: .9; } #race .splits.live div.me span { text-decoration: underline; }
+  #race .splits.live span { font-weight: 800; } #race .splits.live i { min-width: 96px; opacity: .85; }
+  .standings.race li b.time { width: 84px; font-variant-numeric: tabular-nums; }
+  #countdown { position: fixed; left: 50%; top: 34%; transform: translate(-50%, -50%); font-size: 120px; font-weight: 900; color: #fff; display: none;
+    pointer-events: none; text-shadow: 0 4px 24px rgba(0,0,0,.45); letter-spacing: 2px; }
   @keyframes splitflash { 0% { transform: scale(1.12); } 100% { transform: scale(1); } }
   #ghostTag { position: fixed; left: 0; top: 0; font-size: 12px; font-weight: 800; color: #bfe8ff; pointer-events: none; white-space: nowrap; display: none; text-shadow: 0 1px 4px var(--shadow); }
   #restartBtn { position: fixed; left: 50%; margin-left: 36px; bottom: calc(14px + env(safe-area-inset-bottom)); width: 78px; height: 36px; border-radius: 10px;
@@ -412,6 +417,7 @@
   <div id="restartBtn">RESTART</div>
   <div id="race" class="hud"></div>
   <div id="ghostTag"></div>
+  <div id="countdown"></div>
   <div id="chatBtn">CHAT</div>
   <div id="throttle"><b class="up">BOOST</b><i class="notch"></i><div id="thrKnob"></div><b class="dn">DRIFT</b></div>
   <div id="boost" class="hud"><i></i><b>BOOST</b></div>

@@ -19,9 +19,20 @@ What's on the mountain: stepped slopes ending in cliff drops, rivers to skim (wi
 
 Code map: `src/route.ts` forks and environments · `src/world.ts` terrain, canyons, biomes, obstacles, clouds, chunk streaming · `src/gates.ts` rings, wind tunnels, needles, arches · `src/bird.ts` bird mesh and glide physics · `src/input.ts` keyboard/touch/gamepad · `src/main.ts` game loop, camera, scoring, HUD · `src/puffs.ts` cloud-punch particles · `src/audio.ts` procedural wind.
 
-## Your own maps (Race mode)
+## Your own maps (Time trials)
 
-Race mode imports maps you make: a heightmap (16-bit PNG, JPG, RAW from Gaea / World Machine / Unity / Unreal), a 3D model (glTF / GLB / OBJ from Blender or a track builder, tunnels included), or a Glide map `.json`. Maps and their best times stay on your device. Formats, Blender markers and limits are in [MAPS.md](MAPS.md). Code: `src/mapimport.ts` (file readers, map → course), `src/terrain.ts` (heightmap grid and model collision).
+Time trials imports maps you make: a heightmap (16-bit PNG, JPG, RAW from Gaea / World Machine / Unity / Unreal), a 3D model (glTF / GLB / OBJ from Blender or a track builder, tunnels included), or a Glide map `.json`. Maps and their best times stay on your device. Formats, Blender markers and limits are in [MAPS.md](MAPS.md). Code: `src/mapimport.ts` (file readers, map → course), `src/terrain.ts` (heightmap grid and model collision).
+
+## Race (online)
+
+Race other players live down the time trial courses, in rooms like the online arena (room list, public or private, codes and invite links). The host picks a course (built-in courses only, since your own maps live on your device) and whether darts are on; peas are always on. Everyone lines up abreast on the start, counts down together and goes; the clock runs from GO.
+
+- A crash, being shot down (peas or a dart), or skipping a checkpoint costs a second out of the air, then you're back just past the last checkpoint you passed (or on the start).
+- The standings sit under the clock, top right. Birds over the line can't be shot or locked.
+- The race ends when everyone's finished, or 60 s after the winner crosses the line (the rest are DNF). Then everyone goes back to the room for the next one.
+- Players who join mid-race wait in the lobby for the next race.
+
+Code: the "Live race" section of `src/main.ts` (grid, countdown, respawn, standings, results) and the race fields in `src/online.ts` (`MatchRules.race`, checkpoints and finish time sent with each player's state, `endRace`). A race room shows in the room list with arena number 100 + its course.
 
 ## Dogfights
 Enemy birds join the run every 7 to 13 seconds (one at a time, two once you have a couple of kills).

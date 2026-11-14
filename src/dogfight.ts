@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { BirdMesh, MAX_LIFT_G, type BirdPalette, type Glider } from './bird'; // MAX_LIFT_G: same hardest pull as yours
-import { terrainHeight, groundHeight, nearestBranch, cruiseThrust, skimThrust, getArena, obstaclesNear, obstacleGap, ARENA_R, CRUISE_SPEED, arenaBarrier, isSpace, type Obstacle } from './world';
+import { terrainHeight, groundHeight, solidClearance, nearestBranch, cruiseThrust, skimThrust, getArena, obstaclesNear, obstacleGap, ARENA_R, CRUISE_SPEED, arenaBarrier, isSpace, type Obstacle } from './world';
 import { ShipMesh, type Craft } from './ship';
 import { sfx } from './spacefx';
 import { SPACE_CRUISE, SPACE_BOOST, SPACE_PITCH_RATE, SPACE_R, SPACE_CEIL, SPACE_FLOOR, SPACE_SPAWN_Y, LASER_SPEED, LASER_LIFE, MISSILE_SPEED, PICKUP_FUEL, spaceTurnMul, stepSpaceVel, stepFuel, nearestPickup, grabPickup } from './space';
@@ -94,7 +94,7 @@ export function shotImpact(a: THREE.Vector3, b: THREE.Vector3, pad = 0): number 
   for (let i = 1; i <= steps; i++) {
     const f = i / steps;
     const x = a.x + (b.x - a.x) * f, y = a.y + (b.y - a.y) * f, z = a.z + (b.z - a.z) * f;
-    if (y < groundHeight(x, z) + pad) return f;
+    if (solidClearance(x, y, z) < pad) return f; // (cave-aware on a race course: a cave's roof doesn't stop a shot inside it; off a course this is the drawn ground)
     for (const o of obs) if (obstacleGap(o, x, y, z) < pad) return f;
   }
   return -1;
