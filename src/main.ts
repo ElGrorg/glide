@@ -1518,7 +1518,8 @@ function finishRace() {
 // The clock runs from GO. A crash or being shot down puts you straight back in the air where you went down, at
 // base speed (that lost speed is the cost). Skipping a checkpoint sends you back to the last one you passed.
 // The race ends when everyone's over the line, or a minute after the winner finishes.
-const RACE_COUNTDOWN = 3.5, RACE_CLOSE = 60, RACE_MAX = 15 * 60;
+/** A moment on the ground (or falling) before you're back in the air. */
+const RACE_RESPAWN = 0.8, RACE_COUNTDOWN = 3.5, RACE_CLOSE = 60, RACE_MAX = 15 * 60;
 let liveCourse: CourseDef = COURSES[0];
 /** Seconds since GO on your clock; the countdown left (> 0 = held on the grid). */
 let liveClock = 0, liveHold = 0;
@@ -1558,11 +1559,37 @@ function startLiveRace(rules: MatchRules) {
 /** Where you went down (and which way you were flying), or null after a skipped checkpoint. */
 let liveDown: { p: THREE.Vector3; dir: THREE.Vector3; wall: boolean } | null = null;
 const _rp = new THREE.Vector3();
-/** Room to fly at p: clear of rock by 3 m and of trees, rocks and pillars by 2 m. */
-function liveClear(p: THREE.Vector3) {
-  if (solidClearance(p.x, p.y, p.z) < 3) return false;
-  obstaclesNear(p.x, p.z, 14, nearby);
-  return nearby.every((o) => o.soft || obstacleGap(o, p.x, p.y, p.z) > 2.5);
+/** Room to fly at p: clear of rock by 3 m and of trees, rocks and pillars by 3 m. */
+function liveClear(x: number, y: number, z: number) {
+  if (solidClearance(x, y, z) < 3) return false;
+  obstaclesNear(x, z, 14, nearby);
+  return nearby.every((o) => o.soft || obstacleGap(o, x, y, z) > 3);
+}
+/** A clear run: nothing to hit for the first ~2 s of flight from (x, y, z) along `heading`, even sinking the
+ *  way a bird does with hands off the controls (about 1 m down for every 4 along). */
+function liveRunClear(x: number, y: number, z: number, heading: number) {
+  const fx = -Math.sin(heading), fz = -Math.cos(heading);
+  for (let d = 0; d <= 70; d += 3) {
+    const px = x + fx * d, pz = z + fz * d;
+    for (const yy of [y, y - d * 0.25]) if (!liveClear(px, yy, pz)) return false;
+  }
+  return true;
+}
+/** Where to put you back after going down at `down`: as close to it as possible, with a clear run ahead. Tries
+ *  backing off along your line, then rising above the trees, then turning (toward the next checkpoint first). */
+function liveSpot(down: { p: THREE.Vector3; dir: THREE.Vector3; wall: boolean }) {
+  const h0 = Math.hypot(down.dir.x, down.dir.z) > 0.2 ? Math.atan2(-down.dir.x, -down.dir.z) : glider.heading;
+  const g = run.gates[Math.min(run.next, run.gates.length - 1)];
+  const hGate = Math.atan2(-(g.x - down.p.x), -(g.z - down.p.z));
+  const headings = [h0, hGate, h0 + 0.5, h0 - 0.5, hGate + 0.6, hGate - 0.6, h0 + 1.1, h0 - 1.1];
+  for (const back of down.wall ? [8, 16, 26, 40] : [0, 8, 16, 30])
+    for (const up of [0, 8, 16, 26, 38]) {
+      const x = down.p.x + Math.sin(h0) * back, z = down.p.z + Math.cos(h0) * back; // (back along your line)
+      const y = Math.max(down.p.y, floorBelow(x, down.p.y + 2, z) + 12) + up;
+      if (!liveClear(x, y, z)) continue;
+      for (const h of headings) if (liveRunClear(x, y, z, h)) return { x, y, z, heading: h };
+    }
+  return null;
 }
 /** Back in the air: where you went down at base speed, or after a skipped checkpoint just past the last one you passed. */
 function liveRespawn() {
@@ -1570,24 +1597,11 @@ function liveRespawn() {
   const down = liveDown;
   liveDown = null;
   if (down) {
-    // level out along the way you were flying (down the course if you were heading straight up or down)
-    const d = _rp.set(down.dir.x, 0, down.dir.z);
-    let heading = d.lengthSq() > 0.04 ? Math.atan2(-d.x, -d.z) : glider.heading;
-    const fwd = new THREE.Vector3(-Math.sin(heading), 0, -Math.cos(heading));
-    const p = down.p.clone();
-    // into a wall, tree or rock: back off it first
-    if (down.wall) p.addScaledVector(fwd, -6);
-    const lift = (q: THREE.Vector3) => { const fl = floorBelow(q.x, q.y + 2, q.z); q.y = Math.max(q.y, fl + 6); };
-    lift(p);
-    for (let k = 0; k < 8 && !liveClear(p); k++) { p.addScaledVector(fwd, -5); lift(p); }
-    // rock straight ahead (a cliff or cave wall you ran into): face the next checkpoint instead
-    const ahead = p.clone().addScaledVector(fwd, 25);
-    if (solidClearance(ahead.x, ahead.y, ahead.z) < 2) {
-      const g = run.gates[Math.min(run.next, run.gates.length - 1)];
-      heading = Math.atan2(-(g.x - p.x), -(g.z - p.z));
-    }
-    placeLive(p.x, p.y, p.z, heading, c.start.speed);
-  } else if (run.next === 0) {
+    const spot = liveSpot(down);
+    if (spot) { placeLive(spot.x, spot.y, spot.z, spot.heading, c.start.speed); spawnShield = 2; return; }
+    // (nowhere clear near where you went down: fall back to the last checkpoint)
+  }
+  if (run.next === 0) {
     const { x, y, z, heading } = c.start, lat = (Math.random() - 0.5) * 20;
     const px = x + Math.cos(heading) * lat, pz = z - Math.sin(heading) * lat;
     placeLive(px, Math.max(y, floorBelow(px, y + 40, pz) + 14), pz, heading, c.start.speed);
@@ -1612,10 +1626,10 @@ function placeLive(x: number, y: number, z: number, heading: number, speed: numb
   mode = 'flying'; hud.overlay.classList.add('hidden');
   placeCamera(true);
 }
-/** Down (crashed or shot down): straight back in the air on the next frame, where you went down.
+/** Down (crashed or shot down): back in the air a moment later, where you went down.
  *  `skipped`: a missed checkpoint, which sends you back to the last one you passed. */
 function liveCrashed(skipped: boolean, wall: boolean) {
-  respawnAt = 0;
+  respawnAt = RACE_RESPAWN;
   liveDown = skipped ? null : { p: glider.pos.clone(), dir: glider.dir.clone(), wall };
   hud.overlay.classList.add('hidden');
 }
@@ -2642,5 +2656,5 @@ addEventListener('resize', () => {
 
 // ?debug exposes the game objects to the console (used for the two-browser online tests)
 if (new URLSearchParams(location.search).has('debug')) {
-  (window as any).glide = { online, dogfight, glider, camera, hitboxes, course: getCourse, get hp() { return hp; }, get shield() { return spawnShield; }, get t() { return t; }, get mode() { return mode; }, get score() { return score; }, get pause() { return pause; }, crash: (how: 'pea' | 'dart' | 'crash' = 'pea') => crash('Shot down!', how) };
+  (window as any).glide = { online, dogfight, glider, camera, hitboxes, course: getCourse, get hp() { return hp; }, get shield() { return spawnShield; }, get t() { return t; }, get mode() { return mode; }, get score() { return score; }, get pause() { return pause; }, crash: (how: 'pea' | 'dart' | 'crash' = 'pea') => crash('Shot down!', how), obstaclesNear, obstacleGap, floorBelow };
 }
