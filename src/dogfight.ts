@@ -122,6 +122,19 @@ function turnToward(dir: THREE.Vector3, want: THREE.Vector3, max: number) {
   dir.applyAxisAngle(axis, Math.min(ang, max)).normalize();
 }
 
+// ---------- Escalating arena waves ----------
+// Each wave brings one more bird than the last, and the birds fly smarter. Never better: same turn limit,
+// pea speed, fire rate, aim assist and darts as you. Only how they use them improves (quicker to read your
+// moves, harder to shake, longer bursts at your fire rate, cutting you off and coming in from above).
+export const MAX_WAVE_BIRDS = 16;
+/** How many birds wave `wave` brings when the first one had `start`. */
+export const waveBirds = (start: number, wave: number) => Math.min(MAX_WAVE_BIRDS, Math.max(start, start + wave - 1));
+/** 0..1: how sharp wave `wave`'s birds fly (0 = wave 1, the same birds as everywhere else; 1 from wave 10 on). */
+export const waveSkill = (wave: number) => THREE.MathUtils.clamp((wave - 1) / 9, 0, 1);
+const TIERS = ['Fledglings', 'Fledglings', 'Hawks', 'Hawks', 'Veterans', 'Veterans', 'Aces', 'Aces', 'Aces', 'Legends'];
+/** The name for wave `wave`'s birds. */
+export const waveTier = (wave: number) => TIERS[THREE.MathUtils.clamp(wave, 1, TIERS.length) - 1];
+
 let nextId = 1;
 export class Enemy {
   id = nextId++;
@@ -165,6 +178,10 @@ export class Enemy {
   seesTgt = true; seesTgtT = 0;
   mySight = true; mySightT = 0;
   heading = 0;
+  /** 0..1 how well it flies (escalating arena waves): reads you faster, holds on longer, works with the others. Stats never change. */
+  skill = 0;
+  /** Its place in the wave (which side it flanks from). */
+  slot = 0;
   /** Online play: 'ai' = a host-run bird mirrored on this machine, 'human' = another player. Puppets
    *  skip the brain here; their position comes over the network and their own machine decides hits. */
   remote: 'ai' | 'human' | null = null;
@@ -407,6 +424,10 @@ export class Dogfight {
   /** Called for every pea fired on this machine (yours, and AI birds' on the host), to send it to the others. */
   onShot: ((from: THREE.Vector3, vel: THREE.Vector3, owner: string) => void) | null = null;
   wave = 0;
+  /** Solo arena: waves escalate (one more bird each wave, and smarter ones). Off online and in space. */
+  escalate = false;
+  /** Birds in the current wave. */
+  waveCount = 0;
   private waveT = 3;
   private waveLive = false;
   darts: Dart[] = [];
@@ -524,7 +545,7 @@ export class Dogfight {
     for (const d of this.myDarts) { d.life = 0; d.mesh.visible = false; }
     this.dartsLeft = this.playerDarts ? MAX_DARTS : 0; this.dartCharge = 0;
     this.locked = null; this.locking = null; this.lockT = 0;
-    this.wave = 0; this.waveT = 3; this.waveLive = false;
+    this.wave = 0; this.waveT = 3; this.waveLive = false; this.waveCount = 0;
     this.spawnT = 9; this.kills = 0; this.tailThreat = 0; this.dartLockProgress = 0; this.dartIncoming = Infinity;
   }
 
@@ -608,7 +629,7 @@ export class Dogfight {
   }
 
   /** Arena: drop a bird somewhere in the basin, well away from you, heading your way. */
-  private spawnArena(g: Glider, role: Role) {
+  private spawnArena(g: Glider, role: Role): Enemy {
     const e = new Enemy(role, this.scene);
     if (isSpace()) {
       for (let i = 0; i < 30; i++) {
@@ -624,7 +645,7 @@ export class Dogfight {
       e.state = role === 'hunter' ? 'attack' : 'cruise';
       e.dartCd = rand(5, 10);
       this.enemies.push(e);
-      return;
+      return e;
     }
     for (let i = 0; i < 20; i++) {
       const a = Math.random() * Math.PI * 2, r = rand(150, ARENA_R - 140);
@@ -643,6 +664,7 @@ export class Dogfight {
     e.state = role === 'hunter' ? 'attack' : 'cruise';
     e.dartCd = rand(5, 10);
     this.enemies.push(e);
+    return e;
   }
 
   /** Advance everything. `active` is false on the crash screen: enemies keep flying but hold fire.
@@ -667,9 +689,15 @@ export class Dogfight {
         this.waveT -= dt;
         if (this.waveT <= 0) {
           this.wave++; this.waveLive = true;
-          // roughly 60% hunters; a lone bird is always a hunter
-          for (let i = 0; i < this.arenaCount; i++) this.spawnArena(g, i === 0 || Math.random() < 0.6 ? 'hunter' : 'prey');
-          out.push({ type: 'wave', wave: this.wave, count: this.arenaCount });
+          const n = this.escalate ? waveBirds(this.arenaCount, this.wave) : this.arenaCount;
+          const skill = this.escalate ? waveSkill(this.wave) : 0;
+          this.waveCount = n;
+          // roughly 60% hunters (up to 85% in the late waves); a lone bird is always a hunter
+          for (let i = 0; i < n; i++) {
+            const e = this.spawnArena(g, i === 0 || Math.random() < 0.6 + 0.25 * skill ? 'hunter' : 'prey');
+            e.skill = skill; e.slot = i;
+          }
+          out.push({ type: 'wave', wave: this.wave, count: n });
         }
       }
     } else if (active && aliveN < max) {
@@ -684,6 +712,16 @@ export class Dogfight {
     }
 
     // ---- enemy brains
+    // escalating waves: the hunter closest to you leads the attack; the rest work as wingmen and cut you off
+    let leader: Enemy | null = null;
+    if (this.escalate) {
+      let bd = Infinity;
+      for (const e of this.enemies) {
+        if (!e.alive || e.remote || e.role !== 'hunter') continue;
+        const d = e.pos.distanceToSquared(me.pos);
+        if (d < bd) { bd = d; leader = e; }
+      }
+    }
     this.tailThreat = 0;
     const meActive = active, meInCloud = inCloud;
     this.frameNo++;
@@ -724,14 +762,15 @@ export class Dogfight {
 
       // perception lags your real movement by roughly half a second
       if (!e.seenInit) { e.seenPos.copy(g.pos); e.seenVel.copy(g.vel); e.seenInit = true; }
-      const k = Math.min(1, dt / 0.3); // reacts to your moves about 0.3 s late
+      const sk = e.skill;
+      const k = Math.min(1, dt / (0.3 - 0.18 * sk)); // reacts to your moves about 0.3 s late (sharper birds: down to 0.12 s)
       e.seenPos.addScaledVector(e.seenVel, dt).lerp(g.pos, k);
       e.seenVel.lerp(g.vel, k);
       e.lostT = Math.max(0, e.lostT - dt);
       e.breakT = Math.max(0, e.breakT - dt);
       // a dodge roll right in front of a close hunter makes it lose you
       if (e.role === 'hunter' && g.trick && g.trick.dodge > 10 && behindYou && dist < 70 && e.lostT <= 0) {
-        e.lostT = 2.5; if (isMe) out.push({ type: 'shaken' });
+        e.lostT = 2.5 - 1.3 * sk; if (isMe) out.push({ type: 'shaken' });
       }
 
       const want = new THREE.Vector3();
@@ -778,16 +817,33 @@ export class Dogfight {
       } else if (e.state === 'attack') {
         // chases where it *saw* you: lag pursuit from range, lead pursuit when close enough to shoot
         const seenDir = tmpC.copy(e.seenVel).normalize();
-        if (dist > ASSIST_RANGE * rangeK()) want.copy(e.seenPos).addScaledVector(seenDir, -22).addScaledVector(e.seenVel, 0.6).sub(e.pos).normalize();
-        else want.copy(shotDir(e, peaSpeed(), tmpD));
+        if (dist > ASSIST_RANGE * rangeK()) {
+          if (sk > 0 && isMe && leader && leader !== e && !isSpace()) {
+            // wingman: someone else is on your tail, so cut you off: head for where you'll be in a few seconds,
+            // off to one side (birds take turns which), with height in hand to dive in on you
+            const T = THREE.MathUtils.clamp(dist / Math.max(e.speed, 20), 0, 4) * sk;
+            const side = tmpD.set(-e.seenVel.z, 0, e.seenVel.x);
+            if (side.lengthSq() < 1) side.set(1, 0, 0);
+            side.normalize().multiplyScalar((e.slot % 2 ? 1 : -1) * (35 + 25 * ((e.slot >> 1) % 2)) * sk);
+            want.copy(e.seenPos).addScaledVector(e.seenVel, T).add(side);
+            want.y += 25 * sk;
+            want.sub(e.pos).normalize();
+          } else {
+            want.copy(e.seenPos).addScaledVector(seenDir, -22).addScaledVector(e.seenVel, 0.6);
+            if (!isSpace()) want.y += 15 * sk; // sharper birds come in from above, with speed to dive on you
+            want.sub(e.pos).normalize();
+          }
+        } else want.copy(shotDir(e, peaSpeed(), tmpD));
         wantSpeed = g.speed + THREE.MathUtils.clamp((dist - 30) * 0.5, -14, 30);
         // wider than your best turn, and wider still when it's fast: a hard break gains you angle
-        rate = isSpace() ? 1.2 : 0.85 - Math.max(0, e.speed - 42) * 0.01; // (the lift limit in fly() is the real cap, same as yours)
+        // sharper birds pull harder, nearer what their wings allow (the lift limit in fly() is the real cap, same as yours)
+        rate = isSpace() ? 1.2 : 0.85 + 0.3 * sk - Math.max(0, e.speed - 42) * 0.01 * (1 - 0.5 * sk);
         // the firing solution: where a pea must go to meet you (from where it *thinks* you are)
         const lead = shotDir(e, peaSpeed(), tmpD);
         const aimErr = e.dir.angleTo(lead);
         // break hard enough that you slide out of its view and it loses you (flying straight never does it)
-        if (dist < 120 && e.dir.angleTo(toPlayer) > 0.55 && this.turnRateOf(g, t) > 0.3) { e.lostT = 2.5; if (isMe) out.push({ type: 'shaken' }); }
+        // (sharper birds take a harder break to shake, and pick you up again sooner)
+        if (dist < 120 && e.dir.angleTo(toPlayer) > 0.55 + 0.15 * sk && this.turnRateOf(g, t) > 0.3 + 0.15 * sk) { e.lostT = 2.5 - 1.3 * sk; if (isMe) out.push({ type: 'shaken' }); }
         e.aimAtPlayer = dist < 120 ? THREE.MathUtils.clamp(1 - aimErr / 0.4, 0, 1) : 0;
         if (isMe && behindYou && dist < 150) this.tailThreat = Math.max(this.tailThreat, Math.max(0.35, e.aimAtPlayer));
         // short bursts
@@ -796,13 +852,15 @@ export class Dogfight {
         if (active && e.fireCd <= 0 && dist < ASSIST_RANGE * rangeK() && aimErr < ASSIST_BEND + 0.015) {
           const aim = e.dir.clone(); turnToward(aim, lead, ASSIST_BEND); // the same ~5° bend your aim assist gets
           // (spread made after the bend: turnToward uses tmpC as scratch)
-          const spread = tmpC.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(0.01); // a hair of wobble (your peas have none)
+          const spread = tmpC.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(0.01 * (1 - 0.7 * sk)); // a hair of wobble (your peas have none)
           const v = aim.add(spread).normalize().multiplyScalar(peaSpeed()).addScaledVector(e.dir, e.speed);
           this.shoot(true, e.pos.clone().addScaledVector(e.dir, 1.5), v);
           this.enemyShotThisFrame = true;
           e.burst++;
-          e.fireCd = e.burst >= 5 ? rand(0.9, 1.6) : 0.1; // same fire rate as yours, in bursts
-          if (e.burst >= 5) e.burst = 0;
+          // same fire rate as yours, in bursts (sharper birds hold the trigger longer and pause less, never faster)
+          const burstLen = 5 + Math.round(3 * sk);
+          e.fireCd = e.burst >= burstLen ? rand(0.9, 1.6) * (1 - 0.4 * sk) : 0.1;
+          if (e.burst >= burstLen) e.burst = 0;
         }
         // dart lock: keep you inside its cone, at range, out of the clouds, and it launches a dart
         e.dartCd -= dt;
@@ -926,7 +984,7 @@ export class Dogfight {
         const to = tmpA.copy(tg.pos).sub(d.pos);
         const dist = to.length();
         // the target sees it coming: break hard across the dart's path, then roll when it's close
-        if (dist < 90 && tg.breakT <= 0) {
+        if (dist < 90 + 40 * tg.skill && tg.breakT <= 0) { // (sharper birds see it sooner)
           const side = tmpC.crossVectors(d.vel, UP).normalize().multiplyScalar(Math.random() < 0.5 ? 1 : -1);
           tg.breakDir.copy(side).addScaledVector(d.vel.clone().normalize(), 0.15); tg.breakDir.y += rand(-0.35, 0.2); tg.breakDir.normalize();
           tg.breakT = 1.3;
