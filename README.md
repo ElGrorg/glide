@@ -27,7 +27,7 @@ Time trials imports maps you make: a heightmap (16-bit PNG, JPG, RAW from Gaea /
 
 Race other players live down the time trial courses, in rooms like the online arena (room list, public or private, codes and invite links). The host picks a course (built-in courses only, since your own maps live on your device) and whether darts are on; peas are always on. Everyone lines up abreast on the start, counts down together and goes; the clock runs from GO.
 
-- A crash or being shot down (peas or a dart) puts you straight back in the air where you went down, levelled out and at base speed (the lost speed is the cost). Into a wall, tree or rock, you're backed off it first. Skipping a checkpoint sends you back to the last one you passed.
+- A crash or being shot down (peas or a dart) puts you back in the air 0.8 s later where you went down, levelled out and at base speed (the lost speed is the cost). The spot is picked so the next ~70 m of flight is clear of trees, rocks and ground: it backs off along your line, rises above the trees, or turns (toward the next checkpoint first). Skipping a checkpoint sends you back to the last one you passed.
 - The standings sit under the clock, top right. Birds over the line can't be shot or locked.
 - The race ends when everyone's finished, or 60 s after the winner crosses the line (the rest are DNF). Then everyone goes back to the room for the next one.
 - Players who join mid-race wait in the lobby for the next race.
