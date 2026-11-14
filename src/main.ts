@@ -409,7 +409,7 @@ const MODE_TABS: { id: GameMode; label: string }[] = [
 const MODE_BLURB: Record<GameMode, string> = {
   endless: 'An endless mountainside. Skim the ground, thread the trees, punch through the clouds, and shoot down the birds hunting you.',
   race: 'Time trial down a set course: caves, ravines and more than one way down. Keep your speed up or you\'ll stall. Race a ghost of anyone on the board.',
-  liverace: 'Race other players live down the time trial courses. A crash costs you a second, then you fly on from your last checkpoint. Peas and darts are live: shoot a rival down and they lose a second too.',
+  liverace: 'Race other players live down the time trial courses. Crash or get shot down and you\'re straight back in the air where you went down, but back at base speed. Peas and darts are live.',
   arena: 'A walled-in basin to fight in, wave after wave. You flap to hold your speed, but climbing still costs it and diving still builds it.',
   space: 'Space fighters in the middle of a capital-ship battle high above a planet. No air, no stalling: cruise, boost (grab the gold pickups to refill it), drift to swing your nose round. Run the carrier hangar bays and the tunnels through the cruisers, skim the hulls, and lead missiles into them.',
   online: 'Fight in the arena with other players anywhere: join an open room, type a friend\'s code, or host your own.',
@@ -1078,12 +1078,12 @@ function crash(title = 'Crunch!', how: 'pea' | 'dart' | 'crash' = 'crash', wall 
   audio.thud(); rumble(1, 300);
   // whoever hit you in the last few seconds gets the credit (and the down cam watches from their bird)
   const by = how !== 'crash' || t - lastHitT < 6 ? lastAttacker : '';
-  if (!liveRace()) downcamReq = { by, how }; // (a race has no time for a replay: you're back in a second)
+  if (!liveRace()) downcamReq = { by, how }; // (a race has no time for a replay: you're straight back in the air)
   if (online.phase !== 'playing' && Math.random() < (by === 'ai' ? 0.5 : 0.3)) botSay([...BANTER, 11, 11]); // (11 = "Enjoy the ground!")
   if (online.phase === 'playing') {
     // online: no game over, you're straight back in
     online.downed(by, how);
-    if (liveRace()) { liveCrashed(title, by); return; }
+    if (liveRace()) { liveCrashed(title.startsWith('Missed'), wall); return; }
     const who = by && by !== 'ai' ? esc(online.nameOf(by)) : by === 'ai' ? 'a wild bird' : '';
     hud.overlay.innerHTML = `<div class="menu"><h1>${title}</h1><div class="panel center">${who ? `<p>by <b>${who}</b></p>` : ''}<p class="big">${online.kills} down · ${online.deaths} time${online.deaths === 1 ? '' : 's'} downed</p><div class="go" id="respawnIn">Back in the air in 3…</div><div class="btns"><button data-act="pause">${isTouch ? 'Leave room…' : 'Room menu (Esc)'}</button></div></div></div>`;
     setTimeout(() => { if (mode === 'crashed' && !downcam.playing) hud.overlay.classList.remove('hidden'); }, 500);
@@ -1515,10 +1515,10 @@ function finishRace() {
 
 // ---------- Live race (online): everyone down the same course at once ----------
 // The host picks a course and starts; everyone lines up abreast on the start, counts down together and goes.
-// The clock runs from GO. A crash (or being shot down, or skipping a checkpoint) costs a second out of the air,
-// then you're back at the last checkpoint you passed. The race ends when everyone's over the line, or a minute
-// after the winner finishes.
-const RACE_PENALTY = 1, RACE_COUNTDOWN = 3.5, RACE_CLOSE = 60, RACE_MAX = 15 * 60;
+// The clock runs from GO. A crash or being shot down puts you straight back in the air where you went down, at
+// base speed (that lost speed is the cost). Skipping a checkpoint sends you back to the last one you passed.
+// The race ends when everyone's over the line, or a minute after the winner finishes.
+const RACE_COUNTDOWN = 3.5, RACE_CLOSE = 60, RACE_MAX = 15 * 60;
 let liveCourse: CourseDef = COURSES[0];
 /** Seconds since GO on your clock; the countdown left (> 0 = held on the grid). */
 let liveClock = 0, liveHold = 0;
@@ -1555,10 +1555,39 @@ function startLiveRace(rules: MatchRules) {
   dogfight.dartsLeft = rules.myDarts ? MAX_DARTS : 0; dogfight.dartCharge = 0;
   spawnShield = RACE_COUNTDOWN + 1;
 }
-/** Back in the air after the penalty: just past the last checkpoint you passed (or on the start). */
+/** Where you went down (and which way you were flying), or null after a skipped checkpoint. */
+let liveDown: { p: THREE.Vector3; dir: THREE.Vector3; wall: boolean } | null = null;
+const _rp = new THREE.Vector3();
+/** Room to fly at p: clear of rock by 3 m and of trees, rocks and pillars by 2 m. */
+function liveClear(p: THREE.Vector3) {
+  if (solidClearance(p.x, p.y, p.z) < 3) return false;
+  obstaclesNear(p.x, p.z, 14, nearby);
+  return nearby.every((o) => o.soft || obstacleGap(o, p.x, p.y, p.z) > 2.5);
+}
+/** Back in the air: where you went down at base speed, or after a skipped checkpoint just past the last one you passed. */
 function liveRespawn() {
   const c = liveCourse;
-  if (run.next === 0) {
+  const down = liveDown;
+  liveDown = null;
+  if (down) {
+    // level out along the way you were flying (down the course if you were heading straight up or down)
+    const d = _rp.set(down.dir.x, 0, down.dir.z);
+    let heading = d.lengthSq() > 0.04 ? Math.atan2(-d.x, -d.z) : glider.heading;
+    const fwd = new THREE.Vector3(-Math.sin(heading), 0, -Math.cos(heading));
+    const p = down.p.clone();
+    // into a wall, tree or rock: back off it first
+    if (down.wall) p.addScaledVector(fwd, -6);
+    const lift = (q: THREE.Vector3) => { const fl = floorBelow(q.x, q.y + 2, q.z); q.y = Math.max(q.y, fl + 6); };
+    lift(p);
+    for (let k = 0; k < 8 && !liveClear(p); k++) { p.addScaledVector(fwd, -5); lift(p); }
+    // rock straight ahead (a cliff or cave wall you ran into): face the next checkpoint instead
+    const ahead = p.clone().addScaledVector(fwd, 25);
+    if (solidClearance(ahead.x, ahead.y, ahead.z) < 2) {
+      const g = run.gates[Math.min(run.next, run.gates.length - 1)];
+      heading = Math.atan2(-(g.x - p.x), -(g.z - p.z));
+    }
+    placeLive(p.x, p.y, p.z, heading, c.start.speed);
+  } else if (run.next === 0) {
     const { x, y, z, heading } = c.start, lat = (Math.random() - 0.5) * 20;
     const px = x + Math.cos(heading) * lat, pz = z - Math.sin(heading) * lat;
     placeLive(px, Math.max(y, floorBelow(px, y + 40, pz) + 14), pz, heading, c.start.speed);
@@ -1583,13 +1612,12 @@ function placeLive(x: number, y: number, z: number, heading: number, speed: numb
   mode = 'flying'; hud.overlay.classList.add('hidden');
   placeCamera(true);
 }
-/** Down (crashed, shot down or skipped a checkpoint): a second out, then back at the last checkpoint. */
-function liveCrashed(title: string, by: string) {
-  respawnAt = RACE_PENALTY;
-  const who = by && by !== 'ai' ? esc(online.nameOf(by)) : '';
-  hud.overlay.innerHTML = `<div class="menu"><h1>${title}</h1><div class="panel center">${who ? `<p>by <b>${who}</b></p>` : ''}<p class="big">+1 second</p>
-    <div class="go">Back ${run.next ? `at checkpoint ${run.next}` : 'on the start'}…</div></div></div>`;
-  hud.overlay.classList.remove('hidden');
+/** Down (crashed or shot down): straight back in the air on the next frame, where you went down.
+ *  `skipped`: a missed checkpoint, which sends you back to the last one you passed. */
+function liveCrashed(skipped: boolean, wall: boolean) {
+  respawnAt = 0;
+  liveDown = skipped ? null : { p: glider.pos.clone(), dir: glider.dir.clone(), wall };
+  hud.overlay.classList.add('hidden');
 }
 /** Every frame in the air: the checkpoints, on the shared clock. */
 function stepLive(dt: number) {
