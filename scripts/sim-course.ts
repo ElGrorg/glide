@@ -205,11 +205,11 @@ for (const def of COURSES) {
       for (const o of obstaclesNear(g.pos.x, g.pos.z, 14, near)) {
         const gp = obstacleGap(o, g.pos.x, g.pos.y, g.pos.z) - 0.5;
         if (gp < 0 && !hit.has(o.id)) { hit.add(o.id); hits.push(`${o.type}@${(idx / line.length * 100).toFixed(0)}%`); }
-        if (gp < 6) { seen.add(o.id); passing.set(o.id, Math.min(passing.get(o.id) ?? 99, gp)); }
+        if (gp < 7.5) { seen.add(o.id); passing.set(o.id, Math.min(passing.get(o.id) ?? 99, gp)); }
       }
       if (KICKS) for (const [id, gp] of passing) if (!seen.has(id)) {
         passing.delete(id);
-        if (gp < 3.5 && gp >= 0) { kicks++; g.speed = Math.min(95, g.speed + (gp < 1.2 ? 7 : 3 + (3.5 - gp) * 1.2)); }
+        if (gp < 5 && gp >= 0) { kicks++; g.speed = Math.min(95, g.speed + (gp < 1.5 ? 7 : 3 + (5 - gp) * 1.1)); }
       }
       if (crash) break;
       if (idx >= line.length - 2 && next < gates.length) { crash = `reached the end without gate ${next}`; break; }
